@@ -99,44 +99,22 @@ class NeMoCodeApp(App):
         dock: bottom;
         height: 3;
         padding: 0 1;
-    }
-    #input-area Input {
         background: #000000;
         color: #E5E5E5;
-        width: 100%;
-        height: 100%;
     }
-    #input-area Input::placeholder {
-        color: #8A8A8A;
-    }
-    #status-bar {
+    StatusBar {
         dock: bottom;
         height: 1;
         background: #000000;
         color: #8A8A8A;
         padding: 0 1;
-        text-style: bold;
-    }
-    .tool-call {
-        color: #76B900;
-    }
-    .thinking {
-        color: #8A8A8A;
-    }
-    .error {
-        color: #FF0000;
-    }
-    .phase {
-        color: #76B900;
-        text-style: bold;
     }
     Header {
-        background: #000000;
-        color: #E5E5E5;
-        text-style: bold;
+        background: #1a1a1a;
+        color: #76B900;
     }
     Footer {
-        background: #000000;
+        background: #1a1a1a;
         color: #E5E5E5;
     }
     """

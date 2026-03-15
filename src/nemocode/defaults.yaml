@@ -137,6 +137,16 @@ endpoints:
     tier: local-vllm
     base_url: "http://localhost:8000/v1"
     model_id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+
+  # ── Ollama local endpoints ──────────────────────────────────────
+  # Works on macOS, Linux, Windows — no NVIDIA GPU required
+  local-ollama:
+    name: "Local Ollama (Nemotron Mini)"
+    tier: local-ollama
+    base_url: "http://localhost:11434/v1"
+    model_id: "nemotron-mini"
+    capabilities: [chat, code]
+    max_tokens: 8192
     capabilities: [chat, code]
     max_tokens: 16384
 

@@ -12,6 +12,7 @@ import sys
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.syntax import Syntax
 
 from nemocode.core.scheduler import AgentEvent
 from nemocode.workflows.code_agent import CodeAgent
@@ -108,24 +109,39 @@ def _render_event(event: AgentEvent, show_thinking: bool) -> None:
     if event.kind == "text":
         console.print(event.text, end="", highlight=False, markup=False)
     elif event.kind == "thinking" and show_thinking:
-        console.print(f"[dim]{event.thinking}[/dim]", end="")
+        console.print(event.thinking, end="", style="dim", highlight=False, markup=False)
     elif event.kind == "phase":
         role_label = event.role.value if event.role else "agent"
         console.print(f"\n[bold blue]--- {role_label}: {event.text} ---[/bold blue]")
     elif event.kind == "tool_call":
         args_str = json.dumps(event.tool_args, indent=2)
+        if len(args_str) > 1000:
+            args_str = args_str[:1000] + "\n..."
         console.print(
             Panel(
-                args_str[:1000],
-                title=f"[bold]{event.tool_name}[/bold]",
+                Syntax(args_str, "json", theme="monokai", word_wrap=True),
+                title=f"[bold cyan]{event.tool_name}[/bold cyan]",
                 border_style="cyan",
                 expand=False,
+                padding=(0, 1),
             )
         )
     elif event.kind == "tool_result":
-        result_preview = event.tool_result[:2000]
+        from rich.text import Text
+
+        result = event.tool_result[:2000]
         style = "red" if event.is_error else "green"
-        console.print(f"[{style}]{result_preview}[/{style}]")
+        if len(result) < 200 and "\n" not in result:
+            console.print(Text(f"  {result}", style=style))
+        else:
+            console.print(
+                Panel(
+                    Text(result, style=style, overflow="fold"),
+                    border_style=style,
+                    expand=False,
+                    padding=(0, 1),
+                )
+            )
     elif event.kind == "usage":
         u = event.usage
         console.print(

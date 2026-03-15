@@ -19,9 +19,7 @@ def git_repo(tmp_path):
     subprocess.run(
         ["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True
     )
-    subprocess.run(
-        ["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True
-    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
     f = tmp_path / "initial.txt"
     f.write_text("initial content")
     subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)

@@ -235,7 +235,7 @@ async def retry_with_backoff(
             last_error = e
             if attempt == max_retries:
                 break
-            delay = min(base_delay * (2 ** attempt), max_delay)
+            delay = min(base_delay * (2**attempt), max_delay)
             _logger.debug(
                 "Retry %d/%d for %s after %.1fs: %s",
                 attempt + 1,

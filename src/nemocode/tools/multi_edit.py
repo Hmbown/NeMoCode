@@ -130,9 +130,7 @@ async def apply_patch(path: str, patch: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-def _apply_unified_diff(
-    original_lines: list[str], patch_text: str
-) -> list[str] | None:
+def _apply_unified_diff(original_lines: list[str], patch_text: str) -> list[str] | None:
     """Apply a unified diff to a list of lines. Returns None on failure."""
     patch_lines = patch_text.splitlines(keepends=True)
     result = list(original_lines)

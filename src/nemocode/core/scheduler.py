@@ -57,9 +57,9 @@ class _StagnationTracker:
     _idle_count: int = 0  # rounds with ZERO activity (no text, no tools)
 
     # Thresholds — generous to avoid false positives
-    repeat_threshold: int = 5   # same exact tool call 5 times → stagnation
-    error_threshold: int = 5    # same exact error 5 times → stagnation
-    idle_threshold: int = 15    # 15 rounds with no text AND no tools → stagnation
+    repeat_threshold: int = 5  # same exact tool call 5 times → stagnation
+    error_threshold: int = 5  # same exact error 5 times → stagnation
+    idle_threshold: int = 15  # 15 rounds with no text AND no tools → stagnation
 
     def record_tool_call(self, name: str, args: dict) -> None:
         h = hashlib.md5(f"{name}:{json.dumps(args, sort_keys=True)}".encode()).hexdigest()[:12]
@@ -86,13 +86,13 @@ class _StagnationTracker:
         """Check for stagnation. Returns a reason string or None."""
         # Check for repeated identical tool calls
         if len(self._call_hashes) >= self.repeat_threshold:
-            recent = self._call_hashes[-self.repeat_threshold:]
+            recent = self._call_hashes[-self.repeat_threshold :]
             if len(set(recent)) == 1:
                 return f"Same tool call repeated {self.repeat_threshold} times"
 
         # Check for repeated identical errors
         if len(self._error_hashes) >= self.error_threshold:
-            recent = self._error_hashes[-self.error_threshold:]
+            recent = self._error_hashes[-self.error_threshold :]
             if len(set(recent)) == 1:
                 return f"Same error repeated {self.error_threshold} times"
 
@@ -445,9 +445,7 @@ class Scheduler:
                 self._stagnation.record_tool_call(tc.name, tc.arguments)
 
             # Decide: parallel or sequential execution
-            needs_confirm = any(
-                self._needs_confirmation(tc) for tc in tool_calls
-            )
+            needs_confirm = any(self._needs_confirmation(tc) for tc in tool_calls)
 
             if len(tool_calls) > 1 and not needs_confirm:
                 # Parallel execution — yield all calls, execute concurrently, yield all results

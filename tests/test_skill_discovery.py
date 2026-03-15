@@ -59,9 +59,7 @@ class TestSkillDiscovery:
     def test_discover_skills_dir(self, tmp_path):
         skills_dir = tmp_path / ".nemocode" / "skills"
         skills_dir.mkdir(parents=True)
-        (skills_dir / "format.md").write_text(
-            "---\nname: format\n---\nRun formatter."
-        )
+        (skills_dir / "format.md").write_text("---\nname: format\n---\nRun formatter.")
         registry = SkillRegistry()
         count = registry.discover_from_directory(tmp_path)
         assert count == 1
@@ -69,13 +67,13 @@ class TestSkillDiscovery:
 
     def test_no_override_builtin(self, tmp_path):
         """Built-in skills should not be overridden."""
-        (tmp_path / "SKILL.md").write_text(
-            "---\nname: commit\n---\nCustom commit."
-        )
+        (tmp_path / "SKILL.md").write_text("---\nname: commit\n---\nCustom commit.")
         registry = SkillRegistry()
+
         # Register a "builtin" commit skill
         class FakeSkill(MarkdownSkill):
             pass
+
         registry.register(FakeSkill("commit", "built-in", "built-in prompt"))
         count = registry.discover_from_directory(tmp_path)
         assert count == 0  # Should not override

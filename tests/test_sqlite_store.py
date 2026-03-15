@@ -116,9 +116,7 @@ class TestSaveLoad:
         from nemocode.core.sqlite_store import load_session, save_session
 
         s = Session(id="think-1")
-        s.add_assistant(
-            Message(role=Role.ASSISTANT, content="Answer", thinking="Let me think...")
-        )
+        s.add_assistant(Message(role=Role.ASSISTANT, content="Answer", thinking="Let me think..."))
         save_session(s)
 
         loaded = load_session("think-1")

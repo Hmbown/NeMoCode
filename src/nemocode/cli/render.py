@@ -320,9 +320,7 @@ class EventRenderer:
     def _phase(self, event: AgentEvent) -> None:
         self._end_md_stream()
         role = event.role.value if event.role else "agent"
-        self._console.print(
-            f"\n[bold {_NV_GREEN}]━━ {role} ▸ {event.text} ━━[/bold {_NV_GREEN}]"
-        )
+        self._console.print(f"\n[bold {_NV_GREEN}]━━ {role} ▸ {event.text} ━━[/bold {_NV_GREEN}]")
 
     def _tool_call(self, event: AgentEvent) -> None:
         """Handle tool call events — buffer read-only tools, show mutations immediately."""
@@ -342,9 +340,7 @@ class EventRenderer:
             self._stop_thinking()
             self._flush_tool_buffer_if_needed()
             line = format_tool_call(event.tool_name, event.tool_args)
-            self._console.print(
-                f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{line}[/dim]", end=""
-            )
+            self._console.print(f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{line}[/dim]", end="")
 
     def _tool_result(self, event: AgentEvent) -> None:
         """Handle tool result events — buffer read-only results, show mutation results."""
@@ -391,9 +387,7 @@ class EventRenderer:
                 f"{elapsed_str} [red]({error_count} error{err_s})[/red]"
             )
         else:
-            self._console.print(
-                f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{summary}[/dim]{elapsed_str}"
-            )
+            self._console.print(f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{summary}[/dim]{elapsed_str}")
 
         self._tool_buffer.clear()
         # Restart spinner for the next API round
@@ -478,10 +472,7 @@ class EventRenderer:
         else:
             status = format_tool_call(tool_name, tool_args)
 
-        self._thinking_spinner.update(
-            f"  [{_NV_GREEN}]{status}{elapsed_str}…[/{_NV_GREEN}]"
-        )
-
+        self._thinking_spinner.update(f"  [{_NV_GREEN}]{status}{elapsed_str}…[/{_NV_GREEN}]")
 
 
 # ---------------------------------------------------------------------------

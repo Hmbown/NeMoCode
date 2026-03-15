@@ -54,16 +54,22 @@ class TestPermissionEngine:
         assert engine.should_auto_approve("bash_exec", {}) is None
 
     def test_allow_rule(self):
-        engine = PermissionEngine([
-            PermissionRule(tool="bash_exec", action="allow", conditions={"command": "pytest *"}),
-        ])
+        engine = PermissionEngine(
+            [
+                PermissionRule(
+                    tool="bash_exec", action="allow", conditions={"command": "pytest *"}
+                ),
+            ]
+        )
         assert engine.should_auto_approve("bash_exec", {"command": "pytest tests/"}) is True
         assert engine.should_auto_approve("bash_exec", {"command": "rm -rf"}) is None
 
     def test_deny_rule(self):
-        engine = PermissionEngine([
-            PermissionRule(tool="git_commit", action="deny"),
-        ])
+        engine = PermissionEngine(
+            [
+                PermissionRule(tool="git_commit", action="deny"),
+            ]
+        )
         assert engine.should_auto_approve("git_commit", {}) is False
 
     def test_from_config(self):

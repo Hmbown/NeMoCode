@@ -30,9 +30,7 @@ class TestTokenCounting:
     def test_message_with_thinking(self):
         msg = Message(role=Role.ASSISTANT, content="Answer", thinking="Let me think...")
         tokens = estimate_message_tokens(msg)
-        assert tokens > estimate_message_tokens(
-            Message(role=Role.ASSISTANT, content="Answer")
-        )
+        assert tokens > estimate_message_tokens(Message(role=Role.ASSISTANT, content="Answer"))
 
     def test_is_accurate_reports_status(self):
         # is_accurate should return a bool regardless of tiktoken availability

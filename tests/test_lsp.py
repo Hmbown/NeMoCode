@@ -137,9 +137,7 @@ class TestJsonRpcTransport:
         fut = loop.create_future()
         transport._pending[7] = fut
 
-        transport._dispatch(
-            {"id": 7, "error": {"code": -32600, "message": "Invalid request"}}
-        )
+        transport._dispatch({"id": 7, "error": {"code": -32600, "message": "Invalid request"}})
         assert fut.done()
         with pytest.raises(RuntimeError, match="Invalid request"):
             fut.result()
@@ -251,10 +249,7 @@ class TestLSPClient:
         assert LSPClient._extract_hover_text("hello") == "hello"
 
     def test_extract_hover_markup_content(self):
-        assert (
-            LSPClient._extract_hover_text({"kind": "markdown", "value": "**int**"})
-            == "**int**"
-        )
+        assert LSPClient._extract_hover_text({"kind": "markdown", "value": "**int**"}) == "**int**"
 
     def test_extract_hover_list(self):
         result = LSPClient._extract_hover_text(

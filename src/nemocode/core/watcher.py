@@ -190,11 +190,7 @@ class FileWatcher:
         result: dict[str, _FileStat] = {}
         for dirpath, dirnames, filenames in os.walk(self._root):
             # Prune ignored directories in-place
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if not self._is_ignored_dir(d)
-            ]
+            dirnames[:] = [d for d in dirnames if not self._is_ignored_dir(d)]
             for fname in filenames:
                 if self._is_ignored_file(fname):
                     continue
@@ -219,20 +215,14 @@ class FileWatcher:
         for path, stat in new.items():
             prev = old.get(path)
             if prev is None:
-                changes.append(
-                    FileChange(path=path, kind=ChangeKind.CREATED, timestamp=now)
-                )
+                changes.append(FileChange(path=path, kind=ChangeKind.CREATED, timestamp=now))
             elif stat.mtime != prev.mtime or stat.size != prev.size:
-                changes.append(
-                    FileChange(path=path, kind=ChangeKind.MODIFIED, timestamp=now)
-                )
+                changes.append(FileChange(path=path, kind=ChangeKind.MODIFIED, timestamp=now))
 
         # Deletions
         for path in old:
             if path not in new:
-                changes.append(
-                    FileChange(path=path, kind=ChangeKind.DELETED, timestamp=now)
-                )
+                changes.append(FileChange(path=path, kind=ChangeKind.DELETED, timestamp=now))
 
         return changes
 

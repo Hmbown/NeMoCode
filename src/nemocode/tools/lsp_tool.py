@@ -39,9 +39,7 @@ async def _client_for(path: str) -> "LSPClient":  # noqa: F821
 
 @tool(
     name="lsp_diagnostics",
-    description=(
-        "Get diagnostics (errors, warnings) for a file from the language server."
-    ),
+    description=("Get diagnostics (errors, warnings) for a file from the language server."),
     category="lsp",
 )
 async def lsp_diagnostics(path: str) -> str:

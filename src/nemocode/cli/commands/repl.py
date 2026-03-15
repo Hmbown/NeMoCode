@@ -254,8 +254,10 @@ class _InputReader:
         # Token count (after first turn)
         if s.metrics.total_tokens > 0:
             t = s.metrics.total_tokens
-            tok_str = f"{t / 1_000_000:.1f}M" if t >= 1_000_000 else (
-                f"{t / 1_000:.0f}K" if t >= 1_000 else str(t)
+            tok_str = (
+                f"{t / 1_000_000:.1f}M"
+                if t >= 1_000_000
+                else (f"{t / 1_000:.0f}K" if t >= 1_000 else str(t))
             )
             parts.append(f" {tok_str}tok")
 
@@ -286,9 +288,7 @@ class _InputReader:
                     m = self._state.mode
                     colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
                     c = colors.get(m, "ansigreen")
-                    return HTML(
-                        f"\n<{c}><b>[{m}] ▸ </b></{c}>"
-                    )
+                    return HTML(f"\n<{c}><b>[{m}] ▸ </b></{c}>")
 
                 try:
                     return await self._session.prompt_async(_dynamic_prompt)
@@ -795,15 +795,12 @@ class _SlashDispatcher:
 
         try:
             loop = _aio.get_event_loop()
-            result = loop.run_until_complete(
-                self._state.agent.snapshot_mgr.restore_snapshot(arg)
-            )
+            result = loop.run_until_complete(self._state.agent.snapshot_mgr.restore_snapshot(arg))
             if "error" in result:
                 console.print(f"[red]{result['error']}[/red]")
             else:
                 console.print(
-                    f"[green]Reverted to snapshot {result['restored']} "
-                    f"({result['kind']})[/green]"
+                    f"[green]Reverted to snapshot {result['restored']} ({result['kind']})[/green]"
                 )
         except Exception as e:
             console.print(f"[red]Revert failed: {e}[/red]")
@@ -992,9 +989,7 @@ class _TurnRenderer:
                 e = self._tool_error_count
                 parts.append(f"{e} error{'s' if e != 1 else ''}")
             parts.append(f"{elapsed:.1f}s")
-            console.print(
-                f"\n[dim]Done — {' · '.join(parts)}[/dim]"
-            )
+            console.print(f"\n[dim]Done — {' · '.join(parts)}[/dim]")
         self._record_metrics()
 
     def _record_metrics(self) -> None:
@@ -1312,18 +1307,14 @@ async def run_repl(
                 watcher.clear()
                 changed_files = [c.path for c in changes[:10]]
                 kinds = {c.path: c.kind.value for c in changes}
-                change_note = ", ".join(
-                    f"{Path(f).name} ({kinds[f]})" for f in changed_files
-                )
+                change_note = ", ".join(f"{Path(f).name} ({kinds[f]})" for f in changed_files)
                 if len(changes) > 10:
                     change_note += f", ... and {len(changes) - 10} more"
                 stripped = (
                     f"[Note: these files changed externally since last turn: "
                     f"{change_note}]\n\n{stripped}"
                 )
-                console.print(
-                    f"[dim]  {len(changes)} file(s) changed externally[/dim]"
-                )
+                console.print(f"[dim]  {len(changes)} file(s) changed externally[/dim]")
 
             renderer = _TurnRenderer(state)
 

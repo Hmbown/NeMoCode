@@ -41,7 +41,7 @@ class Location:
     def path(self) -> str:
         """Convert file:// URI to a local path."""
         if self.uri.startswith("file://"):
-            return self.uri[len("file://"):]
+            return self.uri[len("file://") :]
         return self.uri
 
 
@@ -60,9 +60,7 @@ class Diagnostic:
 
     @property
     def severity_label(self) -> str:
-        return {1: "error", 2: "warning", 3: "info", 4: "hint"}.get(
-            self.severity, "unknown"
-        )
+        return {1: "error", 2: "warning", 3: "info", 4: "hint"}.get(self.severity, "unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +183,7 @@ class _JsonRpcTransport:
         self._seq += 1
         return self._seq
 
-    async def send_request(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> Any:
+    async def send_request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         """Send a JSON-RPC request and wait for the response."""
         if not self.is_running:
             raise RuntimeError("LSP server is not running")
@@ -211,9 +207,7 @@ class _JsonRpcTransport:
             self._pending.pop(msg_id, None)
             raise
 
-    async def send_notification(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> None:
+    async def send_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
         """Send a JSON-RPC notification (no response expected)."""
         if not self.is_running:
             raise RuntimeError("LSP server is not running")
@@ -319,8 +313,7 @@ class LSPClient:
         server = find_server(language)
         if server is None:
             raise RuntimeError(
-                f"No language server found for {language!r}. "
-                "Install the appropriate server binary."
+                f"No language server found for {language!r}. Install the appropriate server binary."
             )
         binary, args = server
         cmd = [binary, *args]
@@ -372,9 +365,7 @@ class LSPClient:
                     "workspaceFolders": True,
                 },
             },
-            "workspaceFolders": [
-                {"uri": self._root_uri, "name": Path(self._root_uri).name}
-            ],
+            "workspaceFolders": [{"uri": self._root_uri, "name": Path(self._root_uri).name}],
         }
         result = await self._transport.send_request("initialize", params)
         self._server_capabilities = result.get("capabilities", {}) if result else {}
@@ -446,9 +437,7 @@ class LSPClient:
             pass  # Server may not support pull diagnostics
 
         # Fall back to pushed publishDiagnostics notifications
-        notes = self._transport.pop_notifications(
-            "textDocument/publishDiagnostics"
-        )
+        notes = self._transport.pop_notifications("textDocument/publishDiagnostics")
         diagnostics: list[Diagnostic] = []
         for note in notes:
             params = note.get("params", {})
@@ -476,9 +465,7 @@ class LSPClient:
 
     # -- definition ----------------------------------------------------
 
-    async def get_definition(
-        self, file_path: str, line: int, col: int
-    ) -> Location | None:
+    async def get_definition(self, file_path: str, line: int, col: int) -> Location | None:
         """Go to definition for the symbol at the given position."""
         of = await self._ensure_open(file_path)
         result = await self._transport.send_request(
@@ -493,9 +480,7 @@ class LSPClient:
 
     # -- references ----------------------------------------------------
 
-    async def get_references(
-        self, file_path: str, line: int, col: int
-    ) -> list[Location]:
+    async def get_references(self, file_path: str, line: int, col: int) -> list[Location]:
         """Find all references to the symbol at the given position."""
         of = await self._ensure_open(file_path)
         result = await self._transport.send_request(

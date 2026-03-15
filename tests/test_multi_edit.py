@@ -23,10 +23,12 @@ def sample_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_multi_edit_basic(sample_file):
-    edits = json.dumps([
-        {"old_string": "return 1", "new_string": "return 42"},
-        {"old_string": "return 2", "new_string": "return 99"},
-    ])
+    edits = json.dumps(
+        [
+            {"old_string": "return 1", "new_string": "return 42"},
+            {"old_string": "return 2", "new_string": "return 99"},
+        ]
+    )
     result = json.loads(await multi_edit(str(sample_file), edits))
     assert result["status"] == "ok"
     assert result["applied"] == 2
@@ -37,10 +39,12 @@ async def test_multi_edit_basic(sample_file):
 
 @pytest.mark.asyncio
 async def test_multi_edit_partial_failure(sample_file):
-    edits = json.dumps([
-        {"old_string": "return 1", "new_string": "return 42"},
-        {"old_string": "nonexistent", "new_string": "x"},
-    ])
+    edits = json.dumps(
+        [
+            {"old_string": "return 1", "new_string": "return 42"},
+            {"old_string": "nonexistent", "new_string": "x"},
+        ]
+    )
     result = json.loads(await multi_edit(str(sample_file), edits))
     assert result["status"] == "ok"
     assert result["applied"] == 1
@@ -49,9 +53,11 @@ async def test_multi_edit_partial_failure(sample_file):
 
 @pytest.mark.asyncio
 async def test_multi_edit_all_fail(sample_file):
-    edits = json.dumps([
-        {"old_string": "nonexistent", "new_string": "x"},
-    ])
+    edits = json.dumps(
+        [
+            {"old_string": "nonexistent", "new_string": "x"},
+        ]
+    )
     result = json.loads(await multi_edit(str(sample_file), edits))
     assert "error" in result
 

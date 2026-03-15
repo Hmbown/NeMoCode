@@ -30,9 +30,7 @@ logger = logging.getLogger(__name__)
 # Database location
 # ---------------------------------------------------------------------------
 
-_DB_DIR = Path(
-    os.environ.get("NEMOCODE_DATA_DIR", "~/.local/share/nemocode")
-).expanduser()
+_DB_DIR = Path(os.environ.get("NEMOCODE_DATA_DIR", "~/.local/share/nemocode")).expanduser()
 _DB_PATH = _DB_DIR / "sessions.db"
 
 # ---------------------------------------------------------------------------
@@ -177,10 +175,7 @@ def save_session(session: Session, metadata: dict[str, Any] | None = None) -> st
         )
         # Replace all messages for this session
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session.id,))
-        rows = [
-            _message_to_row(msg, session.id, idx)
-            for idx, msg in enumerate(session.messages)
-        ]
+        rows = [_message_to_row(msg, session.id, idx) for idx, msg in enumerate(session.messages)]
         conn.executemany(
             """
             INSERT INTO messages
@@ -200,9 +195,7 @@ def load_session(session_id: str) -> Session | None:
     """Load a session by id, or return None if it does not exist."""
     conn = _get_conn()
     try:
-        row = conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             return None
 
@@ -261,9 +254,7 @@ def delete_session(session_id: str) -> bool:
     """Delete a session and its messages. Returns True if a row was removed."""
     conn = _get_conn()
     try:
-        cursor = conn.execute(
-            "DELETE FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -336,9 +327,7 @@ def migrate_json_sessions(json_dir: Path | None = None) -> int:
                 sid = data.get("id", path.stem)
 
                 # Skip if already migrated
-                exists = conn.execute(
-                    "SELECT 1 FROM sessions WHERE id = ?", (sid,)
-                ).fetchone()
+                exists = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (sid,)).fetchone()
                 if exists:
                     continue
 

@@ -43,6 +43,7 @@ def _try_load_lsp_tools() -> list:
     """Load LSP tools if available. Returns empty list on import failure."""
     try:
         from nemocode.tools.lsp_tool import lsp_diagnostics, lsp_hover, lsp_references
+
         return [lsp_diagnostics, lsp_hover, lsp_references]
     except Exception:
         return []

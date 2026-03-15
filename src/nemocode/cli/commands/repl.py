@@ -90,7 +90,10 @@ class _InputReader:
                 self._session = PromptSession(history=history)
             except Exception:
                 # If history file is unwritable or any other issue, run without history
-                self._session = PromptSession()
+                try:
+                    self._session = PromptSession()
+                except Exception:
+                    pass  # No terminal available (e.g. Windows CI) — fall back to input()
 
     async def read(self, mode: str = "code") -> str | None:
         """Read user input. Returns None on EOF (Ctrl+D). Raises KeyboardInterrupt on Ctrl+C."""

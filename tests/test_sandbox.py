@@ -56,7 +56,8 @@ class TestPathSandbox:
     async def test_edit_outside_project_rejected(self, tmp_path):
         set_project_root(tmp_path)
         # Create a file outside the project
-        outside = Path("/tmp/nemocode_test_outside.txt")
+        import tempfile
+        outside = Path(tempfile.gettempdir()) / "nemocode_test_outside.txt"
         outside.write_text("original")
         try:
             result = await edit_file(str(outside), "original", "modified")

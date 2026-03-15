@@ -11,8 +11,7 @@ import sys
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
-from rich.syntax import Syntax
+from rich.text import Text
 
 from nemocode.core.scheduler import AgentEvent
 from nemocode.workflows.code_agent import CodeAgent
@@ -114,34 +113,47 @@ def _render_event(event: AgentEvent, show_thinking: bool) -> None:
         role_label = event.role.value if event.role else "agent"
         console.print(f"\n[bold blue]--- {role_label}: {event.text} ---[/bold blue]")
     elif event.kind == "tool_call":
-        args_str = json.dumps(event.tool_args, indent=2)
-        if len(args_str) > 1000:
-            args_str = args_str[:1000] + "\n..."
-        console.print(
-            Panel(
-                Syntax(args_str, "json", theme="monokai", word_wrap=True),
-                title=f"[bold cyan]{event.tool_name}[/bold cyan]",
-                border_style="cyan",
-                expand=False,
-                padding=(0, 1),
-            )
-        )
-    elif event.kind == "tool_result":
-        from rich.text import Text
-
-        result = event.tool_result[:2000]
-        style = "red" if event.is_error else "green"
-        if len(result) < 200 and "\n" not in result:
-            console.print(Text(f"  {result}", style=style))
+        args = event.tool_args
+        tool = event.tool_name
+        if tool == "read_file":
+            console.print(f"  [cyan]> read_file[/cyan] {args.get('path', '?')}")
+        elif tool == "write_file":
+            console.print(f"  [cyan]> write_file[/cyan] {args.get('path', '?')}")
+        elif tool == "edit_file":
+            console.print(f"  [cyan]> edit_file[/cyan] {args.get('path', '?')}")
+        elif tool == "bash_exec":
+            cmd = args.get("command", "?")
+            if len(cmd) > 80:
+                cmd = cmd[:77] + "..."
+            console.print(f"  [cyan]> bash_exec[/cyan] {cmd}")
+        elif tool == "list_dir":
+            console.print(f"  [cyan]> list_dir[/cyan] {args.get('path', '.')}")
         else:
-            console.print(
-                Panel(
-                    Text(result, style=style, overflow="fold"),
-                    border_style=style,
-                    expand=False,
-                    padding=(0, 1),
-                )
-            )
+            console.print(f"  [cyan]> {tool}[/cyan]")
+    elif event.kind == "tool_result":
+        result = event.tool_result[:2000]
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict):
+                if "error" in parsed:
+                    console.print(Text(f"    error: {parsed['error']}", style="red"))
+                    return
+                if parsed.get("status") == "ok":
+                    console.print(Text("    ok", style="green"))
+                    return
+                if "exit_code" in parsed:
+                    out = parsed.get("stdout", "").strip()
+                    if parsed["exit_code"] == 0 and out:
+                        for line in out.splitlines()[:10]:
+                            console.print(Text(f"    {line}", style="dim"))
+                        return
+                    elif parsed["exit_code"] == 0:
+                        console.print(Text("    ok", style="green"))
+                        return
+        except (json.JSONDecodeError, ValueError):
+            pass
+        for line in result.splitlines()[:15]:
+            console.print(Text(f"    {line}", style="dim"))
     elif event.kind == "usage":
         u = event.usage
         console.print(

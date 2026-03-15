@@ -25,7 +25,6 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -521,26 +520,44 @@ class _TurnRenderer:
     def _on_tool_call(self, event: AgentEvent) -> None:
         self._tool_call_count += 1
         if self._is_streaming_text:
-            console.print()  # newline after any streamed text
+            console.print()
             self._is_streaming_text = False
 
-        # Build a readable args display
-        args_str = json.dumps(event.tool_args, indent=2)
-        # Truncate very long args to keep the terminal readable
-        if len(args_str) > 1500:
-            args_str = args_str[:1500] + "\n... (truncated)"
-
-        console.print(
-            Panel(
-                Syntax(args_str, "json", theme="monokai", word_wrap=True)
-                if len(args_str) < 1500
-                else Text(args_str, style="dim"),
-                title=f"[bold cyan]{event.tool_name}[/bold cyan]",
-                border_style="cyan",
-                expand=False,
-                padding=(0, 1),
+        # Compact one-line display for common tools
+        args = event.tool_args
+        tool = event.tool_name
+        if tool == "read_file":
+            console.print(f"  [cyan]> read_file[/cyan] {args.get('path', '?')}")
+        elif tool == "write_file":
+            path = args.get("path", "?")
+            size = len(args.get("content", ""))
+            console.print(f"  [cyan]> write_file[/cyan] {path} ({size} chars)")
+        elif tool == "edit_file":
+            console.print(f"  [cyan]> edit_file[/cyan] {args.get('path', '?')}")
+        elif tool == "bash_exec":
+            cmd = args.get("command", "?")
+            if len(cmd) > 80:
+                cmd = cmd[:77] + "..."
+            console.print(f"  [cyan]> bash_exec[/cyan] {cmd}")
+        elif tool == "list_dir":
+            console.print(f"  [cyan]> list_dir[/cyan] {args.get('path', '.')}")
+        elif tool == "search_files":
+            console.print(
+                f"  [cyan]> search_files[/cyan] "
+                f"/{args.get('pattern', '?')}/ in {args.get('path', '.')}"
             )
-        )
+        elif tool in ("git_status", "git_diff", "git_log"):
+            console.print(f"  [cyan]> {tool}[/cyan]")
+        elif tool == "git_commit":
+            msg = args.get("message", "?")
+            if len(msg) > 60:
+                msg = msg[:57] + "..."
+            console.print(f'  [cyan]> git_commit[/cyan] "{msg}"')
+        else:
+            args_str = json.dumps(args)
+            if len(args_str) > 80:
+                args_str = args_str[:77] + "..."
+            console.print(f"  [cyan]> {tool}[/cyan] {args_str}")
 
     def _on_tool_result(self, event: AgentEvent) -> None:
         result_text = event.tool_result
@@ -549,21 +566,60 @@ class _TurnRenderer:
         if is_error:
             self._tool_error_count += 1
 
-        # Truncate very long results
-        if len(result_text) > 3000:
-            result_text = result_text[:3000] + "\n... (truncated)"
+        # Truncate
+        if len(result_text) > 2000:
+            result_text = result_text[:2000] + "\n... (truncated)"
 
-        style = "red" if is_error else "green"
-        label = "Error" if is_error else "Result"
+        style = "red" if is_error else "dim"
 
-        # For short results, inline. For longer ones, use a panel.
-        if len(result_text) < 200 and "\n" not in result_text:
-            console.print(f"  [{style}]{label}: {result_text}[/{style}]")
+        # Try to parse JSON for cleaner display
+        try:
+            parsed = json.loads(result_text)
+            if isinstance(parsed, dict):
+                if "error" in parsed:
+                    console.print(Text(f"    error: {parsed['error']}", style="red"))
+                    return
+                if "status" in parsed and parsed["status"] == "ok":
+                    console.print(Text("    ok", style="green"))
+                    return
+                if "exit_code" in parsed:
+                    code = parsed["exit_code"]
+                    out = parsed.get("stdout", "").strip()
+                    err = parsed.get("stderr", "").strip()
+                    if code == 0 and out:
+                        # Show command output compactly
+                        lines = out.splitlines()
+                        if len(lines) <= 10:
+                            for line in lines:
+                                console.print(Text(f"    {line}", style="dim"))
+                        else:
+                            for line in lines[:8]:
+                                console.print(Text(f"    {line}", style="dim"))
+                            console.print(
+                                Text(
+                                    f"    ... ({len(lines)} lines total)",
+                                    style="dim",
+                                )
+                            )
+                        return
+                    elif code == 0:
+                        console.print(Text("    ok", style="green"))
+                        return
+                    elif err:
+                        console.print(Text(f"    {err[:200]}", style="red"))
+                        return
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fallback: show raw result
+        lines = result_text.splitlines()
+        if len(lines) <= 15:
+            for line in lines[:15]:
+                console.print(Text(f"    {line}", style=style))
         else:
             console.print(
                 Panel(
                     Text(result_text, style=style, overflow="fold"),
-                    title=f"[{style}]{label}[/{style}]",
                     border_style=style,
                     expand=False,
                     padding=(0, 1),

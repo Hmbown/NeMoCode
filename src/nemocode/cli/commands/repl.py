@@ -24,7 +24,6 @@ import time
 from pathlib import Path
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -93,9 +92,9 @@ class _InputReader:
                 # If history file is unwritable or any other issue, run without history
                 self._session = PromptSession()
 
-    async def read(self) -> str | None:
+    async def read(self, mode: str = "code") -> str | None:
         """Read user input. Returns None on EOF (Ctrl+D). Raises KeyboardInterrupt on Ctrl+C."""
-        raw = await self._read_line()
+        raw = await self._read_line(mode)
         if raw is None:
             return None
 
@@ -107,12 +106,16 @@ class _InputReader:
 
         return raw
 
-    async def _read_line(self) -> str | None:
+    async def _read_line(self, mode: str = "code") -> str | None:
         """Read a single line from the user."""
+        mode_colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
+        color = mode_colors.get(mode, "ansigreen")
+        prompt_text = f"<{color}><b>{mode} &gt; </b></{color}>"
+
         if self._session is not None:
             try:
                 return await self._session.prompt_async(
-                    HTML("<ansigreen><b>&gt; </b></ansigreen>"),
+                    HTML(prompt_text),
                 )
             except EOFError:
                 return None
@@ -172,7 +175,13 @@ _HELP_TEXT = """\
   [cyan]/compact[/cyan]            Compact conversation (free context window)
   [cyan]/reset[/cyan]              Reset conversation
   [cyan]/cost[/cyan]               Session cost and token usage
+  [cyan]/mode[/cyan]               Cycle mode: code -> plan -> auto
   [cyan]/quit[/cyan]               Exit
+
+[bold]Modes:[/bold]
+  [green]code[/green]    Ask before tool calls (default)
+  [yellow]plan[/yellow]    Text-only, no tools — just discuss
+  [red]auto[/red]    Auto-approve everything — fast but risky
 
 [bold]Configuration:[/bold]
   [cyan]/endpoint[/cyan]           List endpoints  |  [cyan]/endpoint <name>[/cyan]  Switch
@@ -208,6 +217,8 @@ class _SlashDispatcher:
             "/cost": self._cmd_cost,
             "/endpoint": self._cmd_endpoint,
             "/formation": self._cmd_formation,
+            "/mode": self._cmd_mode,
+            "/tab": self._cmd_mode,
             "/model": self._cmd_model,
             "/hardware": self._cmd_hardware,
             "/quit": self._cmd_quit,
@@ -326,6 +337,13 @@ class _SlashDispatcher:
         console.print(f"[dim]Activated formation: {arg} [{roles}][/dim]")
         return True
 
+    def _cmd_mode(self, _arg: str) -> bool:
+        new_mode = self._state.cycle_mode()
+        self._state.agent = self._state._build_agent()
+        mode_desc = {"code": "ask before tools", "plan": "text only", "auto": "auto-approve"}
+        console.print(f"[dim]Mode: {new_mode} ({mode_desc.get(new_mode, '')})[/dim]")
+        return True
+
     def _cmd_model(self, _arg: str) -> bool:
         ep_name = self._state.config.default_endpoint
         ep = self._state.config.endpoints.get(ep_name)
@@ -393,6 +411,9 @@ class _ReplState:
         self.context_mgr = ContextManager(
             context_window=self._resolve_context_window(),
         )
+        # Mode: "code" (default), "plan" (no tools), "auto" (auto-approve all)
+        self._modes = ["code", "plan", "auto"]
+        self._mode_idx = 0
         self.agent = self._build_agent()
         self._cancelled = False
 
@@ -407,7 +428,10 @@ class _ReplState:
         return 128_000  # conservative default
 
     def _build_agent(self) -> CodeAgent:
-        confirm_fn = _auto_confirm if self.auto_yes else _interactive_confirm
+        if self.auto_yes or self.mode == "auto":
+            confirm_fn = _auto_confirm
+        else:
+            confirm_fn = _interactive_confirm
         return CodeAgent(config=self.config, confirm_fn=confirm_fn)
 
     def rebuild_agent(self) -> None:
@@ -417,6 +441,15 @@ class _ReplState:
         )
         self.agent = self._build_agent()
         self.turn_count = 0
+
+    @property
+    def mode(self) -> str:
+        return self._modes[self._mode_idx]
+
+    def cycle_mode(self) -> str:
+        """Cycle to next mode and return its name."""
+        self._mode_idx = (self._mode_idx + 1) % len(self._modes)
+        return self.mode
 
     @property
     def cancelled(self) -> bool:
@@ -611,20 +644,12 @@ class _TurnRenderer:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Fallback: show raw result
+        # Fallback: show raw result compactly
         lines = result_text.splitlines()
-        if len(lines) <= 15:
-            for line in lines[:15]:
-                console.print(Text(f"    {line}", style=style))
-        else:
-            console.print(
-                Panel(
-                    Text(result_text, style=style, overflow="fold"),
-                    border_style=style,
-                    expand=False,
-                    padding=(0, 1),
-                )
-            )
+        for line in lines[:20]:
+            console.print(Text(f"    {line}", style=style))
+        if len(lines) > 20:
+            console.print(Text(f"    ... ({len(lines)} lines total)", style="dim"))
 
     def _on_usage(self, event: AgentEvent) -> None:
         self._last_usage = event.usage
@@ -805,9 +830,9 @@ def _print_banner(state: _ReplState) -> None:
     cwd = Path.cwd()
     console.print(f"  [bold]Directory:[/bold] {cwd}")
     console.print()
+    console.print('  [dim]Type /help for commands, """ for multi-line.[/dim]')
     console.print(
-        '  [dim]Type /help for commands, """ for multi-line, '
-        "Ctrl+C to cancel, Ctrl+D to exit.[/dim]"
+        "  [dim]Tab to switch modes (code/plan/auto). Ctrl+C to cancel, Ctrl+D to exit.[/dim]"
     )
     console.print(
         "  [dim italic]NeMoCode is a community project, "
@@ -860,7 +885,7 @@ async def run_repl(
     while True:
         # ---- Read input ----
         try:
-            raw_input = await reader.read()
+            raw_input = await reader.read(mode=state.mode)
         except KeyboardInterrupt:
             now = time.time()
             if now - last_interrupt_time < 1.5:

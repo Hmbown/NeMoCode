@@ -29,6 +29,16 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 16384
 
+  # ── Nemotron Nano 9B v2 (lightweight agent) ──────────────────────
+  nim-nano-9b:
+    name: "Nemotron Nano 9B v2 (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nvidia-nemotron-nano-9b-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
   # ── Nemotron 3 Ultra (placeholder — not yet public) ──────────────
   # ~500B total / ~50B active. Repoint when it ships.
   nim-ultra:
@@ -110,6 +120,23 @@ endpoints:
     tier: local-nim
     base_url: "http://localhost:8000/v1"
     model_id: "nvidia/nemotron-3-nano-30b-a3b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── vLLM local endpoints ───────────────────────────────────────
+  local-vllm-nano9b:
+    name: "Local vLLM (Nemotron Nano 9B)"
+    tier: local-vllm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  local-vllm-nano:
+    name: "Local vLLM (Nemotron 3 Nano 30B)"
+    tier: local-vllm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
     capabilities: [chat, code]
     max_tokens: 16384
 

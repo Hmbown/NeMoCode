@@ -1,0 +1,320 @@
+# NeMoCode defaults — Nemotron 3 family
+# All model specs verified against March 2026 NVIDIA releases.
+
+default_endpoint: nim-super
+active_formation: null
+
+# ---------------------------------------------------------------------------
+# Endpoints — Nemotron 3 family + retrieval models
+# ---------------------------------------------------------------------------
+endpoints:
+
+  # ── Nemotron 3 Super (primary workhorse) ──────────────────────────
+  nim-super:
+    name: "Nemotron 3 Super (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nemotron 3 Nano (fast targeted subtasks) ──────────────────────
+  nim-nano:
+    name: "Nemotron 3 Nano (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-3-nano-30b-a3b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nemotron 3 Ultra (placeholder — not yet public) ──────────────
+  # ~500B total / ~50B active. Repoint when it ships.
+  nim-ultra:
+    name: "Nemotron 3 Ultra (placeholder)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-3-ultra"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── Retrieval models ──────────────────────────────────────────────
+  nim-embed:
+    name: "Nemotron Embed 1B v2"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-nemotron-embed-1b-v2"
+    capabilities: [embed]
+
+  nim-rerank:
+    name: "Nemotron Rerank 1B v2"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-nemotron-rerank-1b-v2"
+    capabilities: [rerank]
+
+  nim-parse:
+    name: "Nemotron Parse"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-parse"
+    capabilities: [parse]
+
+  # ── Third-party hosted ────────────────────────────────────────────
+  openrouter-super:
+    name: "Nemotron 3 Super (OpenRouter)"
+    tier: openrouter
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: OPENROUTER_API_KEY
+    model_id: "nvidia/nemotron-3-super-120b-a12b:free"
+    capabilities: [chat, code]
+    max_tokens: 16384
+    extra_headers:
+      HTTP-Referer: "https://github.com/nemocode"
+      X-Title: "NeMoCode"
+
+  together-super:
+    name: "Nemotron 3 Super (Together AI)"
+    tier: inference-partner
+    base_url: "https://api.together.xyz/v1"
+    api_key_env: TOGETHER_API_KEY
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  deepinfra-super:
+    name: "Nemotron 3 Super (DeepInfra)"
+    tier: inference-partner
+    base_url: "https://api.deepinfra.com/v1/openai"
+    api_key_env: DEEPINFRA_API_KEY
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Local deployment ──────────────────────────────────────────────
+  local-nim-super:
+    name: "Local NIM (Super)"
+    tier: local-nim
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  local-nim-nano:
+    name: "Local NIM (Nano)"
+    tier: local-nim
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-nano-30b-a3b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+# ---------------------------------------------------------------------------
+# Manifests — Nemotron 3 architecture specifics
+# ---------------------------------------------------------------------------
+manifests:
+
+  nvidia/nemotron-3-super-120b-a12b:
+    display_name: "Nemotron 3 Super"
+    arch: nemotron-3
+    tier_in_family: super
+    capabilities: [chat, code]
+    context_window: 1048576          # 1M tokens native
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 120
+      active_params_b: 12
+      uses_latent_moe: true          # 4x expert specialization
+      uses_mtp: true                 # Multi-token prediction / native speculative decoding
+      uses_mamba: true               # Hybrid Mamba-Transformer backbone
+      precision: "nvfp4"             # Pretrained in NVFP4 on Blackwell
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      thinking_budget_param: "reasoning_budget"
+      no_think_tag: "/no_think"
+      supports_budget_control: true  # Granular inference-time reasoning budget
+    structured:
+      json_schema: true
+      regex: true
+      choices: true
+    supports_tools: true
+    supports_parallel_tools: false
+    force_nonempty_content: true
+    supports_lora: true
+    recommended_gpu: "B200 / H100"
+    min_gpu_memory_gb: 80
+    min_gpus: 1
+
+  nvidia/nemotron-3-nano-30b-a3b:
+    display_name: "Nemotron 3 Nano"
+    arch: nemotron-3
+    tier_in_family: nano
+    capabilities: [chat, code]
+    context_window: 1048576          # 1M tokens native
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 30
+      active_params_b: 3
+      uses_latent_moe: false
+      uses_mtp: false
+      uses_mamba: true
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      thinking_budget_param: "reasoning_budget"
+      supports_budget_control: true
+    structured:
+      json_schema: true
+      regex: true
+    supports_tools: true
+    supports_lora: true
+    recommended_gpu: "DGX Spark / H100 / B200"
+    min_gpu_memory_gb: 24
+    min_gpus: 1
+
+  nvidia/nemotron-3-ultra:
+    display_name: "Nemotron 3 Ultra (unreleased)"
+    arch: nemotron-3
+    tier_in_family: ultra
+    capabilities: [chat, code]
+    context_window: 1048576
+    max_output_tokens: 32768
+    moe:
+      total_params_b: 500
+      active_params_b: 50
+      uses_latent_moe: true
+      uses_mtp: true
+      uses_mamba: true
+      precision: "nvfp4"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      thinking_budget_param: "reasoning_budget"
+      supports_budget_control: true
+    supports_tools: true
+    min_gpu_memory_gb: 640
+    min_gpus: 8
+    recommended_gpu: "8x H100 / 8x B200"
+
+  nvidia/llama-nemotron-embed-1b-v2:
+    display_name: "Nemotron Embed 1B v2"
+    arch: nemotron-embed
+    tier_in_family: ""
+    capabilities: [embed]
+    context_window: 32768
+    supports_tools: false
+
+  nvidia/llama-nemotron-rerank-1b-v2:
+    display_name: "Nemotron Rerank 1B v2"
+    arch: nemotron-rerank
+    tier_in_family: ""
+    capabilities: [rerank]
+    context_window: 32768
+    supports_tools: false
+
+  nvidia/nemotron-parse:
+    display_name: "Nemotron Parse"
+    arch: nemotron-parse
+    tier_in_family: ""
+    capabilities: [parse]
+    supports_tools: false
+
+# ---------------------------------------------------------------------------
+# Formations — matches NVIDIA's own deployment patterns
+# ---------------------------------------------------------------------------
+formations:
+
+  # Default: Super does everything. The daily driver.
+  solo:
+    name: "Solo"
+    description: "Nemotron 3 Super for day-to-day coding. Single model, full tool use."
+    slots:
+      - role: executor
+        endpoint: nim-super
+    tools: [fs, git, bash, rg]
+    verification_rounds: 0
+
+  # NVIDIA's recommended Super + Nano pattern.
+  # Super handles complex reasoning/planning; Nano handles fast subtasks.
+  super-nano:
+    name: "Super + Nano"
+    description: "Super plans and reviews. Nano executes fast targeted steps."
+    slots:
+      - role: planner
+        endpoint: nim-super
+      - role: fast
+        endpoint: nim-nano
+      - role: executor
+        endpoint: nim-super
+      - role: reviewer
+        endpoint: nim-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Full stack when Ultra ships.
+  ultra-swarm:
+    name: "Ultra Swarm"
+    description: "Ultra plans, Super executes, Ultra reviews. Repoint when Ultra ships."
+    slots:
+      - role: planner
+        endpoint: nim-ultra
+      - role: executor
+        endpoint: nim-super
+      - role: reviewer
+        endpoint: nim-ultra
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Retrieval-augmented coding.
+  retrieval:
+    name: "Retrieval"
+    description: "Embed + rerank + Super for RAG-augmented coding."
+    slots:
+      - role: embed
+        endpoint: nim-embed
+      - role: rerank
+        endpoint: nim-rerank
+      - role: executor
+        endpoint: nim-super
+    tools: [fs, git, bash, rg, http]
+
+  # Document processing.
+  doc-ops:
+    name: "Doc Ops"
+    description: "Parse documents, embed, and reason over them."
+    slots:
+      - role: parse
+        endpoint: nim-parse
+      - role: embed
+        endpoint: nim-embed
+      - role: executor
+        endpoint: nim-super
+    tools: [fs]
+
+  # Local-only: Nano on DGX Spark / workstation.
+  local:
+    name: "Local"
+    description: "Nano on local NIM for air-gapped / offline work."
+    slots:
+      - role: executor
+        endpoint: local-nim-nano
+    tools: [fs, git, bash, rg]
+    verification_rounds: 0
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+permissions:
+  allow_shell: true
+  allow_file_write: true
+  allow_file_delete: false
+  auto_approve_reads: true
+  auto_approve_shell: false
+  require_confirmation: [bash_exec, file_delete, git_commit]

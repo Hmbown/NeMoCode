@@ -1,0 +1,366 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: MIT
+
+"""NIM Chat Completions provider — OpenAI-compatible, manifest-aware.
+
+Handles streaming, tool calling, thinking/reasoning traces, and
+Nemotron 3 specific parameters (enable_thinking, thinking_budget, etc.).
+Includes retry logic with exponential backoff for transient errors.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+from typing import Any, AsyncIterator
+
+import httpx
+
+from nemocode.config.schema import Manifest
+from nemocode.core.streaming import (
+    CompletionResult,
+    Message,
+    Role,
+    StreamChunk,
+    ToolCall,
+)
+from nemocode.providers import NIMProviderBase
+
+logger = logging.getLogger(__name__)
+
+# Retry configuration
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # seconds
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+async def _retry_delay(
+    attempt: int, status_code: int | None = None, retry_after: str | None = None
+) -> float:
+    """Calculate and sleep for the appropriate retry delay.
+
+    Uses Retry-After header if present (for 429), otherwise exponential backoff.
+    """
+    if retry_after and status_code == 429:
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            delay = _RETRY_BASE_DELAY * (2**attempt)
+    else:
+        delay = _RETRY_BASE_DELAY * (2**attempt)
+    # Cap at 30 seconds
+    delay = min(delay, 30.0)
+    logger.info("Retrying in %.1fs (attempt %d/%d)", delay, attempt + 1, _MAX_RETRIES)
+    await asyncio.sleep(delay)
+    return delay
+
+
+def _message_to_dict(msg: Message) -> dict[str, Any]:
+    """Convert a Message to OpenAI-format dict."""
+    d: dict[str, Any] = {"role": msg.role.value}
+
+    if msg.role == Role.TOOL:
+        d["content"] = msg.content
+        d["tool_call_id"] = msg.tool_call_id or ""
+        return d
+
+    if msg.content:
+        d["content"] = msg.content
+    elif msg.role == Role.ASSISTANT:
+        d["content"] = ""
+
+    if msg.tool_calls:
+        d["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.arguments),
+                },
+            }
+            for tc in msg.tool_calls
+        ]
+
+    return d
+
+
+class NIMChatProvider(NIMProviderBase):
+    """OpenAI-compatible chat completions provider for NVIDIA NIM endpoints."""
+
+    def __init__(self, endpoint, manifest: Manifest | None = None,
+                 api_key: str | None = None) -> None:
+        super().__init__(endpoint, api_key)
+        self.manifest = manifest
+
+    def _build_body(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        stream: bool = False,
+        extra_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.endpoint.model_id,
+            "messages": [_message_to_dict(m) for m in messages],
+            "max_tokens": self.endpoint.max_tokens,
+            "stream": stream,
+            "temperature": 0.2,
+            "top_p": 0.95,
+        }
+
+        # Apply manifest reasoning defaults via chat_template_kwargs
+        # NVIDIA NIM expects thinking params inside extra_body.chat_template_kwargs
+        if self.manifest and self.manifest.reasoning.supports_thinking:
+            r = self.manifest.reasoning
+            if r.thinking_param:
+                chat_kwargs = body.setdefault("chat_template_kwargs", {})
+                chat_kwargs[r.thinking_param] = True
+
+        if tools:
+            body["tools"] = tools
+            # Some models need this to generate tool calls alongside content
+            if self.manifest and self.manifest.force_nonempty_content:
+                body["force_nonempty_content"] = True
+
+        # Apply manifest extra body defaults
+        if self.manifest and self.manifest.default_extra_body:
+            body.update(self.manifest.default_extra_body)
+
+        # Apply caller overrides
+        if extra_body:
+            body.update(extra_body)
+
+        return body
+
+    async def stream(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completions, yielding chunks with text, thinking, tool calls, and usage.
+
+        Retries on transient errors (429, 5xx, connection errors) with exponential backoff.
+        """
+        body = self._build_body(messages, tools=tools, stream=True, extra_body=extra_body)
+        url = f"{self._base_url}/chat/completions"
+
+        last_error: str = ""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+                    async with client.stream(
+                        "POST", url, json=body, headers=self._headers()
+                    ) as resp:
+                        if resp.status_code != 200:
+                            error_body = await resp.aread()
+                            error_text = error_body.decode(errors="replace")
+
+                            # Retry on transient status codes
+                            if (
+                                resp.status_code in _RETRYABLE_STATUS_CODES
+                                and attempt < _MAX_RETRIES
+                            ):
+                                retry_after = resp.headers.get("retry-after")
+                                delay = await _retry_delay(attempt, resp.status_code, retry_after)
+                                status_label = {
+                                    429: "Rate limited",
+                                    500: "Server error",
+                                    502: "Bad gateway",
+                                    503: "Service unavailable",
+                                    504: "Gateway timeout",
+                                }.get(resp.status_code, f"HTTP {resp.status_code}")
+                                yield StreamChunk(
+                                    text=f"\n[{status_label}. Retrying in {delay:.0f}s...]\n"
+                                )
+                                continue
+
+                            yield StreamChunk(
+                                text=f"\n[API Error {resp.status_code}]: {error_text}"
+                            )
+                            return
+
+                        # Successful connection — stream the response
+                        async for chunk in self._process_stream(resp):
+                            yield chunk
+                        return  # Successfully completed
+
+            except (
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+                httpx.ConnectTimeout,
+            ) as exc:
+                last_error = str(exc)
+                if attempt < _MAX_RETRIES:
+                    delay = await _retry_delay(attempt)
+                    yield StreamChunk(
+                        text=f"\n[Connection error: {last_error}. Retrying in {delay:.0f}s...]\n"
+                    )
+                    continue
+            except httpx.ReadTimeout:
+                last_error = "Request timed out"
+                if attempt < _MAX_RETRIES:
+                    delay = await _retry_delay(attempt)
+                    yield StreamChunk(text=f"\n[Request timed out. Retrying in {delay:.0f}s...]\n")
+                    continue
+
+        # All retries exhausted
+        yield StreamChunk(text=f"\n[Error after {_MAX_RETRIES} retries: {last_error}]")
+
+    async def _process_stream(self, resp: httpx.Response) -> AsyncIterator[StreamChunk]:
+        """Process SSE lines from a successful streaming response."""
+        tool_call_buffers: dict[int, dict[str, Any]] = {}
+
+        async for line in resp.aiter_lines():
+            # SSE spec: "data:" with or without trailing space
+            if line.startswith("data: "):
+                data = line[6:]
+            elif line.startswith("data:"):
+                data = line[5:].lstrip()
+            else:
+                continue
+            if data.strip() == "[DONE]":
+                break
+            try:
+                chunk_data = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            choices = chunk_data.get("choices", [])
+            if not choices:
+                usage = chunk_data.get("usage")
+                if usage:
+                    yield StreamChunk(usage=usage)
+                continue
+
+            delta = choices[0].get("delta", {})
+            finish = choices[0].get("finish_reason")
+
+            text = delta.get("content", "")
+            thinking = delta.get("reasoning_content", "") or delta.get("thinking", "")
+
+            # Handle streamed tool calls
+            tc_deltas = delta.get("tool_calls", [])
+            for tcd in tc_deltas:
+                idx = tcd.get("index", 0)
+                if idx not in tool_call_buffers:
+                    tool_call_buffers[idx] = {
+                        "id": tcd.get("id", f"tc_{uuid.uuid4().hex[:8]}"),
+                        "name": "",
+                        "arguments": "",
+                    }
+                buf = tool_call_buffers[idx]
+                fn = tcd.get("function", {})
+                if fn.get("name"):
+                    buf["name"] = fn["name"]
+                if fn.get("arguments"):
+                    buf["arguments"] += fn["arguments"]
+
+            if text or thinking:
+                yield StreamChunk(text=text, thinking=thinking)
+
+            if finish:
+                completed_calls = []
+                for buf in tool_call_buffers.values():
+                    try:
+                        args = json.loads(buf["arguments"]) if buf["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {"_raw": buf["arguments"]}
+                    completed_calls.append(
+                        ToolCall(
+                            id=buf["id"],
+                            name=buf["name"],
+                            arguments=args,
+                        )
+                    )
+                usage = chunk_data.get("usage")
+                yield StreamChunk(
+                    tool_calls=completed_calls if completed_calls else [],
+                    usage=usage,
+                    finish_reason=finish,
+                )
+
+    async def complete(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> CompletionResult:
+        """Non-streaming completion with retry logic."""
+        body = self._build_body(messages, tools=tools, stream=False, extra_body=extra_body)
+        url = f"{self._base_url}/chat/completions"
+
+        last_error = ""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+                    resp = await client.post(url, json=body, headers=self._headers())
+
+                    if resp.status_code != 200:
+                        if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                            retry_after = resp.headers.get("retry-after")
+                            await _retry_delay(attempt, resp.status_code, retry_after)
+                            continue
+                        return CompletionResult(
+                            content=f"[API Error {resp.status_code}]: {resp.text}",
+                            finish_reason="error",
+                        )
+                    data = resp.json()
+                    break  # success
+
+            except (
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+            ) as exc:
+                last_error = str(exc)
+                if attempt < _MAX_RETRIES:
+                    await _retry_delay(attempt)
+                    continue
+                return CompletionResult(
+                    content=f"[Connection error after {_MAX_RETRIES} retries: {last_error}]",
+                    finish_reason="error",
+                )
+        else:
+            return CompletionResult(
+                content=f"[Error after {_MAX_RETRIES} retries: {last_error}]",
+                finish_reason="error",
+            )
+
+        choices = data.get("choices", [])
+        choice = choices[0] if choices else {}
+        message = choice.get("message", {})
+
+        tool_calls = []
+        for tc_data in message.get("tool_calls", []):
+            fn = tc_data.get("function", {})
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(
+                ToolCall(
+                    id=tc_data.get("id", ""),
+                    name=fn.get("name", ""),
+                    arguments=args,
+                )
+            )
+
+        return CompletionResult(
+            content=message.get("content", ""),
+            thinking=message.get("reasoning_content", "") or message.get("thinking", ""),
+            tool_calls=tool_calls,
+            usage=data.get("usage", {}),
+            finish_reason=choice.get("finish_reason", ""),
+        )

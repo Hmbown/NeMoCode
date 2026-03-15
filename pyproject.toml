@@ -1,0 +1,77 @@
+[project]
+name = "nemocode"
+version = "0.1.0"
+description = "Terminal-first control plane for NVIDIA Nemotron 3 — agentic coding, RAG, doc-ops, and multi-model formations."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["nvidia", "nemotron", "nim", "agentic-ai", "formations", "nemocode"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "typer>=0.12",
+    "textual>=1.0.0",
+    "rich>=13.0",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "pygments>=2.17",
+    "anyio>=4.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=25.0"]
+voice = ["faster-whisper>=1.0", "sounddevice>=0.4"]
+aiq = ["agentiq>=1.0"]
+speech = ["grpcio>=1.60"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.5",
+    "keyring>=25.0",
+]
+all = [
+    "keyring>=25.0",
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4",
+    "grpcio>=1.60",
+]
+
+[project.urls]
+Homepage = "https://github.com/Hmbown/NeMoCode"
+Repository = "https://github.com/Hmbown/NeMoCode"
+Documentation = "https://github.com/Hmbown/NeMoCode#readme"
+"Bug Tracker" = "https://github.com/Hmbown/NeMoCode/issues"
+
+[project.scripts]
+nemo = "nemocode.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nemocode"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

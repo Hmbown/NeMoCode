@@ -1340,9 +1340,6 @@ async def run_repl(
 
             # Auto-save session after each turn
             _auto_save_session(state)
-
-            # Persistent status bar after every turn
-            _render_status_bar(state)
     finally:
         # Cleanup watcher
         try:

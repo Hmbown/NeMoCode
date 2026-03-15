@@ -213,8 +213,8 @@ class EventRenderer:
         # Collapse thinking trace + stop spinner on first text event
         self._end_think_stream()
         self._stop_thinking()
-        # Show response separator on first text after tools
-        if self._in_tools and not self._showed_response_sep:
+        # Show response separator — always on first text chunk of a turn
+        if not self._showed_response_sep:
             self._show_response_separator()
 
         if self._interactive:
@@ -430,7 +430,8 @@ class EventRenderer:
         self._in_tools = False
         # Flush any buffered tool calls before showing response
         self._flush_tool_buffer_if_needed()
-        self._console.print()  # blank line between tools and response
+        self._console.print()
+        self._console.print(f"[{_NV_GREEN}]nemo ▸[/{_NV_GREEN}]")
 
     def _end_md_stream(self) -> None:
         """Stop markdown streaming and finalize output."""

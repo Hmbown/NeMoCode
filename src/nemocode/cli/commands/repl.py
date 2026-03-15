@@ -94,9 +94,9 @@ class _InputReader:
                 # If history file is unwritable or any other issue, run without history
                 self._session = PromptSession()
 
-    def read(self) -> str | None:
+    async def read(self) -> str | None:
         """Read user input. Returns None on EOF (Ctrl+D). Raises KeyboardInterrupt on Ctrl+C."""
-        raw = self._read_line()
+        raw = await self._read_line()
         if raw is None:
             return None
 
@@ -104,15 +104,15 @@ class _InputReader:
 
         # Multi-line mode: user starts with triple-quote
         if stripped.startswith('"""'):
-            return self._read_multiline(stripped)
+            return await self._read_multiline(stripped)
 
         return raw
 
-    def _read_line(self) -> str | None:
+    async def _read_line(self) -> str | None:
         """Read a single line from the user."""
         if self._session is not None:
             try:
-                return self._session.prompt(
+                return await self._session.prompt_async(
                     HTML("<ansigreen><b>&gt; </b></ansigreen>"),
                 )
             except EOFError:
@@ -124,16 +124,10 @@ class _InputReader:
             except EOFError:
                 return None
 
-    def _read_multiline(self, first_line: str) -> str:
-        """Collect lines until a closing triple-quote is found.
-
-        The opening \"\"\" may have text after it on the same line.
-        The closing \"\"\" must appear at the start of a line (with optional leading whitespace).
-        """
-        # Check if the first line also closes (e.g. \"""some short text\""")
+    async def _read_multiline(self, first_line: str) -> str:
+        """Collect lines until a closing triple-quote is found."""
         after_open = first_line[3:]
         if '"""' in after_open:
-            # Content between the two triple-quotes on the same line
             return after_open[: after_open.index('"""')]
 
         lines: list[str] = []
@@ -143,7 +137,7 @@ class _InputReader:
         while True:
             try:
                 if self._session is not None:
-                    line = self._session.prompt(
+                    line = await self._session.prompt_async(
                         HTML("<ansicyan><b>... </b></ansicyan>"),
                     )
                 else:
@@ -810,7 +804,7 @@ async def run_repl(
     while True:
         # ---- Read input ----
         try:
-            raw_input = reader.read()
+            raw_input = await reader.read()
         except KeyboardInterrupt:
             now = time.time()
             if now - last_interrupt_time < 1.5:

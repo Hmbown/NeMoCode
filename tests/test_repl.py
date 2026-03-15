@@ -89,39 +89,51 @@ class TestInputReader:
                 pass
         return reader
 
-    def test_single_line(self):
+    @pytest.mark.asyncio
+    async def test_single_line(self):
+        from unittest.mock import AsyncMock
+
         reader = _InputReader()
         if reader._session is not None:
-            reader._session.prompt = MagicMock(return_value="hello")
-        result = reader.read()
+            reader._session.prompt_async = AsyncMock(return_value="hello")
+        result = await reader.read()
         assert result == "hello"
 
-    def test_eof_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_eof_returns_none(self):
+        from unittest.mock import AsyncMock
+
         reader = _InputReader()
         if reader._session is not None:
-            reader._session.prompt = MagicMock(side_effect=EOFError)
+            reader._session.prompt_async = AsyncMock(side_effect=EOFError)
         else:
             pytest.skip("prompt_toolkit not available")
-        result = reader.read()
+        result = await reader.read()
         assert result is None
 
-    def test_multiline_detection(self):
+    @pytest.mark.asyncio
+    async def test_multiline_detection(self):
+        from unittest.mock import AsyncMock
+
         reader = _InputReader()
         if reader._session is not None:
-            reader._session.prompt = MagicMock(side_effect=['"""first', "second", '"""'])
+            reader._session.prompt_async = AsyncMock(side_effect=['"""first', "second", '"""'])
         else:
             pytest.skip("prompt_toolkit not available")
-        result = reader.read()
+        result = await reader.read()
         assert "first" in result
         assert "second" in result
 
-    def test_multiline_same_line(self):
+    @pytest.mark.asyncio
+    async def test_multiline_same_line(self):
+        from unittest.mock import AsyncMock
+
         reader = _InputReader()
         if reader._session is not None:
-            reader._session.prompt = MagicMock(return_value='"""short text"""')
+            reader._session.prompt_async = AsyncMock(return_value='"""short text"""')
         else:
             pytest.skip("prompt_toolkit not available")
-        result = reader.read()
+        result = await reader.read()
         assert result == "short text"
 
 

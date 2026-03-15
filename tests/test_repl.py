@@ -96,6 +96,8 @@ class TestInputReader:
         reader = _InputReader()
         if reader._session is not None:
             reader._session.prompt_async = AsyncMock(return_value="hello")
+        else:
+            pytest.skip("prompt_toolkit not available")
         result = await reader.read()
         assert result == "hello"
 

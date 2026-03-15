@@ -46,28 +46,16 @@ def _register_commands() -> None:
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
-    """Launch NeMoCode. Without a subcommand, starts the interactive TUI."""
+    """Launch NeMoCode. Without a subcommand, starts the interactive REPL."""
     if ctx.invoked_subcommand is None:
         from nemocode.core.first_run import check_and_run_first_run
 
         check_and_run_first_run()
-        _launch_tui()
 
+        # Launch the REPL (same as `nemo code` with no args)
+        from nemocode.cli.commands.repl import start_repl
 
-def _launch_tui() -> None:
-    """Launch the interactive TUI."""
-    try:
-        from nemocode.tui.app import NeMoCodeApp
-
-        tui_app = NeMoCodeApp()
-        tui_app.run()
-    except ImportError as e:
-        from rich.console import Console
-
-        console = Console()
-        console.print(f"[red]TUI requires textual: {e}[/red]")
-        console.print("Install with: pip install 'nemocode[dev]'")
-        raise typer.Exit(1)
+        start_repl(endpoint=None, formation=None, think=False, yes=False)
 
 
 _register_commands()

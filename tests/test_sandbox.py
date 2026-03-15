@@ -57,6 +57,7 @@ class TestPathSandbox:
         set_project_root(tmp_path)
         # Create a file outside the project
         import tempfile
+
         outside = Path(tempfile.gettempdir()) / "nemocode_test_outside.txt"
         outside.write_text("original")
         try:

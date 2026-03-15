@@ -33,9 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 keyring = ["keyring>=25.0"]
-voice = ["faster-whisper>=1.0", "sounddevice>=0.4"]
 aiq = ["agentiq>=1.0"]
-speech = ["grpcio>=1.60"]
 tokens = ["tiktoken>=0.7"]
 dev = [
     "pytest>=8.0",
@@ -46,9 +44,6 @@ dev = [
 ]
 all = [
     "keyring>=25.0",
-    "faster-whisper>=1.0",
-    "sounddevice>=0.4",
-    "grpcio>=1.60",
     "tiktoken>=0.7",
 ]
 

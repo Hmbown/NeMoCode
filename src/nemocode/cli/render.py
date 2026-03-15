@@ -972,7 +972,6 @@ def _render_write_preview(con: Console, args: dict) -> None:
         pass
 
 
-# Legacy alias — old code may call this directly
 def render_tool_result(
     con: Console,
     tool_name: str,
@@ -981,5 +980,5 @@ def render_tool_result(
     elapsed: float = 0.0,
     in_multi_tool: bool = False,
 ) -> None:
-    """Legacy entry point — redirects to inline renderer."""
+    """Render a tool result to the console."""
     _render_tool_result_inline(con, tool_name, result, is_error, elapsed, in_multi_tool)

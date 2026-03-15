@@ -22,7 +22,6 @@ def code_cmd(
     endpoint: str = typer.Option(None, "-e", "--endpoint", help="Endpoint override"),
     formation: str = typer.Option(None, "-f", "--formation", help="Formation to use"),
     think: bool = typer.Option(False, "--think", help="Show thinking trace"),
-    voice: bool = typer.Option(False, "--voice", help="Enable voice input (requires microphone)"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Auto-approve all tool calls"),
     tui: bool = typer.Option(False, "--tui", help="Launch full-screen TUI instead of REPL"),
 ) -> None:
@@ -32,15 +31,6 @@ def code_cmd(
     With --tui, launches a full-screen Textual interface instead.
     With a prompt, runs a single one-shot turn and exits.
     """
-    if voice:
-        from nemocode.voice.detector import detect_voice_capabilities
-
-        caps = detect_voice_capabilities()
-        if not caps.available:
-            console.print(f"[yellow]Voice mode unavailable: {caps.reason}[/yellow]")
-            raise typer.Exit(1)
-        console.print(f"[dim]Voice: {caps.reason}[/dim]")
-
     # Read from stdin if piped
     if prompt is None:
         if not sys.stdin.isatty():

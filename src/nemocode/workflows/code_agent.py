@@ -19,7 +19,7 @@ from nemocode.core.registry import Registry
 from nemocode.core.router import get_auto_endpoint, route_to_formation
 from nemocode.core.scheduler import AgentEvent, Scheduler
 from nemocode.core.snapshot import SnapshotManager
-from nemocode.tools.delegate import configure_delegate
+from nemocode.tools.delegate import create_delegate_tool
 from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
@@ -199,9 +199,10 @@ class CodeAgent:
         )
         self._inject_project_context()
 
-        # Configure delegate tool with our registry/config
+        # Register delegate tool bound to our registry/config
         if not read_only:
-            configure_delegate(self._registry, self._config)
+            delegate_def = create_delegate_tool(self._registry, self._config)
+            self._tool_registry.register(delegate_def)
 
     def _inject_project_context(self) -> None:
         """Inject project context, NEMOCODE.md, memory, and git state into the system prompt."""

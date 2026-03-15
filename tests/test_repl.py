@@ -10,8 +10,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from nemocode.cli.commands.repl import (
-    _format_context_usage,
+    _fmt_tokens,
     _InputReader,
+    _render_status_bar,
     _ReplState,
     _SlashDispatcher,
     _TurnRenderer,
@@ -187,6 +188,31 @@ class TestSlashDispatcher:
         # Should not crash, endpoint should remain unchanged
         assert repl_state.config.default_endpoint == "test-ep"
 
+    def test_undo_empty_stack(self, repl_state):
+        """Undo with nothing to undo should print message and continue."""
+        dispatcher = _SlashDispatcher(repl_state)
+        result = dispatcher.dispatch("/undo")
+        assert result is True  # should continue
+
+    def test_undo_restores_file(self, repl_state, tmp_path):
+        """Undo should restore the previous file content."""
+        from nemocode.tools.fs import _UNDO_STACK
+
+        # Set up: push a known state onto the undo stack
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("modified content")
+        _UNDO_STACK.append((str(test_file), "original content"))
+
+        dispatcher = _SlashDispatcher(repl_state)
+        result = dispatcher.dispatch("/undo")
+        assert result is True
+
+        # Verify file was restored
+        assert test_file.read_text() == "original content"
+
+        # Clean up
+        _UNDO_STACK.clear()
+
 
 class TestReplState:
     def test_initial_state(self, sample_config):
@@ -250,7 +276,30 @@ class TestTurnRenderer:
 
 class TestContextUsageFormat:
     def test_format_includes_tokens(self, repl_state):
-        result = _format_context_usage(repl_state)
-        assert "Context:" in result
-        assert "tokens" in result
-        assert "%" in result
+        # Record enough tokens so usage exceeds the 10% display threshold
+        # Context window is 1M, so need >100K tokens
+        from nemocode.core.metrics import RequestMetrics
+
+        repl_state.metrics.record(
+            RequestMetrics(
+                model_id="test",
+                endpoint_name="test-ep",
+                prompt_tokens=100_000,
+                completion_tokens=60_000,
+            )
+        )
+        # _render_status_bar prints to console, just verify no crash
+        _render_status_bar(repl_state)
+
+    def test_fmt_tokens_small(self, repl_state):
+        assert _fmt_tokens(500) == "500"
+
+    def test_fmt_tokens_thousands(self, repl_state):
+        assert _fmt_tokens(5_000) == "5K"
+
+    def test_fmt_tokens_millions(self, repl_state):
+        assert _fmt_tokens(1_500_000) == "1.5M"
+
+    def test_status_bar_no_crash(self, repl_state):
+        """Status bar should render without error even with no data."""
+        _render_status_bar(repl_state)

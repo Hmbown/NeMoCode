@@ -358,8 +358,9 @@ class TestRunFormation:
 class TestSessionPersistenceRoundtrip:
     def test_session_persistence_roundtrip(self, tmp_path: Path):
         """Save a session, load it back, verify all messages match."""
-        # Override the session directory for this test
-        with patch("nemocode.core.persistence._SESSION_DIR", tmp_path):
+        # Override the session directory for this test; disable SQLite to test JSON path
+        with patch("nemocode.core.persistence._SESSION_DIR", tmp_path), \
+             patch("nemocode.core.persistence._USE_SQLITE", False):
             # Create a session with diverse message types
             session = Session(id="roundtrip-test", endpoint_name="nim-super")
             session.add_system("You are a helpful assistant.")

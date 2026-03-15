@@ -6,8 +6,14 @@ Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, 
 
 ## Install
 
+From source (editable):
 ```bash
 pip install -e .
+```
+
+Or from PyPI:
+```bash
+pip install nemocode
 ```
 
 ## Setup

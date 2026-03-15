@@ -155,3 +155,100 @@ class TestFSTools:
         result = await list_dir(str(project_dir))
         assert "README.md" in result
         assert "main.py" in result
+
+    @pytest.mark.asyncio
+    async def test_edit_file_returns_diff(self, tmp_path: Path):
+        test_file = tmp_path / "diff.txt"
+        test_file.write_text("hello world\nfoo bar\n")
+
+        from nemocode.tools.fs import edit_file, set_project_root
+
+        set_project_root(tmp_path)
+        result = await edit_file(str(test_file), "world", "universe")
+        data = json.loads(result)
+        assert data["status"] == "ok"
+        assert "diff" in data
+        assert "-hello world" in data["diff"]
+        assert "+hello universe" in data["diff"]
+
+    @pytest.mark.asyncio
+    async def test_write_file_returns_diff(self, tmp_path: Path):
+        from nemocode.tools.fs import set_project_root, write_file
+
+        set_project_root(tmp_path)
+        target = tmp_path / "new.txt"
+        result = await write_file(str(target), "line1\nline2\n")
+        data = json.loads(result)
+        assert data["status"] == "ok"
+        assert "diff" in data
+        assert "+line1" in data["diff"]
+
+    @pytest.mark.asyncio
+    async def test_write_overwrite_shows_diff(self, tmp_path: Path):
+        from nemocode.tools.fs import set_project_root, write_file
+
+        set_project_root(tmp_path)
+        target = tmp_path / "overwrite.txt"
+        target.write_text("old content\n")
+        result = await write_file(str(target), "new content\n")
+        data = json.loads(result)
+        assert "-old content" in data["diff"]
+        assert "+new content" in data["diff"]
+
+
+class TestUndoSystem:
+    @pytest.mark.asyncio
+    async def test_undo_edit(self, tmp_path: Path):
+        from nemocode.tools.fs import _UNDO_STACK, edit_file, set_project_root, undo_last
+
+        set_project_root(tmp_path)
+        _UNDO_STACK.clear()
+
+        test_file = tmp_path / "undo.txt"
+        test_file.write_text("original")
+
+        await edit_file(str(test_file), "original", "modified")
+        assert test_file.read_text() == "modified"
+        assert len(_UNDO_STACK) == 1
+
+        result = undo_last()
+        assert result["status"] == "ok"
+        assert test_file.read_text() == "original"
+        assert len(_UNDO_STACK) == 0
+
+    @pytest.mark.asyncio
+    async def test_undo_write_new_file(self, tmp_path: Path):
+        from nemocode.tools.fs import _UNDO_STACK, set_project_root, undo_last, write_file
+
+        set_project_root(tmp_path)
+        _UNDO_STACK.clear()
+
+        target = tmp_path / "created.txt"
+        await write_file(str(target), "content")
+        assert target.exists()
+
+        result = undo_last()
+        assert result["action"] == "deleted"
+        assert not target.exists()
+
+    def test_undo_empty_stack(self):
+        from nemocode.tools.fs import _UNDO_STACK, undo_last
+
+        _UNDO_STACK.clear()
+        result = undo_last()
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_undo_stack_limit(self, tmp_path: Path):
+        from nemocode.tools.fs import _MAX_UNDO, _UNDO_STACK, set_project_root, write_file
+
+        set_project_root(tmp_path)
+        _UNDO_STACK.clear()
+
+        # Write more files than the undo limit
+        for i in range(_MAX_UNDO + 5):
+            target = tmp_path / f"file_{i}.txt"
+            await write_file(str(target), f"content {i}")
+
+        assert len(_UNDO_STACK) == _MAX_UNDO
+        _UNDO_STACK.clear()

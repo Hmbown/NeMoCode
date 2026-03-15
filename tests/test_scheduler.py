@@ -116,6 +116,63 @@ class TestScheduler:
         assert len(scheduler._sessions) == 0
 
 
+class TestParallelExecution:
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls(self, scheduler_config):
+        """Multiple tool calls without confirmation should execute in parallel."""
+        from nemocode.core.streaming import ToolCall
+
+        registry = Registry(scheduler_config)
+        tools = load_tools(["fs"])
+
+        # Mock provider that returns two tool calls at once
+        async def mock_stream_with_tools(messages, tools=None, extra_body=None):
+            yield StreamChunk(text="Let me read both files.")
+            yield StreamChunk(
+                tool_calls=[
+                    ToolCall(id="tc1", name="read_file", arguments={"path": "/dev/null"}),
+                    ToolCall(id="tc2", name="list_dir", arguments={"path": "."}),
+                ]
+            )
+            yield StreamChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 50, "completion_tokens": 10},
+            )
+
+        provider = AsyncMock()
+        provider.stream = mock_stream_with_tools
+
+        # Second call: provider returns text only (no more tools)
+        call_count = 0
+
+        async def counting_stream(messages, tools=None, extra_body=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                async for chunk in mock_stream_with_tools(messages, tools, extra_body):
+                    yield chunk
+            else:
+                yield StreamChunk(text="Done.")
+                yield StreamChunk(
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 50, "completion_tokens": 10},
+                )
+
+        provider.stream = counting_stream
+
+        with patch.object(registry, "get_chat_provider", return_value=provider):
+            scheduler = Scheduler(registry, tools)
+            events = []
+            async for ev in scheduler.run_single("test-ep", "Read both"):
+                events.append(ev)
+
+        # Should have 2 tool_call events and 2 tool_result events
+        tool_calls = [e for e in events if e.kind == "tool_call"]
+        tool_results = [e for e in events if e.kind == "tool_result"]
+        assert len(tool_calls) == 2
+        assert len(tool_results) == 2
+
+
 class TestRolePrompts:
     def test_all_roles_have_prompts(self):
         expected = {

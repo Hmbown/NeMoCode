@@ -262,7 +262,7 @@ formations:
     slots:
       - role: executor
         endpoint: nim-super
-    tools: [fs, git, bash, rg]
+    tools: [fs, git, bash, rg, test]
     verification_rounds: 0
 
   # NVIDIA's recommended Super + Nano pattern.

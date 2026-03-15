@@ -169,6 +169,14 @@ class Formation(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class PermissionRuleConfig(BaseModel):
+    """A single permission rule for fine-grained auto-approve/deny."""
+
+    tool: str = "*"
+    action: str = "allow"  # "allow" or "deny"
+    conditions: dict[str, str] = Field(default_factory=dict)
+
+
 class ToolPermissions(BaseModel):
     allow_shell: bool = True
     allow_file_write: bool = True
@@ -178,6 +186,7 @@ class ToolPermissions(BaseModel):
     require_confirmation: list[str] = Field(
         default_factory=lambda: ["bash_exec", "file_delete", "git_commit"]
     )
+    permission_rules: list[PermissionRuleConfig] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +214,28 @@ class MCPConfig(BaseModel):
     servers: list[MCPServerConfig] = Field(default_factory=list)
 
 
+class HooksConfig(BaseModel):
+    """Pre/post tool execution hooks — shell commands with template variables."""
+
+    pre_write_file: list[str] = Field(default_factory=list)
+    post_write_file: list[str] = Field(default_factory=list)
+    pre_bash_exec: list[str] = Field(default_factory=list)
+    post_bash_exec: list[str] = Field(default_factory=list)
+    pre_git_commit: list[str] = Field(default_factory=list)
+    post_git_commit: list[str] = Field(default_factory=list)
+    pre_edit_file: list[str] = Field(default_factory=list)
+    post_edit_file: list[str] = Field(default_factory=list)
+
+    def to_dict(self) -> dict[str, list[str]]:
+        """Convert to flat dict for HookRunner."""
+        d: dict[str, list[str]] = {}
+        for field_name in self.__class__.model_fields:
+            val = getattr(self, field_name)
+            if val:
+                d[field_name] = val
+        return d
+
+
 # ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
@@ -213,9 +244,11 @@ class MCPConfig(BaseModel):
 class NeMoCodeConfig(BaseModel):
     default_endpoint: str = "nim-super"
     active_formation: str | None = None
+    max_tool_rounds: int = 100
     endpoints: dict[str, Endpoint] = Field(default_factory=dict)
     manifests: dict[str, Manifest] = Field(default_factory=dict)
     formations: dict[str, Formation] = Field(default_factory=dict)
     permissions: ToolPermissions = Field(default_factory=ToolPermissions)
     project: ProjectContext = Field(default_factory=ProjectContext)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    hooks: HooksConfig = Field(default_factory=HooksConfig)

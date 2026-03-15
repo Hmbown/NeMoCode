@@ -17,7 +17,6 @@ Uses prompt_toolkit for input when available, falls back to builtin input().
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -25,9 +24,9 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
-from rich.text import Text
 
 from nemocode import __version__
+from nemocode.cli.render import EventRenderer, format_confirm_summary, render_confirm_detail
 from nemocode.config.schema import NeMoCodeConfig
 from nemocode.core.context import ContextManager
 from nemocode.core.metrics import MetricsCollector, RequestMetrics
@@ -47,12 +46,89 @@ console = Console()
 _HAS_PROMPT_TOOLKIT = False
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import Completer, Completion
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import Style
 
     _HAS_PROMPT_TOOLKIT = True
 except ImportError:
     pass
+
+
+# ===================================================================
+# Slash command autocomplete
+# ===================================================================
+
+
+class _SlashCompleter(Completer):
+    """Tab-completion for slash commands and their arguments."""
+
+    def __init__(self, state: _ReplState | None = None) -> None:
+        self._state = state
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+
+        parts = text.split(None, 1)
+        cmd = parts[0]
+
+        if len(parts) == 1 and not text.endswith(" "):
+            # Complete command names
+            for name in _SLASH_COMMANDS:
+                if name.startswith(cmd):
+                    yield Completion(name, start_position=-len(cmd))
+        elif len(parts) >= 1:
+            # Complete arguments
+            arg = parts[1] if len(parts) > 1 else ""
+            cmd_name = parts[0].lower()
+            if cmd_name == "/endpoint" and self._state:
+                for ep in self._state.config.endpoints:
+                    if ep.startswith(arg):
+                        yield Completion(ep, start_position=-len(arg))
+            elif cmd_name == "/formation" and self._state:
+                for f in list(self._state.config.formations) + ["off"]:
+                    if f.startswith(arg):
+                        yield Completion(f, start_position=-len(arg))
+            elif cmd_name == "/resume":
+                try:
+                    from nemocode.core.persistence import list_sessions
+
+                    for s in list_sessions(10):
+                        sid = s["id"]
+                        if sid.startswith(arg):
+                            yield Completion(sid, start_position=-len(arg))
+                except Exception:
+                    pass
+
+
+# All known slash command names (for autocomplete)
+_SLASH_COMMANDS = [
+    "/help",
+    "/think",
+    "/compact",
+    "/reset",
+    "/undo",
+    "/cost",
+    "/endpoint",
+    "/formation",
+    "/mode",
+    "/model",
+    "/hardware",
+    "/doctor",
+    "/resume",
+    "/sessions",
+    "/commit",
+    "/review",
+    "/snapshot",
+    "/snapshots",
+    "/revert",
+    "/quit",
+    "/exit",
+]
 
 
 # ===================================================================
@@ -79,21 +155,111 @@ class _InputReader:
       - Single-line input with prompt
       - Multi-line mode triggered by triple-quote delimiters
       - Command history (when prompt_toolkit is available)
+      - Tab to cycle modes, Escape to clear input
+      - Bottom toolbar with mode and keyboard hints
       - Ctrl+C / Ctrl+D handling
     """
 
-    def __init__(self) -> None:
+    def __init__(self, state: _ReplState | None = None) -> None:
+        self._state = state
         self._session = None
         if _HAS_PROMPT_TOOLKIT:
+            kwargs: dict = {}
+
+            # Only wire up interactive features (keybindings, toolbar) in a real
+            # terminal — prompt_toolkit leaks toolbar text into pipes otherwise.
+            try:
+                _is_tty = os.isatty(0)
+            except (AttributeError, ValueError, OSError):
+                _is_tty = False
+
+            if state is not None and _is_tty:
+                kb = KeyBindings()
+
+                @kb.add("tab")
+                def _tab_cycle(event):
+                    """Cycle mode: code → plan → auto (unless completing a slash cmd)."""
+                    buf = event.app.current_buffer
+                    if buf.text.startswith("/"):
+                        # Let completer handle it
+                        buf.start_completion()
+                        return
+                    state.cycle_mode()
+                    state.agent = state._build_agent()
+                    event.app.invalidate()
+
+                @kb.add("escape")
+                def _esc_clear(event):
+                    """Clear the current input line."""
+                    event.app.current_buffer.text = ""
+                    event.app.current_buffer.cursor_position = 0
+
+                kwargs["key_bindings"] = kb
+                kwargs["bottom_toolbar"] = self._toolbar
+                kwargs["completer"] = _SlashCompleter(state)
+                kwargs["style"] = Style.from_dict(
+                    {
+                        "bottom-toolbar": "bg:#262626 #888888",
+                    }
+                )
+
             try:
                 history = FileHistory(str(_get_history_path()))
-                self._session = PromptSession(history=history)
+                self._session = PromptSession(history=history, **kwargs)
             except Exception:
                 # If history file is unwritable or any other issue, run without history
                 try:
-                    self._session = PromptSession()
+                    self._session = PromptSession(**kwargs)
                 except Exception:
                     pass  # No terminal available (e.g. Windows CI) — fall back to input()
+
+    def _toolbar(self):
+        """Bottom toolbar — always shows mode, endpoint, git branch, context %."""
+        if self._state is None:
+            return ""
+        s = self._state
+
+        parts: list[str] = []
+
+        # Mode indicator (always visible)
+        mode = s.mode
+        mode_colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
+        mc = mode_colors.get(mode, "ansigreen")
+        parts.append(f" <{mc}><b>▸ {mode}</b></{mc}>")
+
+        # Endpoint
+        ep_name = s.config.default_endpoint
+        parts.append(f" <ansicyan>{ep_name}</ansicyan>")
+
+        # Git branch
+        branch = _get_git_branch()
+        if branch:
+            parts.append(f" <ansimagenta>⎇ {branch}</ansimagenta>")
+
+        # Context usage (always visible)
+        try:
+            total_tokens = 0
+            for session in s.agent.sessions.values():
+                total_tokens += s.context_mgr.usage(session.messages)
+            total_tokens = max(total_tokens, s.metrics.total_tokens)
+            ctx_window = s.context_mgr.context_window
+            pct = (total_tokens / ctx_window * 100) if ctx_window > 0 else 0
+            pct_color = "ansired" if pct > 80 else "ansiyellow" if pct > 50 else ""
+            tag = f"<{pct_color}>" if pct_color else ""
+            end_tag = f"</{pct_color}>" if pct_color else ""
+            parts.append(f" {tag}ctx:{pct:.0f}%{end_tag}")
+        except Exception:
+            pass
+
+        # Token count (after first turn)
+        if s.metrics.total_tokens > 0:
+            t = s.metrics.total_tokens
+            tok_str = f"{t / 1_000_000:.1f}M" if t >= 1_000_000 else (
+                f"{t / 1_000:.0f}K" if t >= 1_000 else str(t)
+            )
+            parts.append(f" {tok_str}tok")
+
+        return HTML(" │".join(parts))
 
     async def read(self, mode: str = "code") -> str | None:
         """Read user input. Returns None on EOF (Ctrl+D). Raises KeyboardInterrupt on Ctrl+C."""
@@ -111,18 +277,33 @@ class _InputReader:
 
     async def _read_line(self, mode: str = "code") -> str | None:
         """Read a single line from the user."""
-        mode_colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
-        color = mode_colors.get(mode, "ansigreen")
-        prompt_text = f"<{color}><b>{mode} &gt; </b></{color}>"
-
         if self._session is not None:
-            try:
-                return await self._session.prompt_async(
-                    HTML(prompt_text),
-                )
-            except EOFError:
-                return None
-            # KeyboardInterrupt propagates up intentionally
+            # When state is available, use a callable prompt so Tab updates the
+            # mode label in real time without restarting the prompt.
+            if self._state is not None:
+
+                def _dynamic_prompt():
+                    m = self._state.mode
+                    colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
+                    c = colors.get(m, "ansigreen")
+                    return HTML(
+                        f"\n<{c}><b>[{m}] ▸ </b></{c}>"
+                    )
+
+                try:
+                    return await self._session.prompt_async(_dynamic_prompt)
+                except EOFError:
+                    return None
+                # KeyboardInterrupt propagates up intentionally
+            else:
+                # Static prompt (no state — tests or fallback)
+                mode_colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
+                color = mode_colors.get(mode, "ansigreen")
+                prompt_text = f"<{color}><b>[{mode}] ▸ </b></{color}>"
+                try:
+                    return await self._session.prompt_async(HTML(prompt_text))
+                except EOFError:
+                    return None
         else:
             try:
                 return input("> ")
@@ -171,15 +352,47 @@ class _InputReader:
 # Slash command handling
 # ===================================================================
 
+
+def _get_git_branch() -> str:
+    """Get current git branch name (cached for toolbar)."""
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 _HELP_TEXT = """\
 [bold]Session:[/bold]
   [cyan]/help[/cyan]               Show this help message
   [cyan]/think[/cyan]              Toggle thinking trace display
   [cyan]/compact[/cyan]            Compact conversation (free context window)
   [cyan]/reset[/cyan]              Reset conversation
+  [cyan]/undo[/cyan]               Revert the last file change
   [cyan]/cost[/cyan]               Session cost and token usage
   [cyan]/mode[/cyan]               Cycle mode: code -> plan -> auto
+  [cyan]/doctor[/cyan]             Run diagnostics (API, tools, hardware)
   [cyan]/quit[/cyan]               Exit
+
+[bold]Skills:[/bold]
+  [cyan]/commit[/cyan] [msg]       Generate commit message and commit
+  [cyan]/review[/cyan] [ref]       Review uncommitted changes
+
+[bold]Sessions:[/bold]
+  [cyan]/sessions[/cyan]           List recent sessions
+  [cyan]/resume[/cyan] <id>        Resume a saved session
+
+[bold]Snapshots:[/bold]
+  [cyan]/snapshot[/cyan] [label]   Create a git safety checkpoint
+  [cyan]/snapshots[/cyan]          List available snapshots
+  [cyan]/revert[/cyan] <id|last>   Revert to a snapshot or last change
 
 [bold]Modes:[/bold]
   [green]code[/green]    Ask before tool calls (default)
@@ -194,6 +407,8 @@ _HELP_TEXT = """\
 
 [bold]Input:[/bold]
   Enter              Send message
+  Tab                Cycle mode (or complete /commands)
+  Escape             Clear input line
   \"\"\"...\"\"\"            Multi-line input
   Ctrl+C             Cancel current response
   Ctrl+D             Exit
@@ -217,6 +432,7 @@ class _SlashDispatcher:
             "/think": self._cmd_think,
             "/compact": self._cmd_compact,
             "/reset": self._cmd_reset,
+            "/undo": self._cmd_undo,
             "/cost": self._cmd_cost,
             "/endpoint": self._cmd_endpoint,
             "/formation": self._cmd_formation,
@@ -224,6 +440,14 @@ class _SlashDispatcher:
             "/tab": self._cmd_mode,
             "/model": self._cmd_model,
             "/hardware": self._cmd_hardware,
+            "/doctor": self._cmd_doctor,
+            "/sessions": self._cmd_sessions,
+            "/resume": self._cmd_resume,
+            "/commit": self._cmd_commit,
+            "/review": self._cmd_review,
+            "/snapshot": self._cmd_snapshot,
+            "/revert": self._cmd_revert,
+            "/snapshots": self._cmd_snapshots,
             "/quit": self._cmd_quit,
             "/exit": self._cmd_quit,
             "/q": self._cmd_quit,
@@ -259,6 +483,26 @@ class _SlashDispatcher:
         console.print("[dim]Conversation reset.[/dim]")
         return True
 
+    def _cmd_undo(self, _arg: str) -> bool:
+        from nemocode.tools.fs import undo_last, undo_stack_depth
+
+        depth = undo_stack_depth()
+        if depth == 0:
+            console.print("[dim]Nothing to undo.[/dim]")
+            return True
+
+        result = undo_last()
+        if "error" in result:
+            console.print(f"[red]Undo failed: {result['error']}[/red]")
+        else:
+            action = result.get("action", "reverted")
+            path = result.get("path", "?")
+            remaining = undo_stack_depth()
+            console.print(f"[green]Undo: {action} {path}[/green]")
+            if remaining > 0:
+                console.print(f"[dim]  {remaining} more undo(s) available[/dim]")
+        return True
+
     def _cmd_cost(self, _arg: str) -> bool:
         mc = self._state.metrics
         summary = mc.summary()
@@ -275,6 +519,28 @@ class _SlashDispatcher:
         table.add_row("Session duration", f"{summary['session_duration_s']:.0f}s")
 
         console.print(table)
+
+        # Per-model breakdown (when formations are used)
+        by_model: dict[str, dict[str, float]] = {}
+        for r in mc._requests:
+            model = r.model_id or "unknown"
+            if model not in by_model:
+                by_model[model] = {"prompt": 0, "completion": 0, "cost": 0.0, "requests": 0}
+            by_model[model]["prompt"] += r.prompt_tokens
+            by_model[model]["completion"] += r.completion_tokens
+            by_model[model]["cost"] += r.estimated_cost
+            by_model[model]["requests"] += 1
+
+        if len(by_model) > 1:
+            console.print("\n[bold]By model:[/bold]")
+            for model, stats in by_model.items():
+                p = int(stats["prompt"])
+                c = int(stats["completion"])
+                console.print(
+                    f"  [dim]{model}[/dim]  {p:,}p + {c:,}c"
+                    f"  ${stats['cost']:.6f}  ({int(stats['requests'])} reqs)"
+                )
+
         return True
 
     def _cmd_endpoint(self, arg: str) -> bool:
@@ -388,6 +654,161 @@ class _SlashDispatcher:
             console.print(f"[yellow]Hardware detection failed: {e}[/yellow]")
         return True
 
+    def _cmd_doctor(self, _arg: str) -> bool:
+        from nemocode.core.doctor import run_diagnostics
+
+        report = run_diagnostics(self._state.config)
+        status_icons = {
+            "ok": "[green]OK[/green]",
+            "warn": "[yellow]WARN[/yellow]",
+            "fail": "[red]FAIL[/red]",
+        }
+        console.print("\n[bold]Diagnostics:[/bold]")
+        for check in report.checks:
+            icon = status_icons.get(check.status, "?")
+            detail = f"  [dim]{check.detail}[/dim]" if check.detail else ""
+            console.print(f"  {icon}  {check.name}{detail}")
+        if report.ok:
+            console.print("\n[green]All checks passed.[/green]")
+        else:
+            console.print("\n[yellow]Some checks need attention.[/yellow]")
+        return True
+
+    def _cmd_sessions(self, _arg: str) -> bool:
+        from nemocode.core.persistence import list_sessions
+
+        sessions = list_sessions(limit=10)
+        if not sessions:
+            console.print("[dim]No saved sessions.[/dim]")
+            return True
+        console.print("[bold]Recent sessions:[/bold]")
+        for s in sessions:
+            import datetime
+
+            ts = datetime.datetime.fromtimestamp(s.get("updated_at", 0))
+            msgs = s.get("message_count", 0)
+            sid = s["id"]
+            ep = s.get("endpoint_name", "")
+            console.print(
+                f"  [cyan]{sid}[/cyan]  {msgs} msgs  {ep}  [dim]{ts:%Y-%m-%d %H:%M}[/dim]"
+            )
+        console.print("[dim]Use /resume <id> to load a session.[/dim]")
+        return True
+
+    def _cmd_resume(self, arg: str) -> bool:
+        if not arg:
+            console.print("[yellow]Usage: /resume <session-id>[/yellow]")
+            return True
+        from nemocode.config.schema import FormationRole
+        from nemocode.core.persistence import load_session
+
+        session = load_session(arg)
+        if session is None:
+            console.print(f"[red]Session not found: {arg}[/red]")
+            return True
+
+        # Inject the loaded session into the agent's scheduler
+        self._state.agent._scheduler._sessions[FormationRole.EXECUTOR] = session
+        msg_count = session.message_count()
+        console.print(f"[dim]Resumed session {arg} ({msg_count} messages)[/dim]")
+        return True
+
+    def _cmd_commit(self, arg: str) -> bool:
+        """Run the /commit skill."""
+        self._state._pending_skill = ("commit", arg)
+        return True
+
+    def _cmd_review(self, arg: str) -> bool:
+        """Run the /review skill."""
+        self._state._pending_skill = ("review", arg)
+        return True
+
+    def _cmd_snapshot(self, arg: str) -> bool:
+        """Create a git snapshot for safe rollback."""
+        import asyncio as _aio
+
+        try:
+            loop = _aio.get_event_loop()
+            snap = loop.run_until_complete(
+                self._state.agent.snapshot_mgr.create_snapshot(arg or "manual")
+            )
+            if snap:
+                console.print(
+                    f"[green]Snapshot created: {snap.id} "
+                    f"({snap.files_changed} file{'s' if snap.files_changed != 1 else ''})[/green]"
+                )
+            else:
+                console.print("[dim]No changes to snapshot.[/dim]")
+        except Exception as e:
+            console.print(f"[red]Snapshot failed: {e}[/red]")
+        return True
+
+    def _cmd_snapshots(self, _arg: str) -> bool:
+        """List available snapshots."""
+        import asyncio as _aio
+
+        try:
+            loop = _aio.get_event_loop()
+            snaps = loop.run_until_complete(self._state.agent.snapshot_mgr.list_snapshots())
+            if not snaps:
+                console.print("[dim]No snapshots available.[/dim]")
+                return True
+            console.print("[bold]Snapshots:[/bold]")
+            for s in snaps:
+                import datetime
+
+                ts = datetime.datetime.fromtimestamp(s["timestamp"])
+                console.print(
+                    f"  [cyan]{s['id']}[/cyan]  {s['kind']}  "
+                    f"{s['files_changed']} files  [dim]{ts:%H:%M:%S}[/dim]"
+                )
+            console.print("[dim]Use /revert <id> to restore.[/dim]")
+        except Exception as e:
+            console.print(f"[red]Failed to list snapshots: {e}[/red]")
+        return True
+
+    def _cmd_revert(self, arg: str) -> bool:
+        """Revert to a snapshot or undo the last N changes."""
+        if not arg:
+            console.print("[yellow]Usage: /revert <snapshot-id> or /revert last[/yellow]")
+            return True
+
+        if arg == "last":
+            # Revert the most recent file change
+            from nemocode.tools.fs import undo_last, undo_stack_depth
+
+            if undo_stack_depth() == 0:
+                console.print("[dim]Nothing to revert.[/dim]")
+                return True
+            result = undo_last()
+            if "error" in result:
+                console.print(f"[red]Revert failed: {result['error']}[/red]")
+            else:
+                console.print(
+                    f"[green]Reverted: {result.get('action', 'restored')} "
+                    f"{result.get('path', '?')}[/green]"
+                )
+            return True
+
+        # Try as a snapshot ID
+        import asyncio as _aio
+
+        try:
+            loop = _aio.get_event_loop()
+            result = loop.run_until_complete(
+                self._state.agent.snapshot_mgr.restore_snapshot(arg)
+            )
+            if "error" in result:
+                console.print(f"[red]{result['error']}[/red]")
+            else:
+                console.print(
+                    f"[green]Reverted to snapshot {result['restored']} "
+                    f"({result['kind']})[/green]"
+                )
+        except Exception as e:
+            console.print(f"[red]Revert failed: {e}[/red]")
+        return True
+
     def _cmd_quit(self, _arg: str) -> bool:
         return False
 
@@ -419,6 +840,8 @@ class _ReplState:
         self._mode_idx = 0
         self.agent = self._build_agent()
         self._cancelled = False
+        self._pending_skill: tuple[str, str] | None = None
+        self._auto_approve_remaining = False
 
     def _resolve_context_window(self) -> int:
         """Determine context window size from manifest or default."""
@@ -435,7 +858,11 @@ class _ReplState:
             confirm_fn = _auto_confirm
         else:
             confirm_fn = _interactive_confirm
-        return CodeAgent(config=self.config, confirm_fn=confirm_fn)
+        return CodeAgent(
+            config=self.config,
+            confirm_fn=confirm_fn,
+            read_only=(self.mode == "plan"),
+        )
 
     def rebuild_agent(self) -> None:
         """Rebuild the agent after config changes (endpoint/formation switch)."""
@@ -474,16 +901,32 @@ async def _auto_confirm(tool_name: str, args: dict) -> bool:
     return True
 
 
+# Module-level flag for auto-approve-remaining (set by 'a' response)
+_auto_approve_remaining = False
+
+
 async def _interactive_confirm(tool_name: str, args: dict) -> bool:
-    """Ask user for confirmation before executing a tool."""
-    args_preview = json.dumps(args, indent=2)[:500]
+    """Ask user for confirmation before executing a tool.
+
+    Responses: y=yes, n=no, a=auto-approve all remaining this turn.
+    """
+    global _auto_approve_remaining
+    if _auto_approve_remaining:
+        return True
+
+    summary = format_confirm_summary(tool_name, args)
     console.print(f"\n[yellow]Allow [bold]{tool_name}[/bold]?[/yellow]")
-    console.print(f"[dim]{args_preview}[/dim]")
+    console.print(f"[dim]  {summary}[/dim]")
+    render_confirm_detail(console, tool_name, args)
     try:
-        response = console.input("[yellow]  [y/N]: [/yellow]")
+        response = console.input("[yellow]  [y/N/a(ll)]: [/yellow]")
     except (EOFError, KeyboardInterrupt):
         return False
-    return response.strip().lower() in ("y", "yes")
+    choice = response.strip().lower()
+    if choice in ("a", "all"):
+        _auto_approve_remaining = True
+        return True
+    return choice in ("y", "yes")
 
 
 # ===================================================================
@@ -494,16 +937,15 @@ async def _interactive_confirm(tool_name: str, args: dict) -> bool:
 class _TurnRenderer:
     """Renders AgentEvents for a single conversation turn.
 
-    Accumulates text and thinking tokens, then renders the final
-    assistant message as Markdown when the turn completes.
-    Streams tool calls/results immediately as they arrive.
+    Delegates display to the shared EventRenderer while tracking
+    metrics (token counts, TTFT, tool call/error counts) locally.
     """
 
     def __init__(self, state: _ReplState) -> None:
         self._state = state
+        self._renderer = EventRenderer(console, show_thinking=state.show_thinking)
         self._text_buf: str = ""
         self._think_buf: str = ""
-        self._is_streaming_text: bool = False
         self._last_usage: dict[str, int] = {}
         self._tool_call_count: int = 0
         self._tool_error_count: int = 0
@@ -511,168 +953,49 @@ class _TurnRenderer:
         self._first_token_time: float | None = None
         self._current_model_id: str = ""
 
+    def start_thinking(self, phrase: str) -> None:
+        """Start the thinking spinner via the inner EventRenderer."""
+        self._renderer.start_thinking(phrase)
+
     def render_event(self, event: AgentEvent) -> None:
-        """Render a single event. Called for each event from the agent loop."""
+        """Track metrics and delegate display to the shared renderer."""
+        # Track metrics per event type
         if event.kind == "text":
-            self._on_text(event)
+            if self._first_token_time is None:
+                self._first_token_time = time.time()
+            self._text_buf += event.text
         elif event.kind == "thinking":
-            self._on_thinking(event)
-        elif event.kind == "phase":
-            self._on_phase(event)
+            self._think_buf += event.thinking
         elif event.kind == "tool_call":
-            self._on_tool_call(event)
-        elif event.kind == "tool_result":
-            self._on_tool_result(event)
+            self._tool_call_count += 1
+        elif event.kind == "tool_result" and event.is_error:
+            self._tool_error_count += 1
         elif event.kind == "usage":
-            self._on_usage(event)
-        elif event.kind == "error":
-            self._on_error(event)
+            self._last_usage = event.usage
+            ep_name = self._state.config.default_endpoint
+            ep = self._state.config.endpoints.get(ep_name)
+            if ep:
+                self._current_model_id = ep.model_id
+
+        # Delegate display
+        self._renderer.render(event)
 
     def finalize(self) -> None:
-        """Called when the turn is complete. Renders accumulated Markdown and usage summary."""
-        if self._text_buf.strip():
-            self._flush_streaming_text()
-        self._record_metrics()
-
-    def _on_text(self, event: AgentEvent) -> None:
-        if self._first_token_time is None:
-            self._first_token_time = time.time()
-        self._text_buf += event.text
-        console.print(event.text, end="", highlight=False)
-        self._is_streaming_text = True
-
-    def _on_thinking(self, event: AgentEvent) -> None:
-        self._think_buf += event.thinking
-        if self._state.show_thinking:
-            console.print(event.thinking, end="", style="dim")
-
-    def _on_phase(self, event: AgentEvent) -> None:
-        if self._is_streaming_text:
-            console.print()  # newline after streamed text
-            self._is_streaming_text = False
-        role_label = event.role.value if event.role else "agent"
-        console.print(f"\n[bold blue]--- {role_label}: {event.text} ---[/bold blue]")
-
-    def _on_tool_call(self, event: AgentEvent) -> None:
-        self._tool_call_count += 1
-        if self._is_streaming_text:
-            console.print()
-            self._is_streaming_text = False
-
-        # Compact one-line display for common tools
-        args = event.tool_args
-        tool = event.tool_name
-        if tool == "read_file":
-            console.print(f"  [cyan]> read_file[/cyan] {args.get('path', '?')}")
-        elif tool == "write_file":
-            path = args.get("path", "?")
-            size = len(args.get("content", ""))
-            console.print(f"  [cyan]> write_file[/cyan] {path} ({size} chars)")
-        elif tool == "edit_file":
-            console.print(f"  [cyan]> edit_file[/cyan] {args.get('path', '?')}")
-        elif tool == "bash_exec":
-            cmd = args.get("command", "?")
-            if len(cmd) > 80:
-                cmd = cmd[:77] + "..."
-            console.print(f"  [cyan]> bash_exec[/cyan] {cmd}")
-        elif tool == "list_dir":
-            console.print(f"  [cyan]> list_dir[/cyan] {args.get('path', '.')}")
-        elif tool == "search_files":
+        """Flush pending output and record metrics."""
+        self._renderer.flush()
+        # If the model did tool work but produced no text, show a summary
+        if not self._text_buf.strip() and self._tool_call_count > 0:
+            elapsed = time.time() - self._turn_start
+            n = self._tool_call_count
+            parts = [f"{n} tool call{'s' if n != 1 else ''}"]
+            if self._tool_error_count:
+                e = self._tool_error_count
+                parts.append(f"{e} error{'s' if e != 1 else ''}")
+            parts.append(f"{elapsed:.1f}s")
             console.print(
-                f"  [cyan]> search_files[/cyan] "
-                f"/{args.get('pattern', '?')}/ in {args.get('path', '.')}"
+                f"\n[dim]Done — {' · '.join(parts)}[/dim]"
             )
-        elif tool in ("git_status", "git_diff", "git_log"):
-            console.print(f"  [cyan]> {tool}[/cyan]")
-        elif tool == "git_commit":
-            msg = args.get("message", "?")
-            if len(msg) > 60:
-                msg = msg[:57] + "..."
-            console.print(f'  [cyan]> git_commit[/cyan] "{msg}"')
-        else:
-            args_str = json.dumps(args)
-            if len(args_str) > 80:
-                args_str = args_str[:77] + "..."
-            console.print(f"  [cyan]> {tool}[/cyan] {args_str}")
-
-    def _on_tool_result(self, event: AgentEvent) -> None:
-        result_text = event.tool_result
-        is_error = event.is_error
-
-        if is_error:
-            self._tool_error_count += 1
-
-        # Truncate
-        if len(result_text) > 2000:
-            result_text = result_text[:2000] + "\n... (truncated)"
-
-        style = "red" if is_error else "dim"
-
-        # Try to parse JSON for cleaner display
-        try:
-            parsed = json.loads(result_text)
-            if isinstance(parsed, dict):
-                if "error" in parsed:
-                    console.print(Text(f"    error: {parsed['error']}", style="red"))
-                    return
-                if "status" in parsed and parsed["status"] == "ok":
-                    console.print(Text("    ok", style="green"))
-                    return
-                if "exit_code" in parsed:
-                    code = parsed["exit_code"]
-                    out = parsed.get("stdout", "").strip()
-                    err = parsed.get("stderr", "").strip()
-                    if code == 0 and out:
-                        # Show command output compactly
-                        lines = out.splitlines()
-                        if len(lines) <= 10:
-                            for line in lines:
-                                console.print(Text(f"    {line}", style="dim"))
-                        else:
-                            for line in lines[:8]:
-                                console.print(Text(f"    {line}", style="dim"))
-                            console.print(
-                                Text(
-                                    f"    ... ({len(lines)} lines total)",
-                                    style="dim",
-                                )
-                            )
-                        return
-                    elif code == 0:
-                        console.print(Text("    ok", style="green"))
-                        return
-                    elif err:
-                        console.print(Text(f"    {err[:200]}", style="red"))
-                        return
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Fallback: show raw result compactly
-        lines = result_text.splitlines()
-        for line in lines[:20]:
-            console.print(Text(f"    {line}", style=style))
-        if len(lines) > 20:
-            console.print(Text(f"    ... ({len(lines)} lines total)", style="dim"))
-
-    def _on_usage(self, event: AgentEvent) -> None:
-        self._last_usage = event.usage
-        # Resolve model ID for cost tracking from the endpoint config
-        ep_name = self._state.config.default_endpoint
-        ep = self._state.config.endpoints.get(ep_name)
-        if ep:
-            self._current_model_id = ep.model_id
-
-    def _on_error(self, event: AgentEvent) -> None:
-        if self._is_streaming_text:
-            console.print()
-            self._is_streaming_text = False
-        console.print(f"\n[bold red]Error: {event.text}[/bold red]")
-
-    def _flush_streaming_text(self) -> None:
-        """Ensure a newline after streamed text output."""
-        if self._is_streaming_text:
-            console.print()  # final newline
-            self._is_streaming_text = False
+        self._record_metrics()
 
     def _record_metrics(self) -> None:
         """Record metrics for this turn into the collector."""
@@ -701,42 +1024,64 @@ class _TurnRenderer:
 # ===================================================================
 
 
-def _format_context_usage(state: _ReplState) -> str:
-    """Build a context usage string like: [Context: 45K / 128K tokens (35.2%)]"""
-    # Estimate from session messages if accessible; fall back to cumulative usage
+def _fmt_tokens(n: int) -> str:
+    """Format token count with K/M suffixes."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    elif n >= 1_000:
+        return f"{n / 1_000:.0f}K"
+    return str(n)
+
+
+def _render_status_bar(state: _ReplState) -> None:
+    """Print a persistent status bar after each turn.
+
+    Always visible — shows mode, endpoint, git branch, context %, tokens, cost.
+    Uses a dim background strip so it reads as a status bar, not just text.
+    """
+    parts: list[str] = []
+
+    # Mode
+    mode = state.mode
+    mode_colors = {"code": "green", "plan": "yellow", "auto": "red"}
+    mc = mode_colors.get(mode, "green")
+    parts.append(f"[bold {mc}]▸ {mode}[/bold {mc}]")
+
+    # Endpoint
+    parts.append(f"[cyan]{state.config.default_endpoint}[/cyan]")
+
+    # Git branch
+    branch = _get_git_branch()
+    if branch:
+        parts.append(f"[magenta]⎇ {branch}[/magenta]")
+
+    # Context usage
+    total_tokens = 0
     try:
-        sessions = state.agent.sessions
-        total_tokens = 0
-        for session in sessions.values():
+        for session in state.agent.sessions.values():
             total_tokens += state.context_mgr.usage(session.messages)
     except Exception:
-        # If we can't access internals, use the metrics collector
-        total_tokens = state.metrics.total_tokens
-
+        pass
+    total_tokens = max(total_tokens, state.metrics.total_tokens)
     ctx_window = state.context_mgr.context_window
-    fraction = total_tokens / ctx_window if ctx_window > 0 else 0.0
-    pct = fraction * 100
+    pct = (total_tokens / ctx_window * 100) if ctx_window > 0 else 0
 
-    # Format token counts with K/M suffixes for readability
-    def _fmt_tokens(n: int) -> str:
-        if n >= 1_000_000:
-            return f"{n / 1_000_000:.1f}M"
-        elif n >= 1_000:
-            return f"{n / 1_000:.0f}K"
-        return str(n)
+    pct_color = "red" if pct > 80 else "yellow" if pct > 50 else "dim"
+    parts.append(f"[{pct_color}]ctx:{pct:.0f}%[/{pct_color}]")
 
-    used_str = _fmt_tokens(total_tokens)
-    window_str = _fmt_tokens(ctx_window)
+    # Tokens used
+    if total_tokens > 0:
+        parts.append(f"[dim]{_fmt_tokens(total_tokens)}tok[/dim]")
 
-    # Color based on usage level
-    if pct > 80:
-        color = "red"
-    elif pct > 50:
-        color = "yellow"
-    else:
-        color = "dim"
+    # Cost
+    total_cost = state.metrics.total_cost
+    if total_cost > 0:
+        parts.append(f"[dim]${total_cost:.4f}[/dim]")
 
-    return f"[{color}][Context: {used_str} / {window_str} tokens ({pct:.1f}%)][/{color}]"
+    bar = "  │  ".join(parts)
+    console.print("[dim]─[/dim]")
+    console.print(f"  {bar}")
+    console.print("[dim]─[/dim]")
 
 
 # ===================================================================
@@ -785,62 +1130,49 @@ def _auto_save_session(state: _ReplState) -> None:
 
 _NVIDIA_GREEN = "bright_green"
 
-_ASCII_LOGO = r"""[bright_green]
- _   _       __  __        ____          _
-| \ | | ___ |  \/  | ___  / ___|___   __| | ___
-|  \| |/ _ \| |\/| |/ _ \| |   / _ \ / _` |/ _ \
-| |\  |  __/| |  | | (_) | |__| (_) | (_| |  __/
-|_| \_|\___||_|  |_|\___/ \____\___/ \__,_|\___|[/bright_green]"""
-
 
 def _print_banner(state: _ReplState) -> None:
-    """Print the NVIDIA-themed welcome banner."""
+    """Print a clean NVIDIA-themed welcome banner."""
+    from rich.panel import Panel
+    from rich.text import Text
+
     ep_name = state.config.default_endpoint
     ep = state.config.endpoints.get(ep_name)
     model_id = ep.model_id if ep else "unknown"
     formation = state.config.active_formation
 
-    # Resolve model display info
     manifest = state.config.manifests.get(model_id) if ep else None
     model_display = manifest.display_name if manifest else model_id
-    ctx_display = f"{manifest.context_window:,}" if manifest else "128K"
-    arch_info = ""
-    if manifest and manifest.moe.total_params_b:
-        arch_info = (
-            f"{manifest.moe.active_params_b:.0f}B active / {manifest.moe.total_params_b:.0f}B total"
-        )
+    if manifest:
+        cw = manifest.context_window
+        ctx_k = f"{cw // 1_000_000}M" if cw >= 1_000_000 else f"{cw // 1000}K"
+    else:
+        ctx_k = "128K"
 
-    console.print(_ASCII_LOGO)
-    console.print()
+    formation_str = f"  ▸ {formation}" if formation else ""
 
-    # Status info
-    console.print(
-        f"  [bold bright_green]v{__version__}[/bold bright_green]"
-        f"  [dim]Powered by NVIDIA Nemotron 3[/dim]"
+    # Clean NVIDIA-style banner — angular accents, spaced typography
+    content = Text()
+    content.append("\n")
+    content.append("  ▸▸  ", style=f"bold {_NVIDIA_GREEN}")
+    content.append("N e M o C o d e", style=f"bold {_NVIDIA_GREEN}")
+    content.append("\n")
+    content.append("      ━━━━━━━━━━━━━━━━━━━━━━━", style=_NVIDIA_GREEN)
+    content.append("\n\n")
+    content.append(f"      v{__version__}  ", style="dim")
+    content.append(model_display, style="bold")
+    content.append(f"  {ep_name}  {ctx_k} ctx{formation_str}\n", style="dim")
+    content.append(f"      {Path.cwd()}\n", style="dim")
+    content.append("\n")
+    content.append('      /help · """ for multi-line · Tab: mode · Ctrl+D: exit\n', style="dim")
+
+    panel = Panel(
+        content,
+        border_style=_NVIDIA_GREEN,
+        padding=(0, 1),
     )
     console.print()
-    console.print(
-        f"  [bold]Model:[/bold]     {model_display}"
-        + (f"  [dim]({arch_info})[/dim]" if arch_info else "")
-    )
-    console.print(f"  [bold]Endpoint:[/bold]  {ep_name}  [dim]context: {ctx_display} tokens[/dim]")
-
-    if formation:
-        f_config = state.config.formations.get(formation)
-        roles = ", ".join(s.role.value for s in f_config.slots) if f_config else "?"
-        console.print(f"  [bold]Formation:[/bold] {formation}  [dim][{roles}][/dim]")
-
-    cwd = Path.cwd()
-    console.print(f"  [bold]Directory:[/bold] {cwd}")
-    console.print()
-    console.print('  [dim]Type /help for commands, """ for multi-line.[/dim]')
-    console.print(
-        "  [dim]Tab to switch modes (code/plan/auto). Ctrl+C to cancel, Ctrl+D to exit.[/dim]"
-    )
-    console.print(
-        "  [dim italic]NeMoCode is a community project, "
-        "not an official NVIDIA product.[/dim italic]"
-    )
+    console.print(panel)
     console.print()
 
 
@@ -872,74 +1204,157 @@ async def run_repl(
         show_thinking=show_thinking,
         auto_yes=auto_yes,
     )
-    reader = _InputReader()
+    reader = _InputReader(state)
     commands = _SlashDispatcher(state)
+
+    # Initialize skills
+    from nemocode.skills import create_default_registry
+
+    skills = create_default_registry()
 
     # Check first-run / missing API key
     from nemocode.core.first_run import check_and_run_first_run
 
     check_and_run_first_run()
 
+    # Initialize MCP servers
+    if config.mcp.servers:
+        try:
+            await state.agent.init_mcp()
+        except Exception as e:
+            logger.debug("MCP init failed: %s", e)
+
+    # Register the clarify callback so ask_user works interactively
+    from nemocode.tools.clarify import set_ask_fn
+
+    async def _ask_user_interactive(question: str, options: list[str]) -> str:
+        console.print(f"\n[bold yellow]Agent question:[/bold yellow] {question}")
+        if options:
+            console.print(f"[dim]  Options: {', '.join(options)}[/dim]")
+        try:
+            answer = console.input("[yellow]  Your answer: [/yellow]")
+            return answer.strip()
+        except (EOFError, KeyboardInterrupt):
+            return "(no answer)"
+
+    set_ask_fn(_ask_user_interactive)
+
+    # Start file watcher for external change detection
+    from nemocode.core.watcher import FileWatcher
+
+    watcher = FileWatcher(Path.cwd())
+    await watcher.start()
+
     _print_banner(state)
 
     # Track Ctrl+C at prompt: two in quick succession means exit
     last_interrupt_time: float = 0.0
 
-    while True:
-        # ---- Read input ----
-        try:
-            raw_input = await reader.read(mode=state.mode)
-        except KeyboardInterrupt:
-            now = time.time()
-            if now - last_interrupt_time < 1.5:
-                # Two Ctrl+C within 1.5 seconds => exit
+    try:
+        while True:
+            # ---- Read input ----
+            try:
+                raw_input = await reader.read(mode=state.mode)
+            except KeyboardInterrupt:
+                now = time.time()
+                if now - last_interrupt_time < 1.5:
+                    # Two Ctrl+C within 1.5 seconds => exit
+                    console.print("\n[dim]Goodbye.[/dim]")
+                    return
+                last_interrupt_time = now
+                console.print("\n[dim]Press Ctrl+C again to exit, or type /quit.[/dim]")
+                continue
+
+            # Ctrl+D (EOF)
+            if raw_input is None:
                 console.print("\n[dim]Goodbye.[/dim]")
                 return
-            last_interrupt_time = now
-            console.print("\n[dim]Press Ctrl+C again to exit, or type /quit.[/dim]")
-            continue
 
-        # Ctrl+D (EOF)
-        if raw_input is None:
-            console.print("\n[dim]Goodbye.[/dim]")
-            return
+            stripped = raw_input.strip()
 
-        stripped = raw_input.strip()
+            # Empty input: ignore
+            if not stripped:
+                continue
 
-        # Empty input: ignore
-        if not stripped:
-            continue
+            # Slash commands
+            if stripped.startswith("/"):
+                should_continue = commands.dispatch(stripped)
+                if not should_continue:
+                    console.print("[dim]Goodbye.[/dim]")
+                    return
 
-        # Slash commands
-        if stripped.startswith("/"):
-            should_continue = commands.dispatch(stripped)
-            if not should_continue:
-                console.print("[dim]Goodbye.[/dim]")
-                return
-            continue
+                # Check for pending skill execution
+                if state._pending_skill:
+                    skill_name, skill_arg = state._pending_skill
+                    state._pending_skill = None
+                    skill = skills.get(skill_name)
+                    if skill:
+                        try:
+                            result = await skill.run(
+                                skill_arg,
+                                {"config": config, "agent": state.agent, "console": console},
+                            )
+                            if result:
+                                console.print(f"[dim]{result}[/dim]")
+                        except Exception as e:
+                            console.print(f"[red]Skill error: {e}[/red]")
+                continue
 
-        # ---- Execute turn ----
-        state.turn_count += 1
-        state.clear_cancel()
-        renderer = _TurnRenderer(state)
+            # ---- Execute turn ----
+            global _auto_approve_remaining
+            _auto_approve_remaining = False  # Reset per-turn auto-approve
+            state.turn_count += 1
+            state.clear_cancel()
 
+            # Check for external file changes and prepend to input
+            changes = watcher.get_changes()
+            if changes:
+                watcher.clear()
+                changed_files = [c.path for c in changes[:10]]
+                kinds = {c.path: c.kind.value for c in changes}
+                change_note = ", ".join(
+                    f"{Path(f).name} ({kinds[f]})" for f in changed_files
+                )
+                if len(changes) > 10:
+                    change_note += f", ... and {len(changes) - 10} more"
+                stripped = (
+                    f"[Note: these files changed externally since last turn: "
+                    f"{change_note}]\n\n{stripped}"
+                )
+                console.print(
+                    f"[dim]  {len(changes)} file(s) changed externally[/dim]"
+                )
+
+            renderer = _TurnRenderer(state)
+
+            try:
+                await _run_turn(state, stripped, renderer)
+            except KeyboardInterrupt:
+                # Ctrl+C during streaming — the turn is cancelled but the session continues
+                console.print("\n[dim]Turn cancelled.[/dim]")
+            except Exception as exc:
+                logger.exception("Unexpected error during turn")
+                console.print(f"\n[bold red]Unexpected error: {exc}[/bold red]")
+            finally:
+                renderer.finalize()
+
+            # Auto-save session after each turn
+            _auto_save_session(state)
+
+            # Persistent status bar after every turn
+            _render_status_bar(state)
+    finally:
+        # Cleanup watcher
         try:
-            await _run_turn(state, stripped, renderer)
-        except KeyboardInterrupt:
-            # Ctrl+C during streaming — the turn is cancelled but the session continues
-            console.print("\n[dim]Turn cancelled.[/dim]")
-        except Exception as exc:
-            logger.exception("Unexpected error during turn")
-            console.print(f"\n[bold red]Unexpected error: {exc}[/bold red]")
-        finally:
-            renderer.finalize()
-
-        # Auto-save session after each turn
-        _auto_save_session(state)
-
-        # Show context usage after each turn
-        console.print(_format_context_usage(state))
-        console.print()  # blank line before next prompt
+            await watcher.stop()
+        except Exception:
+            pass
+        # Cleanup MCP connections on exit
+        if state.agent._mcp_clients:
+            try:
+                await state.agent.cleanup_mcp()
+            except Exception:
+                pass
 
 
 async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer) -> None:
@@ -948,26 +1363,36 @@ async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer)
     Handles Ctrl+C gracefully: sets the cancelled flag and drains remaining events
     rather than raising, so the session stays in a consistent state.
     """
-    # Show a spinner until the first event arrives
-    first_event_received = False
+    # Start a unified thinking spinner via the renderer.
+    # It persists through read-only tool execution, updating with progress,
+    # and stops automatically when the text response begins.
+    import random
 
-    # We wrap the async generator consumption in a task so we can
-    # catch KeyboardInterrupt cleanly on the outer level.
-    async for event in state.agent.run(user_input):
-        if state.cancelled:
-            # Drain remaining events without rendering — the user cancelled
-            continue
+    _THINKING_PHRASES = [
+        "Tensor cores warming up",
+        "Inference in progress",
+        "Activating neural pathways",
+        "Running through the MoE layers",
+        "Reasoning at GPU speed",
+        "Processing with Nemotron",
+        "Parallel threads converging",
+        "Computing",
+    ]
+    renderer.start_thinking(random.choice(_THINKING_PHRASES))
 
-        if not first_event_received:
-            first_event_received = True
+    try:
+        async for event in state.agent.run(user_input):
+            if state.cancelled:
+                continue
 
-        try:
-            renderer.render_event(event)
-        except KeyboardInterrupt:
-            # User pressed Ctrl+C during rendering — mark cancelled, keep draining
-            state.cancel()
-            console.print("\n[dim]Cancelling...[/dim]")
-            continue
+            try:
+                renderer.render_event(event)
+            except KeyboardInterrupt:
+                state.cancel()
+                console.print("\n[dim]Cancelling...[/dim]")
+                continue
+    finally:
+        pass  # flush() in the caller's finally block cleans up spinners
 
 
 # ===================================================================

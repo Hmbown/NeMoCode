@@ -6,14 +6,20 @@
 Handles planner -> executor -> reviewer loop, tool execution,
 confirmation gates, and the Super + Nano dispatch pattern.
 Integrates context window management for automatic compaction.
+Supports parallel tool execution when multiple tool calls arrive
+and none require user confirmation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from nemocode.config.schema import FormationRole, FormationSlot
@@ -25,8 +31,124 @@ from nemocode.providers.nim_chat import NIMChatProvider
 from nemocode.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_ROUNDS = 30
+DEFAULT_MAX_TOOL_ROUNDS = 100
 ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
+
+# Tool output truncation threshold (characters)
+_TRUNCATION_THRESHOLD = 20_000
+_SCRATCH_DIR = Path(os.environ.get("NEMOCODE_SCRATCH_DIR", "/tmp/nemocode-scratch"))
+
+
+# ---------------------------------------------------------------------------
+# Stagnation detection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _StagnationTracker:
+    """Detects doom loops: repeated identical tool calls or errors.
+
+    Deliberately permissive — LLMs routinely take 20+ tool rounds on
+    complex tasks. Only fire on truly repetitive patterns.
+    """
+
+    _call_hashes: list[str] = field(default_factory=list)
+    _error_hashes: list[str] = field(default_factory=list)
+    _idle_count: int = 0  # rounds with ZERO activity (no text, no tools)
+
+    # Thresholds — generous to avoid false positives
+    repeat_threshold: int = 5   # same exact tool call 5 times → stagnation
+    error_threshold: int = 5    # same exact error 5 times → stagnation
+    idle_threshold: int = 15    # 15 rounds with no text AND no tools → stagnation
+
+    def record_tool_call(self, name: str, args: dict) -> None:
+        h = hashlib.md5(f"{name}:{json.dumps(args, sort_keys=True)}".encode()).hexdigest()[:12]
+        self._call_hashes.append(h)
+        if len(self._call_hashes) > 50:
+            self._call_hashes = self._call_hashes[-50:]
+        # Tool activity = progress
+        self._idle_count = 0
+
+    def record_error(self, error_text: str) -> None:
+        h = hashlib.md5(error_text.encode()).hexdigest()[:12]
+        self._error_hashes.append(h)
+        if len(self._error_hashes) > 50:
+            self._error_hashes = self._error_hashes[-50:]
+
+    def record_turn(self, text: str, had_tool_calls: bool = False) -> None:
+        """Record a turn's output. Only idle rounds (no text AND no tools) count."""
+        if text.strip() or had_tool_calls:
+            self._idle_count = 0
+        else:
+            self._idle_count += 1
+
+    def is_stagnant(self) -> str | None:
+        """Check for stagnation. Returns a reason string or None."""
+        # Check for repeated identical tool calls
+        if len(self._call_hashes) >= self.repeat_threshold:
+            recent = self._call_hashes[-self.repeat_threshold:]
+            if len(set(recent)) == 1:
+                return f"Same tool call repeated {self.repeat_threshold} times"
+
+        # Check for repeated identical errors
+        if len(self._error_hashes) >= self.error_threshold:
+            recent = self._error_hashes[-self.error_threshold:]
+            if len(set(recent)) == 1:
+                return f"Same error repeated {self.error_threshold} times"
+
+        # Check for total idleness (no text, no tools)
+        if self._idle_count >= self.idle_threshold:
+            return f"No activity in {self.idle_threshold} rounds"
+
+        return None
+
+    def reset(self) -> None:
+        self._call_hashes.clear()
+        self._error_hashes.clear()
+        self._idle_count = 0
+
+
+def _truncate_output(result: str, tool_name: str) -> str:
+    """Truncate large tool output, saving full content to a scratch file.
+
+    For structured JSON results (bash_exec etc.), truncates the inner
+    stdout/stderr fields rather than the outer JSON, preserving parseability.
+    """
+    if len(result) <= _TRUNCATION_THRESHOLD:
+        return result
+
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time() * 1000)
+    scratch_file = _SCRATCH_DIR / f"{tool_name}_{ts}.txt"
+    scratch_file.write_text(result)
+
+    # Try to truncate structured JSON content (bash_exec, etc.)
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict):
+            changed = False
+            for key in ("stdout", "stderr", "output"):
+                val = parsed.get(key)
+                if isinstance(val, str) and len(val) > _TRUNCATION_THRESHOLD:
+                    original_len = len(parsed[key])
+                    parsed[key] = (
+                        parsed[key][:_TRUNCATION_THRESHOLD]
+                        + f"\n\n... (truncated at {_TRUNCATION_THRESHOLD:,} chars, "
+                        f"full output: {original_len:,} chars saved to {scratch_file})"
+                    )
+                    changed = True
+            if changed:
+                return json.dumps(parsed)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Fallback: raw truncation
+    truncated = result[:_TRUNCATION_THRESHOLD]
+    return (
+        f"{truncated}\n\n"
+        f"... (output truncated at {_TRUNCATION_THRESHOLD:,} chars, "
+        f"full output: {len(result):,} chars saved to {scratch_file})"
+    )
 
 
 @dataclass
@@ -55,32 +177,34 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "Be specific -- the EXECUTOR follows your plan verbatim."
     ),
     FormationRole.EXECUTOR: (
-        "You are NeMoCode, an expert coding assistant powered by NVIDIA Nemotron 3 Super.\n\n"
-        "## Available Tools\n"
-        "- read_file: Read file contents (with optional offset/limit)\n"
-        "- write_file: Create or overwrite a file (requires confirmation)\n"
-        "- edit_file: Search-and-replace edit on a file (old_string must be unique)\n"
-        "- list_dir: List directory contents with optional depth\n"
-        "- bash_exec: Execute a shell command (requires confirmation)\n"
-        "- git_status: Show working tree status\n"
-        "- git_diff: Show staged/unstaged changes\n"
-        "- git_log: Show recent commit history\n"
-        "- git_commit: Stage files and commit (requires confirmation)\n"
-        "- search_files: Search file contents with regex (ripgrep)\n"
-        "- http_fetch: Fetch content from a URL\n\n"
+        "You are NeMoCode, an autonomous coding agent powered by NVIDIA Nemotron 3.\n\n"
+        "You COMPLETE tasks — you don't just describe them. When the user asks you "
+        "to do something, you DO it: read files, write code, run tests, fix errors, "
+        "and iterate until the task is done.\n\n"
         "## Workflow\n"
-        "1. UNDERSTAND -- Read relevant files before changing them.\n"
-        "2. PLAN -- Think through your approach.\n"
-        "3. IMPLEMENT -- Make precise, surgical edits.\n"
-        "4. VERIFY -- Run tests/linters to validate.\n"
-        "5. ITERATE -- If something fails, diagnose and fix.\n\n"
+        "1. FIND relevant files with glob_files or search_files\n"
+        "2. READ what you need with read_file\n"
+        "3. IMPLEMENT changes with edit_file (preferred) or write_file (new files)\n"
+        "4. For multiple edits in one file, use multi_edit instead of repeated edit_file calls\n"
+        "5. VERIFY by running tests: bash_exec with pytest, ruff, etc.\n"
+        "6. FIX any failures — read the error, edit the code, re-run\n"
+        "7. REPORT what you did (brief summary, not a lecture)\n\n"
+        "## Tools\n"
+        "- glob_files: Find files by pattern (e.g. '**/*.py'). Use this FIRST to locate files.\n"
+        "- search_files: Search file contents with regex. Great for finding usages.\n"
+        "- read_file: Read file contents. Read before editing.\n"
+        "- edit_file: Search-and-replace edit. Preferred for existing files.\n"
+        "- multi_edit: Apply multiple edits to one file atomically. Use when making 2+ changes.\n"
+        "- write_file: Create new files or full rewrites.\n"
+        "- bash_exec: Run shell commands (tests, builds, git, etc.).\n"
+        "- ask_user: Ask the user a question when you need clarification.\n\n"
         "## Rules\n"
-        "- YOU MUST use tool calls to interact with the codebase. "
-        "Do NOT just describe what to do.\n"
-        "- Always read a file before editing it.\n"
-        "- Prefer edit_file over write_file for existing files.\n"
-        "- Run tests after making changes.\n"
-        "- If a command fails, read the error output carefully before retrying.\n"
+        "- ALWAYS use tools — never just describe changes.\n"
+        "- Read a file before editing it.\n"
+        "- Keep text responses SHORT. The code speaks for itself.\n"
+        "- Do not ask for permission — just do the work.\n"
+        "- If something is unclear, use ask_user to get clarification.\n"
+        "- Batch operations efficiently — use multi_edit for multiple changes in one file.\n"
     ),
     FormationRole.REVIEWER: (
         "You are the REVIEWER in a Nemotron 3 formation.\n\n"
@@ -105,6 +229,25 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
 }
 
 
+_PLAN_MODE_PROMPT = (
+    "You are NeMoCode, an expert coding assistant powered by NVIDIA Nemotron 3 Super.\n\n"
+    "You are in PLAN MODE (read-only). You can read files and explore the "
+    "codebase, but you CANNOT modify anything.\n\n"
+    "## Available Tools (read-only)\n"
+    "- read_file: Read file contents\n"
+    "- list_dir: List directory contents\n"
+    "- git_status: Show working tree status\n"
+    "- git_diff: Show staged/unstaged changes\n"
+    "- git_log: Show recent commit history\n"
+    "- search_files: Search file contents with regex\n\n"
+    "## Your Role\n"
+    "Discuss, analyze, and plan. Read code to understand it. "
+    "Propose changes but do NOT attempt to write, edit, or execute anything. "
+    "Produce clear, actionable plans that the user can implement or "
+    "switch to code/auto mode to execute.\n"
+)
+
+
 class Scheduler:
     def __init__(
         self,
@@ -112,6 +255,10 @@ class Scheduler:
         tool_registry: ToolRegistry,
         confirm_fn: ConfirmFn | None = None,
         context_window: int = 1_048_576,
+        hook_runner: Any = None,
+        read_only: bool = False,
+        permission_engine: Any = None,
+        max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
     ) -> None:
         self._reg = registry
         self._tools = tool_registry
@@ -119,6 +266,11 @@ class Scheduler:
         self._sessions: dict[FormationRole, Session] = {}
         self._context_mgr = ContextManager(context_window=context_window)
         self._project_context: str = ""
+        self._hook_runner = hook_runner
+        self._read_only = read_only
+        self._permission_engine = permission_engine
+        self._max_tool_rounds = max_tool_rounds
+        self._stagnation = _StagnationTracker()
 
     # ------------------------------------------------------------------
     # Single-model mode
@@ -128,7 +280,7 @@ class Scheduler:
         provider = self._reg.get_chat_provider(endpoint_name)
         if FormationRole.EXECUTOR not in self._sessions:
             s = Session(id="main", endpoint_name=endpoint_name)
-            prompt = ROLE_PROMPTS[FormationRole.EXECUTOR]
+            prompt = _PLAN_MODE_PROMPT if self._read_only else ROLE_PROMPTS[FormationRole.EXECUTOR]
             if self._project_context:
                 prompt = f"{prompt}\n\n## Project Context\n{self._project_context}"
             s.add_system(prompt)
@@ -235,11 +387,25 @@ class Scheduler:
         self, provider: NIMChatProvider, session: Session, role: FormationRole
     ) -> AsyncIterator[AgentEvent]:
         schemas = self._tools.get_schemas()
-        for _ in range(MAX_TOOL_ROUNDS):
-            # Auto-compact if context usage exceeds 80%
+        self._stagnation.reset()
+
+        for _ in range(self._max_tool_rounds):
+            # Check stagnation before each round
+            reason = self._stagnation.is_stagnant()
+            if reason:
+                yield AgentEvent(
+                    kind="error",
+                    text=f"Stagnation detected: {reason}. Stopping to avoid a doom loop. "
+                    f"Try rephrasing your request or use /reset.",
+                    is_error=True,
+                    role=role,
+                )
+                return
+
+            # Auto-compact if context usage exceeds 80% — use smart compaction
             if self._context_mgr.should_compact(session.messages):
                 logger.info("Auto-compacting session %s (context usage > 80%%)", session.id)
-                session.compact()
+                session.messages = self._context_mgr.smart_compact(session.messages)
 
             text_buf, think_buf = "", ""
             tool_calls: list[ToolCall] = []
@@ -259,6 +425,9 @@ class Scheduler:
                     )
                     yield AgentEvent(kind="usage", usage=chunk.usage, role=role)
 
+            # Track progress — tool-using rounds count as active
+            self._stagnation.record_turn(text_buf, had_tool_calls=bool(tool_calls))
+
             if not tool_calls:
                 session.add_assistant(
                     Message(role=Role.ASSISTANT, content=text_buf, thinking=think_buf)
@@ -271,58 +440,162 @@ class Scheduler:
                 )
             )
 
+            # Track tool calls for stagnation detection
             for tc in tool_calls:
-                yield AgentEvent(
-                    kind="tool_call", tool_name=tc.name, tool_args=tc.arguments, role=role
-                )
+                self._stagnation.record_tool_call(tc.name, tc.arguments)
 
-                td = self._tools.get(tc.name)
-                if td and td.requires_confirmation and self._confirm_fn:
-                    if not await self._confirm_fn(tc.name, tc.arguments):
-                        r = json.dumps({"error": "User denied"})
-                        session.add_tool_result(tc.id, r, is_error=True)
-                        yield AgentEvent(
-                            kind="tool_result",
-                            tool_name=tc.name,
-                            tool_result=r,
-                            is_error=True,
-                            role=role,
-                        )
-                        continue
+            # Decide: parallel or sequential execution
+            needs_confirm = any(
+                self._needs_confirmation(tc) for tc in tool_calls
+            )
 
-                # Execute with timeout to prevent hanging tools
-                tool_errored = False
-                try:
-                    result = await asyncio.wait_for(
-                        self._tools.execute(tc.name, tc.arguments),
-                        timeout=120.0,
-                    )
-                except asyncio.TimeoutError:
-                    result = json.dumps({"error": f"Tool {tc.name} timed out"})
-                    tool_errored = True
-                except Exception as e:
-                    result = json.dumps({"error": f"Tool {tc.name} failed: {e}"})
-                    tool_errored = True
-
-                if not tool_errored:
-                    try:
-                        parsed = json.loads(result)
-                        if isinstance(parsed, dict) and "error" in parsed:
-                            tool_errored = True
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                session.add_tool_result(tc.id, result, is_error=tool_errored)
-                yield AgentEvent(
-                    kind="tool_result",
-                    tool_name=tc.name,
-                    tool_result=result,
-                    is_error=tool_errored,
-                    role=role,
-                )
+            if len(tool_calls) > 1 and not needs_confirm:
+                # Parallel execution — yield all calls, execute concurrently, yield all results
+                async for ev in self._execute_parallel(tool_calls, session, role):
+                    yield ev
+            else:
+                # Sequential execution
+                async for ev in self._execute_sequential(tool_calls, session, role):
+                    yield ev
 
         yield AgentEvent(
-            kind="error", text=f"Hit max tool rounds ({MAX_TOOL_ROUNDS})", is_error=True, role=role
+            kind="error",
+            text=f"Hit max tool rounds ({self._max_tool_rounds})",
+            is_error=True,
+            role=role,
         )
+
+    def _needs_confirmation(self, tc: ToolCall) -> bool:
+        """Check if a tool call needs confirmation, respecting permission rules."""
+        td = self._tools.get(tc.name)
+        if not td or not td.requires_confirmation:
+            return False
+
+        # Check permission engine for auto-approve rules
+        if self._permission_engine:
+            decision = self._permission_engine.should_auto_approve(tc.name, tc.arguments)
+            if decision is True:
+                return False
+            if decision is False:
+                return True  # explicit deny — always confirm
+
+        return True
+
+    # ------------------------------------------------------------------
+    # Tool execution strategies
+    # ------------------------------------------------------------------
+
+    async def _execute_sequential(
+        self, tool_calls: list[ToolCall], session: Session, role: FormationRole
+    ) -> AsyncIterator[AgentEvent]:
+        """Execute tool calls one at a time (used when confirmation is needed)."""
+        for tc in tool_calls:
+            yield AgentEvent(kind="tool_call", tool_name=tc.name, tool_args=tc.arguments, role=role)
+
+            if self._needs_confirmation(tc) and self._confirm_fn:
+                if not await self._confirm_fn(tc.name, tc.arguments):
+                    r = json.dumps({"error": "User denied"})
+                    session.add_tool_result(tc.id, r, is_error=True)
+                    yield AgentEvent(
+                        kind="tool_result",
+                        tool_name=tc.name,
+                        tool_result=r,
+                        is_error=True,
+                        role=role,
+                    )
+                    continue
+
+            result, is_error = await self._run_tool(tc)
+
+            # Track errors for stagnation detection
+            if is_error:
+                self._stagnation.record_error(result[:200])
+
+            # Truncate large outputs
+            result = _truncate_output(result, tc.name)
+
+            session.add_tool_result(tc.id, result, is_error=is_error)
+            yield AgentEvent(
+                kind="tool_result",
+                tool_name=tc.name,
+                tool_result=result,
+                is_error=is_error,
+                role=role,
+            )
+
+    async def _execute_parallel(
+        self, tool_calls: list[ToolCall], session: Session, role: FormationRole
+    ) -> AsyncIterator[AgentEvent]:
+        """Execute tool calls concurrently (used when no confirmation needed)."""
+        # Yield all tool_call events up front
+        for tc in tool_calls:
+            yield AgentEvent(kind="tool_call", tool_name=tc.name, tool_args=tc.arguments, role=role)
+
+        # Execute all tools concurrently
+        results = await asyncio.gather(
+            *(self._run_tool(tc) for tc in tool_calls),
+            return_exceptions=True,
+        )
+
+        # Yield all results
+        for tc, result_or_exc in zip(tool_calls, results):
+            if isinstance(result_or_exc, BaseException):
+                result = json.dumps({"error": f"Tool {tc.name} failed: {result_or_exc}"})
+                is_error = True
+            else:
+                result, is_error = result_or_exc
+
+            # Track errors for stagnation detection
+            if is_error:
+                self._stagnation.record_error(result[:200])
+
+            # Truncate large outputs
+            result = _truncate_output(result, tc.name)
+
+            session.add_tool_result(tc.id, result, is_error=is_error)
+            yield AgentEvent(
+                kind="tool_result",
+                tool_name=tc.name,
+                tool_result=result,
+                is_error=is_error,
+                role=role,
+            )
+
+    async def _run_tool(self, tc: ToolCall) -> tuple[str, bool]:
+        """Execute a single tool call with timeout and hooks. Returns (result, is_error)."""
+        # Pre-hook
+        if self._hook_runner and self._hook_runner.enabled:
+            try:
+                await self._hook_runner.run_pre(tc.name, tc.arguments)
+            except Exception as e:
+                logger.debug("Pre-hook failed for %s: %s", tc.name, e)
+
+        try:
+            result = await asyncio.wait_for(
+                self._tools.execute(tc.name, tc.arguments),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            return json.dumps({"error": f"Tool {tc.name} timed out"}), True
+        except Exception as e:
+            return json.dumps({"error": f"Tool {tc.name} failed: {e}"}), True
+
+        is_error = False
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict) and "error" in parsed:
+                is_error = True
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Post-hook
+        if self._hook_runner and self._hook_runner.enabled:
+            try:
+                await self._hook_runner.run_post(tc.name, tc.arguments, result)
+            except Exception as e:
+                logger.debug("Post-hook failed for %s: %s", tc.name, e)
+
+        return result, is_error
 
     # ------------------------------------------------------------------
     # Helpers

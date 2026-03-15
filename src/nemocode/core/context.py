@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: MIT
 
-"""Context window manager — tracks usage and manages smart compaction."""
+"""Context window manager — tracks usage and manages smart compaction.
+
+Token counting uses tiktoken (cl100k_base) when available for accurate
+counts, falling back to a character-based estimate (4 chars/token).
+"""
 
 from __future__ import annotations
 
@@ -12,23 +16,55 @@ from nemocode.core.streaming import Message, Role
 
 logger = logging.getLogger(__name__)
 
-# Approximate tokens per character ratio for English text
+# ---------------------------------------------------------------------------
+# Token counting — tiktoken with fallback
+# ---------------------------------------------------------------------------
+
+_encoder = None
+_USE_TIKTOKEN = False
+
+try:
+    import tiktoken
+
+    _encoder = tiktoken.get_encoding("cl100k_base")
+    _USE_TIKTOKEN = True
+    logger.debug("Using tiktoken (cl100k_base) for accurate token counting")
+except ImportError:
+    logger.debug("tiktoken not installed — using character-based estimation")
+
+# Approximate tokens per character ratio for English text (fallback)
 _CHARS_PER_TOKEN = 4
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate token count from character count."""
+    """Count or estimate tokens in text.
+
+    Uses tiktoken (cl100k_base) when available for accurate counting.
+    Falls back to len(text) // 4 otherwise.
+    """
+    if not text:
+        return 0
+    if _USE_TIKTOKEN and _encoder is not None:
+        try:
+            return len(_encoder.encode(text, disallowed_special=()))
+        except Exception:
+            pass
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
 def estimate_message_tokens(msg: Message) -> int:
-    """Estimate token count for a single message."""
+    """Count or estimate token count for a single message."""
     tokens = estimate_tokens(msg.content)
     if msg.thinking:
         tokens += estimate_tokens(msg.thinking)
     for tc in msg.tool_calls:
         tokens += estimate_tokens(str(tc.arguments)) + 20  # function overhead
     return tokens + 4  # role/message overhead
+
+
+def is_accurate() -> bool:
+    """Return True if using accurate token counting (tiktoken)."""
+    return _USE_TIKTOKEN
 
 
 class ContextManager:

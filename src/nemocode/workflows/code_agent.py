@@ -12,15 +12,21 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from nemocode.config import load_config
 from nemocode.config.schema import NeMoCodeConfig
+from nemocode.core.hooks import HookRunner
+from nemocode.core.memory import load_all_memories
+from nemocode.core.permissions import PermissionEngine
 from nemocode.core.registry import Registry
+from nemocode.core.router import get_auto_endpoint, route_to_formation
 from nemocode.core.scheduler import AgentEvent, Scheduler
+from nemocode.core.snapshot import SnapshotManager
+from nemocode.tools.delegate import configure_delegate
 from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
 
 
 def _detect_git_context() -> str:
-    """Detect git branch, staged changes, and merge conflict state.
+    """Detect git branch, status, recent commits, and merge conflict state.
 
     Returns a human-readable summary for injection into the system prompt.
     Returns empty string if not in a git repository.
@@ -39,6 +45,33 @@ def _detect_git_context() -> str:
             return ""  # Not a git repo
         branch = result.stdout.strip()
         parts.append(f"Git branch: {branch}")
+
+        # Working tree status (short format)
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            status_lines = result.stdout.strip().splitlines()
+            parts.append(f"Working tree: {len(status_lines)} changed file(s)")
+            for line in status_lines[:15]:
+                parts.append(f"  {line}")
+            if len(status_lines) > 15:
+                parts.append(f"  ... and {len(status_lines) - 15} more")
+
+        # Recent commits
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts.append("Recent commits:")
+            for line in result.stdout.strip().splitlines():
+                parts.append(f"  {line}")
 
         # Check for staged changes
         result = subprocess.run(
@@ -67,6 +100,58 @@ def _detect_git_context() -> str:
     return "\n".join(parts)
 
 
+def _discover_nemocode_md() -> str:
+    """Search for NEMOCODE.md files in hierarchy and return combined content.
+
+    Search order: ~/.config/nemocode/NEMOCODE.md → project root → cwd
+    All found files are concatenated with source labels.
+    """
+    contents: list[str] = []
+
+    # Global instructions
+    global_path = Path("~/.config/nemocode/NEMOCODE.md").expanduser()
+    if global_path.exists():
+        try:
+            text = global_path.read_text().strip()
+            if text:
+                contents.append(f"# Global Instructions\n{text}")
+        except Exception:
+            pass
+
+    # Walk up from cwd to find project root (has .nemocode.yaml or .git)
+    cwd = Path.cwd()
+    project_root = cwd
+    for parent in [cwd, *cwd.parents]:
+        if (parent / ".nemocode.yaml").exists() or (parent / ".git").exists():
+            project_root = parent
+            break
+        if parent == Path.home():
+            break
+
+    # Project root NEMOCODE.md
+    if project_root != cwd:
+        root_md = project_root / "NEMOCODE.md"
+        if root_md.exists():
+            try:
+                text = root_md.read_text().strip()
+                if text:
+                    contents.append(f"# Project Instructions ({project_root.name})\n{text}")
+            except Exception:
+                pass
+
+    # CWD NEMOCODE.md (if different from project root)
+    cwd_md = cwd / "NEMOCODE.md"
+    if cwd_md.exists() and cwd_md.resolve() != (project_root / "NEMOCODE.md").resolve():
+        try:
+            text = cwd_md.read_text().strip()
+            if text:
+                contents.append(f"# Directory Instructions ({cwd.name})\n{text}")
+        except Exception:
+            pass
+
+    return "\n\n".join(contents)
+
+
 class CodeAgent:
     """Main entry point for agentic coding sessions."""
 
@@ -75,20 +160,57 @@ class CodeAgent:
         config: NeMoCodeConfig | None = None,
         confirm_fn: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None,
         project_dir: Path | None = None,
+        *,
+        auto_route: bool = False,
+        read_only: bool = False,
     ) -> None:
         self._config = config or load_config(project_dir)
         self._registry = Registry(self._config)
-        self._tool_registry = load_tools()
+        self._read_only = read_only
+        if read_only:
+            # Plan mode: read-only tools only — no writes, edits, bash, commits
+            self._tool_registry = load_tools(["fs_read", "git_read", "rg", "glob", "clarify"])
+        else:
+            self._tool_registry = load_tools()
+        self._auto_route = auto_route
+        self._mcp_clients: list = []
+
+        # Set up hooks
+        hooks_dict = self._config.hooks.to_dict() if self._config.hooks else {}
+        hook_runner = HookRunner(hooks_dict) if hooks_dict else None
+
+        # Set up permission engine from config rules
+        permission_engine = None
+        if self._config.permissions.permission_rules:
+            rules_config = [r.model_dump() for r in self._config.permissions.permission_rules]
+            permission_engine = PermissionEngine.from_config(rules_config)
+
+        # Git snapshot manager
+        self._snapshot_mgr = SnapshotManager()
+
         self._scheduler = Scheduler(
             registry=self._registry,
             tool_registry=self._tool_registry,
             confirm_fn=confirm_fn,
+            hook_runner=hook_runner,
+            read_only=read_only,
+            permission_engine=permission_engine,
+            max_tool_rounds=self._config.max_tool_rounds,
         )
         self._inject_project_context()
 
+        # Configure delegate tool with our registry/config
+        if not read_only:
+            configure_delegate(self._registry, self._config)
+
     def _inject_project_context(self) -> None:
-        """Inject project context and git state into the system prompt."""
+        """Inject project context, NEMOCODE.md, memory, and git state into the system prompt."""
         parts: list[str] = []
+
+        # NEMOCODE.md instructions (highest priority)
+        nemocode_md = _discover_nemocode_md()
+        if nemocode_md:
+            parts.append(nemocode_md)
 
         # Project context from .nemocode.yaml
         project = self._config.project
@@ -103,6 +225,12 @@ class CodeAgent:
                 for conv in project.conventions:
                     parts.append(f"  - {conv}")
 
+        # Cross-session memories
+        memories = load_all_memories()
+        if memories:
+            parts.append("")
+            parts.append(memories)
+
         # Git-aware context
         git_context = _detect_git_context()
         if git_context:
@@ -113,9 +241,44 @@ class CodeAgent:
             context = "\n".join(parts)
             self._scheduler.inject_system_context(context)
 
+    async def init_mcp(self) -> None:
+        """Initialize MCP server connections (call once at REPL startup)."""
+        servers = self._config.mcp.servers
+        if not servers:
+            return
+        try:
+            from nemocode.tools.mcp import register_mcp_tools
+
+            self._mcp_clients = await register_mcp_tools(servers, self._tool_registry)
+            logger.info("MCP: %d server(s) connected", len(self._mcp_clients))
+        except Exception as e:
+            logger.warning("MCP initialization failed: %s", e)
+
+    async def cleanup_mcp(self) -> None:
+        """Disconnect all MCP servers."""
+        for client in self._mcp_clients:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        self._mcp_clients.clear()
+
     async def run(self, user_input: str) -> AsyncIterator[AgentEvent]:
         """Run the agent with user input, yielding events."""
         formation = self._config.active_formation
+
+        # Auto-routing when enabled and no explicit formation
+        if self._auto_route and not formation:
+            routed_formation = route_to_formation(user_input, self._config)
+            if routed_formation:
+                formation = routed_formation
+            else:
+                auto_ep = get_auto_endpoint(user_input, self._config)
+                if auto_ep:
+                    async for event in self._scheduler.run_single(auto_ep, user_input):
+                        yield event
+                    return
+
         if formation:
             async for event in self._scheduler.run_formation(formation, user_input):
                 yield event
@@ -155,3 +318,12 @@ class CodeAgent:
     @property
     def registry(self) -> Registry:
         return self._registry
+
+    @property
+    def snapshot_mgr(self) -> SnapshotManager:
+        return self._snapshot_mgr
+
+    async def create_snapshot(self, label: str = "") -> dict | None:
+        """Create a git snapshot for safe rollback."""
+        snap = await self._snapshot_mgr.create_snapshot(label)
+        return {"id": snap.id, "kind": snap.kind, "files": snap.files_changed} if snap else None

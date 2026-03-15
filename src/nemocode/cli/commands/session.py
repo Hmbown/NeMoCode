@@ -27,9 +27,7 @@ def session_ls(
         console.print("[dim]No sessions found.[/dim]")
         return
 
-    sessions = sorted(
-        _SESSION_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-    )
+    sessions = sorted(_SESSION_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not sessions:
         console.print("[dim]No sessions found.[/dim]")
         return

@@ -99,6 +99,7 @@ class TestFSTools:
         test_file.write_text("line1\nline2\nline3\n")
 
         from nemocode.tools.fs import read_file, set_project_root
+
         set_project_root(tmp_path)
 
         result = await read_file(str(test_file))
@@ -148,6 +149,7 @@ class TestFSTools:
     @pytest.mark.asyncio
     async def test_list_dir(self, project_dir: Path):
         from nemocode.tools.fs import list_dir, set_project_root
+
         set_project_root(project_dir)
 
         result = await list_dir(str(project_dir))

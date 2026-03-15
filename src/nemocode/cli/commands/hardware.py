@@ -59,8 +59,7 @@ def hardware_recommend() -> None:
                 total = f"{m.moe.total_params_b:.0f}B"
                 vram = m.min_gpu_memory_gb
                 console.print(
-                    f"    [dim]{active} active / {total} total,"
-                    f" needs {vram}GB VRAM[/dim]"
+                    f"    [dim]{active} active / {total} total, needs {vram}GB VRAM[/dim]"
                 )
     else:
         console.print("\n[yellow]No Nemotron 3 models can run locally on this hardware.[/yellow]")

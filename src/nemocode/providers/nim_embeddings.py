@@ -17,9 +17,7 @@ logger = logging.getLogger(__name__)
 class NIMEmbeddingProvider(NIMProviderBase):
     """OpenAI-compatible embedding provider for NVIDIA NIM endpoints."""
 
-    async def embed(
-        self, texts: list[str], input_type: str = "query"
-    ) -> list[list[float]]:
+    async def embed(self, texts: list[str], input_type: str = "query") -> list[list[float]]:
         """Embed a list of texts, returning vectors.
 
         Args:

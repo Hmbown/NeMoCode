@@ -51,13 +51,21 @@ class PiperTTS(TTSProvider):
             if platform.system() == "Darwin":
                 # afplay needs a file, not stdin. Convert raw to playable format.
                 play_proc = await asyncio.create_subprocess_exec(
-                    "afplay", tmp_path,
+                    "afplay",
+                    tmp_path,
                     stderr=asyncio.subprocess.PIPE,
                 )
             else:
                 # aplay can read from file with explicit format
                 play_proc = await asyncio.create_subprocess_exec(
-                    "aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", tmp_path,
+                    "aplay",
+                    "-r",
+                    "22050",
+                    "-c",
+                    "1",
+                    "-f",
+                    "S16_LE",
+                    tmp_path,
                     stderr=asyncio.subprocess.PIPE,
                 )
             await play_proc.wait()

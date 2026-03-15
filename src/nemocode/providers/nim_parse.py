@@ -31,9 +31,7 @@ class NIMParseProvider(NIMProviderBase):
 
         size_mb = p.stat().st_size / (1024 * 1024)
         if size_mb > _MAX_FILE_SIZE_MB:
-            raise ValueError(
-                f"File too large ({size_mb:.1f}MB). Maximum is {_MAX_FILE_SIZE_MB}MB."
-            )
+            raise ValueError(f"File too large ({size_mb:.1f}MB). Maximum is {_MAX_FILE_SIZE_MB}MB.")
 
         content_b64 = base64.b64encode(p.read_bytes()).decode()
         suffix = p.suffix.lower()

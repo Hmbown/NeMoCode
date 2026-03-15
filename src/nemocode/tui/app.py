@@ -206,6 +206,7 @@ class NeMoCodeApp(App):
         if event.kind == "text":
             # Escape model output to prevent Rich markup errors
             from rich.text import Text
+
             self._log.write(Text(event.text), shrink=False)
         elif event.kind == "thinking" and self._show_thinking:
             self._log.write(f"[dim]{event.thinking}[/dim]", shrink=False)

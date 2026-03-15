@@ -90,8 +90,9 @@ def _message_to_dict(msg: Message) -> dict[str, Any]:
 class NIMChatProvider(NIMProviderBase):
     """OpenAI-compatible chat completions provider for NVIDIA NIM endpoints."""
 
-    def __init__(self, endpoint, manifest: Manifest | None = None,
-                 api_key: str | None = None) -> None:
+    def __init__(
+        self, endpoint, manifest: Manifest | None = None, api_key: str | None = None
+    ) -> None:
         super().__init__(endpoint, api_key)
         self.manifest = manifest
 

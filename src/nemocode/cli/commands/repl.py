@@ -353,13 +353,16 @@ class _SlashDispatcher:
             console.print(f"  Context: {m.context_window:,} tokens")
             console.print(f"  Tools: {'yes' if m.supports_tools else 'no'}")
             if m.reasoning.supports_thinking:
-                console.print(f"  Reasoning: enabled (budget control: "
-                              f"{'yes' if m.reasoning.supports_budget_control else 'no'})")
+                console.print(
+                    f"  Reasoning: enabled (budget control: "
+                    f"{'yes' if m.reasoning.supports_budget_control else 'no'})"
+                )
         return True
 
     def _cmd_hardware(self, _arg: str) -> bool:
         try:
             from nemocode.core.hardware import detect_hardware
+
             profile = detect_hardware()
             console.print(f"\n{profile.summary()}")
             rec = profile.recommend_formation()
@@ -726,21 +729,23 @@ def _print_banner(state: _ReplState) -> None:
     arch_info = ""
     if manifest and manifest.moe.total_params_b:
         arch_info = (
-            f"{manifest.moe.active_params_b:.0f}B active / "
-            f"{manifest.moe.total_params_b:.0f}B total"
+            f"{manifest.moe.active_params_b:.0f}B active / {manifest.moe.total_params_b:.0f}B total"
         )
 
     console.print(_ASCII_LOGO)
     console.print()
 
     # Status info
-    console.print(f"  [bold bright_green]v{__version__}[/bold bright_green]"
-                  f"  [dim]Powered by NVIDIA Nemotron 3[/dim]")
+    console.print(
+        f"  [bold bright_green]v{__version__}[/bold bright_green]"
+        f"  [dim]Powered by NVIDIA Nemotron 3[/dim]"
+    )
     console.print()
-    console.print(f"  [bold]Model:[/bold]     {model_display}"
-                  + (f"  [dim]({arch_info})[/dim]" if arch_info else ""))
-    console.print(f"  [bold]Endpoint:[/bold]  {ep_name}"
-                  f"  [dim]context: {ctx_display} tokens[/dim]")
+    console.print(
+        f"  [bold]Model:[/bold]     {model_display}"
+        + (f"  [dim]({arch_info})[/dim]" if arch_info else "")
+    )
+    console.print(f"  [bold]Endpoint:[/bold]  {ep_name}  [dim]context: {ctx_display} tokens[/dim]")
 
     if formation:
         f_config = state.config.formations.get(formation)
@@ -750,10 +755,14 @@ def _print_banner(state: _ReplState) -> None:
     cwd = Path.cwd()
     console.print(f"  [bold]Directory:[/bold] {cwd}")
     console.print()
-    console.print('  [dim]Type /help for commands, """ for multi-line, '
-                  "Ctrl+C to cancel, Ctrl+D to exit.[/dim]")
-    console.print("  [dim italic]NeMoCode is a community project, "
-                  "not an official NVIDIA product.[/dim italic]")
+    console.print(
+        '  [dim]Type /help for commands, """ for multi-line, '
+        "Ctrl+C to cancel, Ctrl+D to exit.[/dim]"
+    )
+    console.print(
+        "  [dim italic]NeMoCode is a community project, "
+        "not an official NVIDIA product.[/dim italic]"
+    )
     console.print()
 
 

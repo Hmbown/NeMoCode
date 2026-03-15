@@ -163,24 +163,44 @@ class TestNIMChatStreamToolAssembly:
 
         # Simulate SSE lines for a streamed tool call response.
         # Build the JSON payloads programmatically to avoid long lines.
-        chunk1 = json.dumps({
-            "choices": [{"delta": {"tool_calls": [
-                {"index": 0, "id": "tc_abc", "function": {
-                    "name": "read_file", "arguments": '{"pa'
-                }}
-            ]}, "finish_reason": None}]
-        })
-        chunk2 = json.dumps({
-            "choices": [{"delta": {"tool_calls": [
-                {"index": 0, "function": {
-                    "arguments": 'th": "test.py"}'
-                }}
-            ]}, "finish_reason": None}]
-        })
-        chunk3 = json.dumps({
-            "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
-            "usage": {"prompt_tokens": 50, "completion_tokens": 10},
-        })
+        chunk1 = json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "tc_abc",
+                                    "function": {"name": "read_file", "arguments": '{"pa'},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+        )
+        chunk2 = json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": 'th": "test.py"}'}}
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+        )
+        chunk3 = json.dumps(
+            {
+                "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+            }
+        )
         sse_lines = [
             f"data: {chunk1}",
             f"data: {chunk2}",
@@ -344,9 +364,7 @@ class TestSessionPersistenceRoundtrip:
             session = Session(id="roundtrip-test", endpoint_name="nim-super")
             session.add_system("You are a helpful assistant.")
             session.add_user("Hello, how are you?")
-            session.add_assistant(
-                Message(role=Role.ASSISTANT, content="I am doing well!")
-            )
+            session.add_assistant(Message(role=Role.ASSISTANT, content="I am doing well!"))
             session.add_user("Read test.py")
             session.add_assistant(
                 Message(

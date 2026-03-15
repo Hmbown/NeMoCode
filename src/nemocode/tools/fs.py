@@ -100,10 +100,9 @@ async def edit_file(path: str, old_string: str, new_string: str) -> str:
     if not p.exists():
         return json.dumps({"error": f"File not found: {path}"})
     if not old_string:
-        return json.dumps({
-            "error": "old_string must not be empty."
-            " Use write_file to create new content."
-        })
+        return json.dumps(
+            {"error": "old_string must not be empty. Use write_file to create new content."}
+        )
     try:
         text = p.read_text()
         if old_string not in text:

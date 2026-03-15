@@ -97,7 +97,9 @@ class SystemSTT(STTProvider):
 
         # Use macOS NSSpeechRecognizer via osascript (no external deps)
         proc = await asyncio.create_subprocess_exec(
-            "say", "--interactive", audio_path,
+            "say",
+            "--interactive",
+            audio_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

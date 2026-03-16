@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 from nemocode.core.sessions import Session, TokenUsage
-from nemocode.core.streaming import Message, Role
+from nemocode.core.streaming import Message, Role, ToolCall
+from nemocode.core.persistence import save_session, load_session, list_sessions, delete_session
 
 
 class TestTokenUsage:
@@ -84,3 +85,60 @@ class TestSession:
         assert d["id"] == "test-123"
         assert d["endpoint_name"] == "nim-super"
         assert d["usage"]["total_tokens"] == 150
+
+
+class TestSessionPersistence:
+    def test_save_and_load_session(self, tmp_path):
+        session = Session(id="persist-test")
+        session.add_system("System prompt")
+        session.add_user("Hello")
+        session.add_assistant(Message(role=Role.ASSISTANT, content="Hi there"))
+
+        # Save
+        save_session(session, {"cwd": str(tmp_path), "endpoint": "nim-super"})
+
+        # Load
+        loaded = load_session("persist-test")
+        assert loaded is not None
+        assert loaded.id == "persist-test"
+        assert len(loaded.messages) == 3
+        assert loaded.messages[0].role == Role.SYSTEM
+        assert loaded.messages[0].content == "System prompt"
+        assert loaded.messages[1].role == Role.USER
+        assert loaded.messages[1].content == "Hello"
+        assert loaded.messages[2].role == Role.ASSISTANT
+        assert loaded.messages[2].content == "Hi there"
+
+        # Cleanup
+        delete_session("persist-test")
+
+    def test_list_sessions(self, tmp_path):
+        session1 = Session(id="list-test-unique-1")
+        session1.add_user("First")
+        save_session(session1)
+
+        session2 = Session(id="list-test-unique-2")
+        session2.add_user("Second")
+        save_session(session2)
+
+        # List
+        sessions = list_sessions(limit=10)
+        ids = [s["id"] for s in sessions]
+        assert "list-test-unique-1" in ids
+        assert "list-test-unique-2" in ids
+
+        # Cleanup
+        for sid in ["list-test-unique-1", "list-test-unique-2"]:
+            delete_session(sid)
+
+    def test_delete_session(self, tmp_path):
+        session = Session(id="delete-test")
+        session.add_user("Test")
+        save_session(session)
+
+        # Delete
+        assert delete_session("delete-test")
+
+        # Verify gone
+        loaded = load_session("delete-test")
+        assert loaded is None

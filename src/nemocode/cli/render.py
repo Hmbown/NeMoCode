@@ -484,15 +484,35 @@ def _error_hint(text: str) -> str:
     """Suggest recovery actions based on error content."""
     lower = text.lower()
     if "rate limit" in lower or "429" in lower:
-        return "Retry in a few seconds, or switch endpoints with /endpoint."
+        return "Rate limited. Wait a few seconds, or switch endpoints with /endpoint."
     if "auth" in lower or "401" in lower or "api key" in lower:
-        return "Check your API key: run nemo setup or /doctor."
+        return "Check your API key: run 'nemo auth setup' or set NVIDIA_API_KEY env var."
+    if "forbidden" in lower or "403" in lower:
+        return "Access denied. Check API permissions or billing."
+    if "not found" in lower or "404" in lower:
+        return "Resource not found. Check model name with /model."
     if "timeout" in lower or "timed out" in lower:
         return "Request timed out. Try again or /compact to reduce context."
-    if "context" in lower and ("length" in lower or "window" in lower):
+    if "context" in lower and ("length" in lower or "window" in lower or "exceed" in lower):
         return "Context window full. Use /compact or /reset."
     if "connection" in lower or "network" in lower:
         return "Network error. Check your connection and endpoint URL."
+    if "ssl" in lower or "certificate" in lower:
+        return "SSL error. Check endpoint URL or proxy settings."
+    if "dns" in lower or "resolve" in lower:
+        return "DNS error. Check endpoint URL or network settings."
+    if "refused" in lower or "econnrefused" in lower:
+        return "Connection refused. Endpoint may be down or URL incorrect."
+    if "invalid" in lower and "request" in lower:
+        return "Invalid request. Check tool arguments or model parameters."
+    if "internal server error" in lower or "500" in lower:
+        return "Server error. Try again in a few moments."
+    if "bad gateway" in lower or "502" in lower:
+        return "Bad gateway. Endpoint may be overloaded. Try again."
+    if "service unavailable" in lower or "503" in lower:
+        return "Service unavailable. Try again or switch endpoints."
+    if "gateway timeout" in lower or "504" in lower:
+        return "Gateway timeout. Try again or /compact."
     return ""
 
 

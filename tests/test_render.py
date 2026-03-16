@@ -382,6 +382,30 @@ class TestErrorHints:
     def test_no_hint_for_generic(self):
         assert _error_hint("Something unexpected happened") == ""
 
+    def test_forbidden_hint(self):
+        assert "permission" in _error_hint("403 Forbidden: Access denied").lower()
+
+    def test_not_found_hint(self):
+        assert "model" in _error_hint("404 Not Found: Resource").lower()
+
+    def test_server_error_hint(self):
+        hint = _error_hint("500 Internal Server Error").lower()
+        assert "server" in hint or "try again" in hint
+
+    def test_ssl_error_hint(self):
+        assert "ssl" in _error_hint("SSL certificate error").lower()
+
+    def test_dns_error_hint(self):
+        assert "dns" in _error_hint("DNS resolution failed").lower()
+
+    def test_invalid_request_hint(self):
+        assert "invalid" in _error_hint("400 Bad Request: Invalid request").lower()
+
+    def test_gateway_timeout_hint(self):
+        hint = _error_hint("504 Gateway Timeout")
+        assert hint  # Should have a hint
+        assert "timed out" in hint.lower() or "gateway" in hint.lower()
+
 
 class TestErrorRendering:
     def test_error_with_recovery_hint(self):

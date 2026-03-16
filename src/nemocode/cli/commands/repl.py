@@ -63,16 +63,31 @@ except ImportError:
 
 
 class _SlashCompleter(Completer):
-    """Tab-completion for slash commands and their arguments."""
+    """Tab-completion for slash commands, their arguments, and file paths."""
 
     def __init__(self, state: _ReplState | None = None) -> None:
         self._state = state
+        self._path_completer: Completer | None = None
+        try:
+            from prompt_toolkit.completion import PathCompleter
+
+            self._path_completer = PathCompleter(expanduser=True)
+        except ImportError:
+            pass
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        if not text.startswith("/"):
+
+        # Slash commands
+        if text.startswith("/"):
+            yield from self._complete_slash(text, document, complete_event)
             return
 
+        # File path completion for bare text input
+        if self._path_completer:
+            yield from self._path_completer.get_completions(document, complete_event)
+
+    def _complete_slash(self, text, document, complete_event):
         parts = text.split(None, 1)
         cmd = parts[0]
 
@@ -126,6 +141,8 @@ _SLASH_COMMANDS = [
     "/snapshot",
     "/snapshots",
     "/revert",
+    "/context",
+    "/diff",
     "/quit",
     "/exit",
 ]
@@ -381,6 +398,8 @@ _HELP_TEXT = """\
   [cyan]/reset[/cyan]              Reset conversation
   [cyan]/undo[/cyan]               Revert the last file change
   [cyan]/cost[/cyan]               Session cost and token usage
+  [cyan]/context[/cyan]            Context window usage details
+  [cyan]/diff[/cyan]               Show git diff --stat inline
   [cyan]/mode[/cyan]               Cycle mode: code -> plan -> auto
   [cyan]/doctor[/cyan]             Run diagnostics (API, tools, hardware)
   [cyan]/quit[/cyan]               Exit
@@ -452,6 +471,8 @@ class _SlashDispatcher:
             "/snapshot": self._cmd_snapshot,
             "/revert": self._cmd_revert,
             "/snapshots": self._cmd_snapshots,
+            "/context": self._cmd_context,
+            "/diff": self._cmd_diff,
             "/quit": self._cmd_quit,
             "/exit": self._cmd_quit,
             "/q": self._cmd_quit,
@@ -808,6 +829,67 @@ class _SlashDispatcher:
                 )
         except Exception as e:
             console.print(f"[red]Revert failed: {e}[/red]")
+        return True
+
+    def _cmd_context(self, _arg: str) -> bool:
+        """Show current context window usage details."""
+        s = self._state
+        total_tokens = 0
+        msg_count = 0
+        try:
+            for session in s.agent.sessions.values():
+                total_tokens += s.context_mgr.usage(session.messages)
+                msg_count += len(session.messages)
+        except Exception:
+            pass
+        total_tokens = max(total_tokens, s.metrics.total_tokens)
+        ctx_window = s.context_mgr.context_window
+        pct = (total_tokens / ctx_window * 100) if ctx_window > 0 else 0
+        remaining = ctx_window - total_tokens
+        # Estimate remaining turns (rough: ~2K tokens per turn)
+        est_turns = max(0, remaining // 2000) if remaining > 0 else 0
+
+        console.print("[bold]Context Usage[/bold]")
+        console.print(f"  Messages:         {msg_count}")
+        console.print(f"  Tokens used:      {_fmt_tokens(total_tokens)}")
+        console.print(f"  Context window:   {_fmt_tokens(ctx_window)}")
+        pct_color = "red" if pct > 80 else "yellow" if pct > 50 else "green"
+        console.print(f"  Usage:            [{pct_color}]{pct:.1f}%[/{pct_color}]")
+        console.print(f"  Remaining:        ~{_fmt_tokens(remaining)}")
+        console.print(f"  Est. turns left:  ~{est_turns}")
+        return True
+
+    def _cmd_diff(self, _arg: str) -> bool:
+        """Show git diff --stat inline."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--stat"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                if output:
+                    console.print(f"[dim]{output}[/dim]")
+                else:
+                    console.print("[dim]No unstaged changes.[/dim]")
+                # Also show staged
+                staged = subprocess.run(
+                    ["git", "diff", "--cached", "--stat"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if staged.returncode == 0 and staged.stdout.strip():
+                    console.print("\n[bold]Staged:[/bold]")
+                    console.print(f"[dim]{staged.stdout.strip()}[/dim]")
+            else:
+                console.print("[dim]Not in a git repository.[/dim]")
+        except Exception as e:
+            console.print(f"[red]git diff failed: {e}[/red]")
         return True
 
     def _cmd_quit(self, _arg: str) -> bool:

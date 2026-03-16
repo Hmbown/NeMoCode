@@ -156,19 +156,19 @@ class TestRegisterMCPTools:
             MCPClient, "call_tool", new_callable=AsyncMock, return_value='{"ok": true}'
         )
         with mock_connect, mock_call_tool as mock_call:
-                await register_mcp_tools([config], registry)
+            await register_mcp_tools([config], registry)
 
-                # Call the first registered tool
-                td_alpha = registry.get("mcp_srv_alpha")
-                assert td_alpha is not None
-                await td_alpha.fn(foo="bar")
-                mock_call.assert_called_with("alpha", {"foo": "bar"})
+            # Call the first registered tool
+            td_alpha = registry.get("mcp_srv_alpha")
+            assert td_alpha is not None
+            await td_alpha.fn(foo="bar")
+            mock_call.assert_called_with("alpha", {"foo": "bar"})
 
-                # Call the second registered tool
-                td_beta = registry.get("mcp_srv_beta")
-                assert td_beta is not None
-                await td_beta.fn(baz="qux")
-                mock_call.assert_called_with("beta", {"baz": "qux"})
+            # Call the second registered tool
+            td_beta = registry.get("mcp_srv_beta")
+            assert td_beta is not None
+            await td_beta.fn(baz="qux")
+            mock_call.assert_called_with("beta", {"baz": "qux"})
 
     @pytest.mark.asyncio
     async def test_returns_clients_list(self):

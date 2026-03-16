@@ -73,9 +73,7 @@ def _make_text_provider(text: str) -> AsyncMock:
         )
 
     provider.stream = mock_stream
-    provider.complete = AsyncMock(
-        return_value=CompletionResult(content=text, finish_reason="stop")
-    )
+    provider.complete = AsyncMock(return_value=CompletionResult(content=text, finish_reason="stop"))
     return provider
 
 
@@ -101,9 +99,7 @@ def _make_reject_provider(reject_count: int) -> AsyncMock:
         )
 
     provider.stream = mock_stream
-    provider.complete = AsyncMock(
-        return_value=CompletionResult(content="", finish_reason="stop")
-    )
+    provider.complete = AsyncMock(return_value=CompletionResult(content="", finish_reason="stop"))
     return provider
 
 
@@ -162,9 +158,7 @@ class TestReviewerRejection:
                     events.append(ev)
 
         # "full" formation has verification_rounds=2, so we should see at most 2 review phases
-        review_phases = [
-            e for e in events if e.kind == "phase" and e.phase == "reviewing"
-        ]
+        review_phases = [e for e in events if e.kind == "phase" and e.phase == "reviewing"]
         assert len(review_phases) <= 2
 
 
@@ -183,9 +177,7 @@ class TestExecutorStagnation:
         async def stagnant_stream(messages, tools=None, extra_body=None):
             yield StreamChunk(text="Let me check.")
             yield StreamChunk(
-                tool_calls=[
-                    ToolCall(id="tc_loop", name="read_file", arguments={"path": "same.py"})
-                ]
+                tool_calls=[ToolCall(id="tc_loop", name="read_file", arguments={"path": "same.py"})]
             )
             yield StreamChunk(
                 finish_reason="stop",

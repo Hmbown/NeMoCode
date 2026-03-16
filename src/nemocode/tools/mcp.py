@@ -86,9 +86,7 @@ class MCPClient:
                     {"error": f"MCP server {self.config.name} crashed and reconnect failed: {e}"}
                 )
             if not self._process or self._process.returncode is not None:
-                return json.dumps(
-                    {"error": f"MCP server {self.config.name} is not running"}
-                )
+                return json.dumps({"error": f"MCP server {self.config.name} is not running"})
 
         msg = self._make_request(
             "tools/call",

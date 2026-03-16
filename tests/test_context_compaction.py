@@ -246,12 +246,8 @@ class TestToolCallPairsAtCutBoundary:
         # Add 3 consecutive tool pairs
         for j in range(3):
             tc = ToolCall(id=f"tc_{j}", name="read_file", arguments={"path": f"f{j}.py"})
-            messages.append(
-                Message(role=Role.ASSISTANT, content=f"Reading f{j}", tool_calls=[tc])
-            )
-            messages.append(
-                Message(role=Role.TOOL, content=f"content {j}", tool_call_id=f"tc_{j}")
-            )
+            messages.append(Message(role=Role.ASSISTANT, content=f"Reading f{j}", tool_calls=[tc]))
+            messages.append(Message(role=Role.TOOL, content=f"content {j}", tool_call_id=f"tc_{j}"))
 
         messages.append(Message(role=Role.ASSISTANT, content="All files read."))
 

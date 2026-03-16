@@ -58,9 +58,7 @@ class TestPostHooks:
 class TestMultipleHooks:
     @pytest.mark.asyncio
     async def test_multiple_hooks_in_sequence_all_execute(self):
-        runner = HookRunner(
-            {"pre_bash_exec": ["echo first", "echo second", "echo third"]}
-        )
+        runner = HookRunner({"pre_bash_exec": ["echo first", "echo second", "echo third"]})
         outputs = await runner.run_pre("bash_exec", {})
         assert outputs == ["first", "second", "third"]
 
@@ -111,9 +109,7 @@ class TestHookErrors:
 
     @pytest.mark.asyncio
     async def test_error_in_first_hook_does_not_stop_second(self):
-        runner = HookRunner(
-            {"pre_bash_exec": ["false", "echo ok"]}
-        )
+        runner = HookRunner({"pre_bash_exec": ["false", "echo ok"]})
         outputs = await runner.run_pre("bash_exec", {})
         assert len(outputs) == 2
         assert "[hook error]" in outputs[0]

@@ -144,8 +144,10 @@ class TestDoctorCommand:
         report = DiagnosticReport()
         report.add("test_check", "ok", "details")
 
-        with patch("nemocode.cli.commands.doctor.load_config", return_value=config), \
-             patch("nemocode.cli.commands.doctor.run_diagnostics", return_value=report):
+        with (
+            patch("nemocode.cli.commands.doctor.load_config", return_value=config),
+            patch("nemocode.cli.commands.doctor.run_diagnostics", return_value=report),
+        ):
             result = runner.invoke(app, ["doctor", "show"])
             assert result.exit_code == 0
             assert "Diagnostic Report" in result.stdout

@@ -251,8 +251,12 @@ class _InputReader:
         except Exception:
             pass
 
-        # Token count (after first turn)
-        if s.metrics.total_tokens > 0:
+        # During an active turn, show live elapsed timer instead of token count
+        if s._turn_active and s._turn_start_time:
+            elapsed = time.time() - s._turn_start_time
+            parts.append(f" <ansiyellow>{elapsed:.0f}s</ansiyellow>")
+        elif s.metrics.total_tokens > 0:
+            # Token count (after first turn, when not streaming)
             t = s.metrics.total_tokens
             tok_str = (
                 f"{t / 1_000_000:.1f}M"
@@ -839,6 +843,8 @@ class _ReplState:
         self._cancelled = False
         self._pending_skill: tuple[str, str] | None = None
         self._auto_approve_remaining = False
+        self._turn_active = False
+        self._turn_start_time: float = 0.0
 
     def _resolve_context_window(self) -> int:
         """Determine context window size from manifest or default."""
@@ -1127,10 +1133,11 @@ _NVIDIA_GREEN = "bright_green"
 
 
 def _print_banner(state: _ReplState) -> None:
-    """Print a clean NVIDIA-themed welcome banner."""
-    from rich.panel import Panel
-    from rich.text import Text
+    """Print a clean NVIDIA-themed welcome banner.
 
+    Detects terminal height — if < 30 rows, uses a compact 2-line banner.
+    Full banner for tall terminals.
+    """
     ep_name = state.config.default_endpoint
     ep = state.config.endpoints.get(ep_name)
     model_id = ep.model_id if ep else "unknown"
@@ -1144,9 +1151,27 @@ def _print_banner(state: _ReplState) -> None:
     else:
         ctx_k = "128K"
 
-    formation_str = f"  ▸ {formation}" if formation else ""
+    formation_str = f" ▸ {formation}" if formation else ""
 
-    # Clean NVIDIA-style banner — angular accents, spaced typography
+    # Compact banner for small terminals (< 30 rows)
+    try:
+        term_height = os.get_terminal_size().lines
+    except (OSError, ValueError):
+        term_height = 40  # default: assume large enough
+
+    if term_height < 30:
+        console.print(
+            f"[bold {_NVIDIA_GREEN}]  ▸▸ NeMoCode[/bold {_NVIDIA_GREEN}] "
+            f"[dim]v{__version__} · {model_display} · {ep_name} · {ctx_k} ctx"
+            f"{formation_str}[/dim]"
+        )
+        console.print(f"[dim]     {Path.cwd()}[/dim]")
+        return
+
+    # Full banner for tall terminals
+    from rich.panel import Panel
+    from rich.text import Text
+
     content = Text()
     content.append("\n")
     content.append("  ▸▸  ", style=f"bold {_NVIDIA_GREEN}")
@@ -1318,6 +1343,8 @@ async def run_repl(
 
             renderer = _TurnRenderer(state)
 
+            state._turn_active = True
+            state._turn_start_time = time.time()
             try:
                 await _run_turn(state, stripped, renderer)
             except KeyboardInterrupt:
@@ -1327,6 +1354,7 @@ async def run_repl(
                 logger.exception("Unexpected error during turn")
                 console.print(f"\n[bold red]Unexpected error: {exc}[/bold red]")
             finally:
+                state._turn_active = False
                 renderer.finalize()
 
             # Auto-save session after each turn

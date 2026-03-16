@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -33,6 +34,8 @@ class TestMCPClient:
     async def test_call_tool_without_connection(self):
         config = MCPServerConfig(name="test", command="echo", args=[])
         client = MCPClient(config)
-        result = await client.call_tool("test_tool", {"arg": "value"})
+        # Mock connect to simulate reconnect failure (no real server)
+        with patch.object(client, "connect", new_callable=AsyncMock, return_value=[]):
+            result = await client.call_tool("test_tool", {"arg": "value"})
         data = json.loads(result)
         assert "error" in data

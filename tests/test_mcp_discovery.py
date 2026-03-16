@@ -54,7 +54,9 @@ class TestCallToolWithoutConnection:
     async def test_returns_error_json(self):
         config = MCPServerConfig(name="myserver", command="echo", args=[])
         client = MCPClient(config)
-        result = await client.call_tool("test_tool", {"arg": "value"})
+        # Mock connect to simulate reconnect failure
+        with patch.object(client, "connect", new_callable=AsyncMock, return_value=[]):
+            result = await client.call_tool("test_tool", {"arg": "value"})
         data = json.loads(result)
         assert "error" in data
 
@@ -62,7 +64,9 @@ class TestCallToolWithoutConnection:
     async def test_error_mentions_server_name(self):
         config = MCPServerConfig(name="myserver", command="echo", args=[])
         client = MCPClient(config)
-        result = await client.call_tool("test_tool", {})
+        # Mock connect to simulate reconnect failure
+        with patch.object(client, "connect", new_callable=AsyncMock, return_value=[]):
+            result = await client.call_tool("test_tool", {})
         data = json.loads(result)
         assert "myserver" in data["error"]
 

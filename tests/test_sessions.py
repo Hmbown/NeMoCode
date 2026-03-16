@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
+from nemocode.core.persistence import delete_session, list_sessions, load_session, save_session
 from nemocode.core.sessions import Session, TokenUsage
-from nemocode.core.streaming import Message, Role, ToolCall
-from nemocode.core.persistence import save_session, load_session, list_sessions, delete_session
+from nemocode.core.streaming import Message, Role
 
 
 class TestTokenUsage:

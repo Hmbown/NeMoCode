@@ -108,6 +108,7 @@ async def parse_document(
             },
         )
 
+        # 60s timeout — parsing large documents can be slow
         with urllib.request.urlopen(req, timeout=60) as resp:
             result = json.loads(resp.read().decode())
 

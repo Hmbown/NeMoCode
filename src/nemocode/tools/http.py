@@ -12,14 +12,20 @@ import httpx
 from nemocode.tools import tool
 
 _MAX_BODY = 50_000
+# Default timeout for HTTP requests (seconds).  Kept shorter than bash_exec
+# (120s) since network calls should fail fast rather than block the agent.
+_HTTP_TIMEOUT = 30
 
 
 @tool(name="http_fetch", description="Fetch content from a URL.", category="http")
-async def http_fetch(url: str, method: str = "GET", headers: str = "") -> str:
+async def http_fetch(
+    url: str, method: str = "GET", headers: str = "", timeout: int = _HTTP_TIMEOUT
+) -> str:
     """Fetch a URL.
     url: The URL to fetch.
     method: HTTP method (GET, POST, etc.).
     headers: JSON-encoded headers dict.
+    timeout: Request timeout in seconds (default 30).
     """
     hdrs = {}
     if headers:
@@ -29,7 +35,7 @@ async def http_fetch(url: str, method: str = "GET", headers: str = "") -> str:
             return json.dumps({"error": "Invalid headers JSON"})
 
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.request(method, url, headers=hdrs)
             body = resp.text
             if len(body) > _MAX_BODY:

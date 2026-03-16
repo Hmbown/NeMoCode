@@ -46,8 +46,26 @@ def _register_commands() -> None:
     app.add_typer(setup_app, name="setup")
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from nemocode import __version__
+
+        typer.echo(f"NeMoCode v{__version__}")
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
     """Launch NeMoCode. Without a subcommand, starts the interactive REPL."""
     if ctx.invoked_subcommand is None:
         from nemocode.core.first_run import check_and_run_first_run

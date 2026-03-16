@@ -92,10 +92,15 @@ class _ToolCallBuffer:
         self.calls.clear()
         self.results.clear()
 
+    # After this many consecutive same-type read-only tools, collapse into a count
+    _COLLAPSE_THRESHOLD = 3
+
     def get_summary(self) -> str:
         """Generate a summary of buffered tool calls.
 
         Shows file names when few files, counts when many.
+        After 3+ consecutive same-type tools, collapses into
+        'Read 15 files (3.2s)' style summary.
         """
         if not self.calls:
             return ""
@@ -127,7 +132,7 @@ class _ToolCallBuffer:
 
         parts: list[str] = []
         if reads:
-            if len(reads) <= 3:
+            if len(reads) <= self._COLLAPSE_THRESHOLD:
                 parts.append(f"Read {', '.join(reads)}")
             else:
                 parts.append(f"Read {len(reads)} files")
@@ -138,7 +143,11 @@ class _ToolCallBuffer:
                 parts.append(f"searched {len(searches)} patterns")
         if git_ops:
             parts.extend(git_ops)
-        parts.extend(others)
+        if others:
+            if len(others) <= self._COLLAPSE_THRESHOLD:
+                parts.extend(others)
+            else:
+                parts.append(f"{len(others)} other calls")
 
         return ", ".join(parts) if parts else f"{len(self.calls)} tool calls"
 
@@ -438,13 +447,25 @@ class EventRenderer:
             self._thinking_spinner.stop()
             self._thinking_spinner = None
 
+    # Minimum interval between spinner text updates (seconds)
+    _SPINNER_THROTTLE_S = 0.25
+
     def _update_thinking_status(self, tool_name: str, tool_args: dict) -> None:
-        """Update the thinking spinner text to show current tool progress."""
+        """Update the thinking spinner text to show current tool progress.
+
+        Throttled to at most once per 250ms to avoid flickering when tools
+        execute faster than the eye can follow.
+        """
         if not self._interactive or not self._thinking_spinner:
             return
 
+        now = time.monotonic()
+        if now - self._last_refresh < self._SPINNER_THROTTLE_S:
+            return
+        self._last_refresh = now
+
         # Elapsed since turn start
-        elapsed = time.monotonic() - self._turn_start if self._turn_start else 0
+        elapsed = now - self._turn_start if self._turn_start else 0
         elapsed_str = f" ({elapsed:.1f}s)" if elapsed > 1.0 else ""
 
         if tool_name == "read_file":

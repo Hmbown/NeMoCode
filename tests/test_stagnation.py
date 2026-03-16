@@ -18,7 +18,8 @@ class TestStagnationTracker:
         for _ in range(5):
             tracker.record_tool_call("read_file", {"path": "foo.py"})
         assert tracker.is_stagnant() is not None
-        assert "repeated" in tracker.is_stagnant().lower()
+        assert "stuck" in tracker.is_stagnant().lower()
+        assert "read_file" in tracker.is_stagnant()
 
     def test_different_tool_calls_no_stagnation(self):
         tracker = _StagnationTracker()
@@ -31,7 +32,8 @@ class TestStagnationTracker:
         for _ in range(5):
             tracker.record_error("File not found: foo.py")
         assert tracker.is_stagnant() is not None
-        assert "error" in tracker.is_stagnant().lower()
+        assert "error" in tracker.is_stagnant().lower() or "repeated" in tracker.is_stagnant().lower()
+        assert "File not found" in tracker.is_stagnant()
 
     def test_idle_detection(self):
         """Only truly idle rounds (no text, no tools) trigger stagnation."""

@@ -55,6 +55,8 @@ class _StagnationTracker:
     _call_hashes: list[str] = field(default_factory=list)
     _error_hashes: list[str] = field(default_factory=list)
     _idle_count: int = 0  # rounds with ZERO activity (no text, no tools)
+    _last_tool_name: str = ""  # name of last recorded tool (for messages)
+    _last_error_preview: str = ""  # truncated preview of last error
 
     # Thresholds — generous to avoid false positives
     repeat_threshold: int = 5  # same exact tool call 5 times → stagnation
@@ -64,6 +66,7 @@ class _StagnationTracker:
     def record_tool_call(self, name: str, args: dict) -> None:
         h = hashlib.md5(f"{name}:{json.dumps(args, sort_keys=True)}".encode()).hexdigest()[:12]
         self._call_hashes.append(h)
+        self._last_tool_name = name
         if len(self._call_hashes) > 50:
             self._call_hashes = self._call_hashes[-50:]
         # Tool activity = progress
@@ -72,6 +75,7 @@ class _StagnationTracker:
     def record_error(self, error_text: str) -> None:
         h = hashlib.md5(error_text.encode()).hexdigest()[:12]
         self._error_hashes.append(h)
+        self._last_error_preview = error_text[:80].replace("\n", " ")
         if len(self._error_hashes) > 50:
             self._error_hashes = self._error_hashes[-50:]
 
@@ -83,22 +87,36 @@ class _StagnationTracker:
             self._idle_count += 1
 
     def is_stagnant(self) -> str | None:
-        """Check for stagnation. Returns a reason string or None."""
+        """Check for stagnation. Returns a descriptive reason string or None."""
         # Check for repeated identical tool calls
         if len(self._call_hashes) >= self.repeat_threshold:
             recent = self._call_hashes[-self.repeat_threshold :]
             if len(set(recent)) == 1:
-                return f"Same tool call repeated {self.repeat_threshold} times"
+                last_name = self._last_tool_name or "unknown tool"
+                return (
+                    f"Stuck calling {last_name} on the same arguments "
+                    f"{self.repeat_threshold} times. "
+                    f"Try rephrasing or use /reset."
+                )
 
         # Check for repeated identical errors
         if len(self._error_hashes) >= self.error_threshold:
             recent = self._error_hashes[-self.error_threshold :]
             if len(set(recent)) == 1:
-                return f"Same error repeated {self.error_threshold} times"
+                preview = self._last_error_preview or "same error"
+                return (
+                    f"Same error repeated {self.error_threshold} times: "
+                    f"{preview}. "
+                    f"Fix the underlying issue or try a different approach."
+                )
 
         # Check for total idleness (no text, no tools)
         if self._idle_count >= self.idle_threshold:
-            return f"No activity in {self.idle_threshold} rounds"
+            return (
+                f"No activity in {self.idle_threshold} rounds — the model "
+                f"is not producing text or calling tools. "
+                f"Try rephrasing or use /reset."
+            )
 
         return None
 
@@ -106,6 +124,8 @@ class _StagnationTracker:
         self._call_hashes.clear()
         self._error_hashes.clear()
         self._idle_count = 0
+        self._last_tool_name = ""
+        self._last_error_preview = ""
 
 
 def _truncate_output(result: str, tool_name: str) -> str:

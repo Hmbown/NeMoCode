@@ -71,9 +71,24 @@ class MCPClient:
             return []
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        """Call a tool on the MCP server."""
+        """Call a tool on the MCP server.
+
+        Automatically attempts one reconnect if the server process has died.
+        """
+        # Detect dead server and attempt reconnect
         if not self._process or self._process.returncode is not None:
-            return json.dumps({"error": "MCP server not connected"})
+            logger.warning("MCP server %s died, attempting reconnect...", self.config.name)
+            try:
+                await self.connect()
+            except Exception as e:
+                logger.error("MCP reconnect failed for %s: %s", self.config.name, e)
+                return json.dumps(
+                    {"error": f"MCP server {self.config.name} crashed and reconnect failed: {e}"}
+                )
+            if not self._process or self._process.returncode is not None:
+                return json.dumps(
+                    {"error": f"MCP server {self.config.name} is not running"}
+                )
 
         msg = self._make_request(
             "tools/call",

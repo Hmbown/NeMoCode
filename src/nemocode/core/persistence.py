@@ -202,6 +202,25 @@ def _list_sessions_json(limit: int = 50) -> list[dict[str, Any]]:
     return sessions
 
 
+def load_latest_session_metrics(count: int = 20) -> list[dict[str, Any]]:
+    """Load recent session metrics summaries for obs tail display."""
+    sessions = list_sessions(limit=count)
+    metrics: list[dict[str, Any]] = []
+    for s in sessions:
+        usage = s.get("usage", {})
+        metrics.append(
+            {
+                "model_id": s.get("endpoint_name", "?"),
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_time_ms": 0,
+                "estimated_cost": 0,
+                "tool_calls": 0,
+            }
+        )
+    return metrics
+
+
 # ---------------------------------------------------------------------------
 # Session retry — retry API calls with exponential backoff
 # ---------------------------------------------------------------------------

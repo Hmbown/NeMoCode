@@ -96,6 +96,7 @@ nemo endpoint ls / test     # manage endpoints
 nemo model ls / show        # inspect model manifests
 nemo formation ls / show    # inspect formations
 nemo hardware recommend     # GPU-based recommendations
+nemo doctor                 # run diagnostics to check setup
 nemo session ls             # past conversations
 nemo obs pricing            # token pricing
 nemo init                   # create .nemocode.yaml

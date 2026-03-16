@@ -30,6 +30,21 @@ from nemocode.core.scheduler import AgentEvent
 # NVIDIA green accent used throughout the UI
 _NV_GREEN = "bright_green"
 
+# Custom NVIDIA beam spinner — a green bar that bounces left-to-right.
+# Each frame is one position of the bright segment in a dim track.
+_BEAM_WIDTH = 12
+_BEAM_FRAMES = []
+_TRACK = "─"
+_BRIGHT = "━"
+for i in range(_BEAM_WIDTH):
+    bar = list(_TRACK * _BEAM_WIDTH)
+    # 3-char bright segment, wrapping
+    for offset in range(3):
+        bar[(i + offset) % _BEAM_WIDTH] = _BRIGHT
+    _BEAM_FRAMES.append("".join(bar))
+# Bounce back
+_BEAM_FRAMES += _BEAM_FRAMES[-2:0:-1]
+
 # Tools whose results are just "gathered info" — don't need expanded output
 _READ_ONLY_TOOLS = frozenset(
     {
@@ -192,18 +207,16 @@ class EventRenderer:
     def start_thinking(self, phrase: str) -> None:
         """Start the unified thinking/progress spinner.
 
-        This spinner persists through read-only tool execution, updating
-        with tool progress. It stops when the text response begins or a
-        mutation tool needs immediate display.
+        Uses a custom NVIDIA-themed bouncing beam animation that stays
+        visible throughout tool execution.  Stops only when the text
+        response begins or a mutation tool needs immediate display.
         """
         if not self._interactive:
             return
         self._turn_start = time.monotonic()
-        self._thinking_spinner = Status(
+        self._thinking_spinner = _beam_status(
             f"  [{_NV_GREEN}]{phrase}…[/{_NV_GREEN}]",
-            console=self._console,
-            spinner="dots",
-            spinner_style=_NV_GREEN,
+            self._console,
         )
         self._thinking_spinner.start()
 
@@ -400,11 +413,9 @@ class EventRenderer:
         if self._thinking_spinner:
             return  # already running
         elapsed = time.monotonic() - self._turn_start if self._turn_start else 0
-        self._thinking_spinner = Status(
+        self._thinking_spinner = _beam_status(
             f"  [{_NV_GREEN}]Working ({elapsed:.0f}s)…[/{_NV_GREEN}]",
-            console=self._console,
-            spinner="dots",
-            spinner_style=_NV_GREEN,
+            self._console,
         )
         self._thinking_spinner.start()
 
@@ -990,6 +1001,15 @@ def _render_write_preview(con: Console, args: dict) -> None:
             con.print("[dim]  (no changes)[/dim]")
     except Exception:
         pass
+
+
+def _beam_status(text: str, console: Console) -> Status:
+    """Create a Status widget with the custom NVIDIA beam spinner."""
+    status = Status(text, console=console, spinner="dots", spinner_style=_NV_GREEN)
+    # Override the internal spinner frames with our beam animation
+    status._spinner.frames = _BEAM_FRAMES
+    status._spinner.interval = 80  # ms per frame — smooth, visible
+    return status
 
 
 def render_tool_result(

@@ -107,3 +107,47 @@ class TestObsCommand:
         result = runner.invoke(app, ["obs", "pricing"])
         assert result.exit_code == 0
         assert "Pricing" in result.stdout
+
+
+class TestDoctorCommand:
+    def test_doctor_show(self):
+        from nemocode.config.schema import (
+            Endpoint,
+            EndpointTier,
+            Formation,
+            FormationRole,
+            FormationSlot,
+            NeMoCodeConfig,
+        )
+        from nemocode.core.doctor import DiagnosticReport
+
+        config = NeMoCodeConfig(
+            default_endpoint="test",
+            endpoints={
+                "test": Endpoint(
+                    name="test",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://test.com/v1",
+                    api_key_env="TEST_API_KEY",
+                    model_id="test",
+                ),
+            },
+            formations={
+                "solo": Formation(
+                    name="Solo",
+                    slots=[
+                        FormationSlot(endpoint="test", role=FormationRole.EXECUTOR),
+                    ],
+                ),
+            },
+        )
+        report = DiagnosticReport()
+        report.add("test_check", "ok", "details")
+
+        with patch("nemocode.cli.commands.doctor.load_config", return_value=config), \
+             patch("nemocode.cli.commands.doctor.run_diagnostics", return_value=report):
+            result = runner.invoke(app, ["doctor", "show"])
+            assert result.exit_code == 0
+            assert "Diagnostic Report" in result.stdout
+            assert "test_check" in result.stdout
+            assert "ok" in result.stdout

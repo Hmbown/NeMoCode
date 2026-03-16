@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -55,14 +54,16 @@ def run_diagnostics(config: NeMoCodeConfig) -> DiagnosticReport:
 
 
 def _check_api_keys(config: NeMoCodeConfig, report: DiagnosticReport) -> None:
-    """Check that required API keys are set."""
+    """Check that required API keys are set (keyring + env)."""
     ep = config.endpoints.get(config.default_endpoint)
     if not ep:
         report.add("api_key", "fail", f"Default endpoint '{config.default_endpoint}' not found")
         return
 
     if ep.api_key_env:
-        val = os.environ.get(ep.api_key_env, "")
+        from nemocode.config import get_api_key
+
+        val = get_api_key(ep)
         if val:
             masked = val[:8] + "..." + val[-4:] if len(val) > 12 else "***"
             report.add("api_key", "ok", f"{ep.api_key_env} set ({masked})")

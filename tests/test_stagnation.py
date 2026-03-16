@@ -32,7 +32,8 @@ class TestStagnationTracker:
         for _ in range(5):
             tracker.record_error("File not found: foo.py")
         assert tracker.is_stagnant() is not None
-        assert "error" in tracker.is_stagnant().lower() or "repeated" in tracker.is_stagnant().lower()
+        reason = tracker.is_stagnant().lower()
+        assert "error" in reason or "repeated" in reason
         assert "File not found" in tracker.is_stagnant()
 
     def test_idle_detection(self):

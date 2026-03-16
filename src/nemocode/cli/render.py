@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.markdown import Markdown
 from rich.status import Status
 from rich.text import Text
 
@@ -164,7 +163,6 @@ class EventRenderer:
         self.show_thinking = show_thinking
         self._streaming = False
         self._md_buffer = ""
-        self._live: Live | None = None
         self._last_refresh = 0.0
         self._thinking_spinner: Status | None = None  # unified thinking/progress
         self._tool_start: float = 0.0
@@ -230,23 +228,12 @@ class EventRenderer:
         if not self._showed_response_sep:
             self._show_response_separator()
 
-        if self._interactive:
-            self._md_buffer += event.text
-            if self._live is None:
-                self._live = Live(
-                    Markdown(self._md_buffer),
-                    console=self._console,
-                    auto_refresh=False,
-                    vertical_overflow="visible",
-                )
-                self._live.start()
-            now = time.monotonic()
-            if now - self._last_refresh >= 0.05 or "\n" in event.text:
-                self._live.update(Markdown(self._md_buffer))
-                self._live.refresh()
-                self._last_refresh = now
-        else:
-            self._console.print(event.text, end="", highlight=False, markup=False)
+        # Stream text directly — no Live widget.
+        # Live + Markdown re-rendering caused duplication on long responses
+        # because vertical_overflow="visible" can't erase content taller
+        # than the terminal.  Plain streaming is reliable on every terminal.
+        self._md_buffer += event.text
+        self._console.print(event.text, end="", highlight=False, markup=False)
         self._streaming = True
 
     def _thinking(self, event: AgentEvent) -> None:
@@ -440,13 +427,8 @@ class EventRenderer:
 
     def _end_md_stream(self) -> None:
         """Stop markdown streaming and finalize output."""
-        if self._live:
-            self._live.update(Markdown(self._md_buffer))
-            self._live.stop()
-            self._live = None
-            self._md_buffer = ""
-        elif self._streaming and not self._interactive:
-            self._console.print()  # trailing newline for raw mode
+        if self._streaming:
+            self._console.print()  # trailing newline
         self._md_buffer = ""
         self._streaming = False
 

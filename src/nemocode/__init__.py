@@ -3,4 +3,4 @@
 
 """NeMoCode — Terminal-first agentic coding CLI for NVIDIA Nemotron 3."""
 
-__version__ = "0.1.13"
+__version__ = "0.1.14"

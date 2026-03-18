@@ -241,4 +241,7 @@ class TestGetAutoEndpoint:
             )
             == "spark-sglang-super"
         )
-        assert route_to_formation("refactor the authentication module across all services", config) == "spark-sglang"
+        assert (
+            route_to_formation("refactor the authentication module across all services", config)
+            == "spark-sglang"
+        )

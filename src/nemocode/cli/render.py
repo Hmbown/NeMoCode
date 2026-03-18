@@ -470,9 +470,7 @@ class EventRenderer:
                 if spinner and self._turn_start:
                     elapsed = time.monotonic() - self._turn_start
                     label = self._spinner_label or "Working"
-                    spinner.update(
-                        f"  [{_NV_GREEN}]{label} ({elapsed:.0f}s)…[/{_NV_GREEN}]"
-                    )
+                    spinner.update(f"  [{_NV_GREEN}]{label} ({elapsed:.0f}s)…[/{_NV_GREEN}]")
 
         self._timer_thread = threading.Thread(target=_tick, daemon=True)
         self._timer_thread.start()

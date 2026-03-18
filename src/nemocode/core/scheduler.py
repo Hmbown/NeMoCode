@@ -406,8 +406,12 @@ class Scheduler:
     # ------------------------------------------------------------------
 
     async def _agent_loop(
-        self, provider: NIMChatProvider, session: Session, role: FormationRole,
-        *, use_tools: bool = True,
+        self,
+        provider: NIMChatProvider,
+        session: Session,
+        role: FormationRole,
+        *,
+        use_tools: bool = True,
     ) -> AsyncIterator[AgentEvent]:
         schemas = self._tools.get_schemas() if use_tools else []
         self._stagnation.reset()

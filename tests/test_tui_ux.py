@@ -111,8 +111,6 @@ class TestTUIStateThroughput:
 
     def test_metrics_throughput_accessible(self, sample_config):
         state = _TUIState(config=sample_config)
-        state.metrics.record(
-            RequestMetrics(completion_tokens=1000, total_time_ms=2000)
-        )
+        state.metrics.record(RequestMetrics(completion_tokens=1000, total_time_ms=2000))
         assert state.metrics.last_tokens_per_sec == 500.0
         assert state.metrics.avg_tokens_per_sec == 500.0

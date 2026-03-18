@@ -567,8 +567,12 @@ class _SlashDispatcher:
             model = r.model_id or "unknown"
             if model not in by_model:
                 by_model[model] = {
-                    "prompt": 0, "completion": 0, "cost": 0.0,
-                    "requests": 0, "tps_sum": 0.0, "tps_count": 0,
+                    "prompt": 0,
+                    "completion": 0,
+                    "cost": 0.0,
+                    "requests": 0,
+                    "tps_sum": 0.0,
+                    "tps_count": 0,
                 }
             by_model[model]["prompt"] += r.prompt_tokens
             by_model[model]["completion"] += r.completion_tokens
@@ -1111,9 +1115,7 @@ class _TurnRenderer:
         """Print a compact performance summary line after each turn."""
         elapsed = time.time() - self._turn_start
         completion_tokens = self._last_usage.get("completion_tokens", 0)
-        total_tokens = (
-            self._last_usage.get("prompt_tokens", 0) + completion_tokens
-        )
+        total_tokens = self._last_usage.get("prompt_tokens", 0) + completion_tokens
         if total_tokens == 0:
             return
 
@@ -1292,7 +1294,7 @@ def _compact_gpu_name(name: str) -> str:
     cleaned = name.strip()
     for prefix in ("NVIDIA GeForce ", "NVIDIA RTX ", "NVIDIA ", "GeForce "):
         if cleaned.startswith(prefix):
-            cleaned = cleaned[len(prefix):]
+            cleaned = cleaned[len(prefix) :]
             break
     return cleaned
 

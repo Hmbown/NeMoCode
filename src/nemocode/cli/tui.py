@@ -1141,9 +1141,7 @@ class NeMoCodeTUI(App):
             parts.append(f"TTFT {ttft:.1f}s")
 
         if s.tool_call_count > 0:
-            parts.append(
-                f"{s.tool_call_count} tool{'s' if s.tool_call_count != 1 else ''}"
-            )
+            parts.append(f"{s.tool_call_count} tool{'s' if s.tool_call_count != 1 else ''}")
 
         chat.add_system(f"▸ {' │ '.join(parts)}")
 

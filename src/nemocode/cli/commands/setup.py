@@ -130,9 +130,7 @@ def setup_spark() -> None:
     )
 
     # Step 3: Start Nano 9B (mini-agent worker)
-    console.print(
-        "\n[bold]Step 3: Start Nemotron Nano 9B (mini-agent worker, port 8002)[/bold]"
-    )
+    console.print("\n[bold]Step 3: Start Nemotron Nano 9B (mini-agent worker, port 8002)[/bold]")
     console.print(
         Panel(
             "docker run -d --name nemo-nano9b \\\n"
@@ -149,9 +147,7 @@ def setup_spark() -> None:
     )
 
     # Step 4: Start retrieval models (optional)
-    console.print(
-        "\n[bold]Step 4 (optional): Start Embed + Rerank for RAG[/bold]"
-    )
+    console.print("\n[bold]Step 4 (optional): Start Embed + Rerank for RAG[/bold]")
     console.print(
         Panel(
             "# Embedding model (port 8004)\n"
@@ -216,15 +212,9 @@ def setup_spark() -> None:
         "\n[dim]Prefer Docker-free local serving? Run"
         " [bold]nemo setup sglang[/bold] or [bold]nemo setup vllm[/bold].[/dim]"
     )
-    console.print(
-        "\n[dim]Docs: https://docs.nvidia.com/dgx/dgx-spark/[/dim]"
-    )
-    console.print(
-        "[dim]NIM on Spark: https://build.nvidia.com/spark/nim-llm[/dim]"
-    )
-    console.print(
-        "[dim]Playbooks: https://github.com/NVIDIA/dgx-spark-playbooks[/dim]"
-    )
+    console.print("\n[dim]Docs: https://docs.nvidia.com/dgx/dgx-spark/[/dim]")
+    console.print("[dim]NIM on Spark: https://build.nvidia.com/spark/nim-llm[/dim]")
+    console.print("[dim]Playbooks: https://github.com/NVIDIA/dgx-spark-playbooks[/dim]")
 
 
 @setup_app.command("nim")
@@ -458,7 +448,9 @@ def setup_sglang() -> None:
     else:
         console.print("[yellow]pip not found — install Python first[/yellow]\n")
 
-    console.print("[bold bright_green]DGX Spark — SGLang (Recommended for Super)[/bold bright_green]\n")
+    console.print(
+        "[bold bright_green]DGX Spark — SGLang (Recommended for Super)[/bold bright_green]\n"
+    )
     console.print(
         "Use a dedicated server venv so NeMoCode's own environment stays stable.\n"
         "SGLang is the cleanest local path here for Nemotron 3 Super with long-context override.\n"
@@ -508,7 +500,9 @@ def setup_sglang() -> None:
         "\n[dim]If 1M context is unstable on first launch, lower"
         " --mem-fraction-static slightly before lowering context length.[/dim]"
     )
-    console.print("[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4[/dim]")
+    console.print(
+        "[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4[/dim]"
+    )
     console.print("[dim]Docs: https://docs.sglang.io/[/dim]")
 
 

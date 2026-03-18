@@ -194,9 +194,7 @@ class NIMChatProvider(NIMProviderBase):
                             # Server dropped mid-stream (e.g. OOM, crash).
                             # Cannot retry safely — partial data already yielded.
                             logger.warning("Server disconnected mid-stream: %s", exc)
-                            yield StreamChunk(
-                                text=f"\n[Server disconnected mid-stream: {exc}]\n"
-                            )
+                            yield StreamChunk(text=f"\n[Server disconnected mid-stream: {exc}]\n")
                         return  # Completed (possibly with mid-stream error)
 
             except (

@@ -86,15 +86,11 @@ class HardwareProfile:
         if available < manifest.min_gpu_memory_gb:
             mem_type = "unified memory" if self.is_dgx_spark else "VRAM"
             return False, (
-                f"Need {manifest.min_gpu_memory_gb}GB, "
-                f"have {available:.0f}GB {mem_type} available"
+                f"Need {manifest.min_gpu_memory_gb}GB, have {available:.0f}GB {mem_type} available"
             )
 
         if self.is_dgx_spark:
-            return True, (
-                f"{available:.0f}GB unified memory available "
-                f"(128GB shared CPU/GPU)"
-            )
+            return True, (f"{available:.0f}GB unified memory available (128GB shared CPU/GPU)")
 
         return True, f"{available:.0f}GB VRAM available across {len(self.gpus)} GPU(s)"
 

@@ -107,8 +107,13 @@ def hardware_recommend() -> None:
     if profile.is_dgx_spark:
         console.print("\n[bold]Also available on your Spark:[/bold]")
         spark_formations = [
-            "spark", "spark-sglang", "spark-vllm", "spark-swarm",
-            "spark-vision", "spark-retrieval", "spark-full",
+            "spark",
+            "spark-sglang",
+            "spark-vllm",
+            "spark-swarm",
+            "spark-vision",
+            "spark-retrieval",
+            "spark-full",
         ]
         for fname in spark_formations:
             form = cfg.formations.get(fname)
@@ -127,9 +132,7 @@ def hardware_recommend() -> None:
                     active = f"{m.moe.active_params_b:.0f}B"
                     total = f"{m.moe.total_params_b:.0f}B"
                     vram = m.min_gpu_memory_gb
-                    console.print(
-                        f"    [dim]{active} active / {total} total, needs {vram}GB[/dim]"
-                    )
+                    console.print(f"    [dim]{active} active / {total} total, needs {vram}GB[/dim]")
     else:
         console.print("\n[yellow]No Nemotron 3 models can run locally on this hardware.[/yellow]")
         console.print("[dim]Use hosted endpoints (build.nvidia.com) instead.[/dim]")

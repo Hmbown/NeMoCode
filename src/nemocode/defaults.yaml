@@ -44,16 +44,15 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 8192
 
-  # ── Nemotron 3 Ultra (placeholder — not yet public) ──────────────
-  # ~500B total / ~50B active. Repoint when it ships.
-  nim-ultra:
-    name: "Nemotron 3 Ultra (placeholder)"
+  # ── Nemotron Nano 4B v1.1 (ultra-lightweight on-device) ──────────
+  nim-nano-4b:
+    name: "Nemotron Nano 4B v1.1 (API Catalog)"
     tier: dev-hosted
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: NVIDIA_API_KEY
-    model_id: "nvidia/nemotron-3-ultra"
+    model_id: "nvidia/llama-3.1-nemotron-nano-4b-v1.1"
     capabilities: [chat, code]
-    max_tokens: 32768
+    max_tokens: 8192
 
   # ═══════════════════════════════════════════════════════════════════════════
   # VISION / MULTIMODAL (API Catalog)
@@ -88,40 +87,6 @@ endpoints:
     model_id: "nvidia/cosmos-nemotron"
     capabilities: [vlm, image]
     max_tokens: 4096
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # REASONING / SPECIALIZED (API Catalog)
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  # ── Llama Nemotron Ultra 253B (cloud-only heavyweight reasoning) ──
-  nim-llama-ultra:
-    name: "Llama Nemotron Ultra 253B (API Catalog)"
-    tier: dev-hosted
-    base_url: "https://integrate.api.nvidia.com/v1"
-    api_key_env: NVIDIA_API_KEY
-    model_id: "nvidia/llama-nemotron-ultra-253b"
-    capabilities: [chat, code]
-    max_tokens: 32768
-
-  # ── Llama Nemotron Reasoning Super 49B ───────────────────────────
-  nim-reasoning-super:
-    name: "Llama Nemotron Reasoning Super 49B (API Catalog)"
-    tier: dev-hosted
-    base_url: "https://integrate.api.nvidia.com/v1"
-    api_key_env: NVIDIA_API_KEY
-    model_id: "nvidia/llama-nemotron-reasoning-super-49b"
-    capabilities: [chat, code]
-    max_tokens: 16384
-
-  # ── Llama Nemotron Reasoning 8B (lightweight reasoning) ──────────
-  nim-reasoning-8b:
-    name: "Llama Nemotron Reasoning 8B (API Catalog)"
-    tier: dev-hosted
-    base_url: "https://integrate.api.nvidia.com/v1"
-    api_key_env: NVIDIA_API_KEY
-    model_id: "nvidia/llama-nemotron-reasoning-8b"
-    capabilities: [chat, code]
-    max_tokens: 16384
 
   # ═══════════════════════════════════════════════════════════════════════════
   # RETRIEVAL MODELS (API Catalog)
@@ -185,6 +150,25 @@ endpoints:
     model_id: "nvidia/nemo-guardrails"
     capabilities: [chat]
     max_tokens: 4096
+
+  # ── Nemotron Content Safety 4B (22-category classifier) ────────
+  nim-content-safety:
+    name: "Nemotron Content Safety 4B (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-content-safety-reasoning-4b"
+    capabilities: [chat]
+    max_tokens: 4096
+
+  # ── Vision-Language Embeddings (multimodal retrieval) ───────────
+  nim-embed-vl:
+    name: "Nemotron Embed VL 1B v2 (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-nemotron-embed-vl-1b-v2"
+    capabilities: [embed]
 
   # ═══════════════════════════════════════════════════════════════════════════
   # THIRD-PARTY HOSTED
@@ -479,29 +463,28 @@ manifests:
     min_gpu_memory_gb: 10
     min_gpus: 1
 
-  nvidia/nemotron-3-ultra:
-    display_name: "Nemotron 3 Ultra (unreleased)"
-    arch: nemotron-3
-    tier_in_family: ultra
+  nvidia/llama-3.1-nemotron-nano-4b-v1.1:
+    display_name: "Nemotron Nano 4B v1.1"
+    arch: llama-nemotron
+    tier_in_family: nano-4b
     capabilities: [chat, code]
-    context_window: 1048576
-    max_output_tokens: 32768
+    context_window: 131072
+    max_output_tokens: 8192
     moe:
-      total_params_b: 500
-      active_params_b: 50
-      uses_latent_moe: true
-      uses_mtp: true
-      uses_mamba: true
-      precision: "nvfp4"
+      total_params_b: 4
+      active_params_b: 4
+      precision: "fp8"
     reasoning:
       supports_thinking: true
       thinking_param: "enable_thinking"
-      thinking_budget_param: "reasoning_budget"
-      supports_budget_control: true
+      supports_budget_control: false
+    structured:
+      json_schema: true
     supports_tools: true
-    min_gpu_memory_gb: 640
-    min_gpus: 8
-    recommended_gpu: "8x H100 / 8x B200"
+    supports_lora: true
+    recommended_gpu: "Any (2GB+ VRAM)"
+    min_gpu_memory_gb: 2
+    min_gpus: 1
 
   # ═══════════════════════════════════════════════════════════════════════════
   # VISION / MULTIMODAL
@@ -562,64 +545,16 @@ manifests:
   # REASONING / SPECIALIZED
   # ═══════════════════════════════════════════════════════════════════════════
 
-  nvidia/llama-nemotron-ultra-253b:
-    display_name: "Llama Nemotron Ultra 253B"
+  nvidia/llama-3.1-nemotron-nano-4b-v1.1:
+    display_name: "Nemotron Nano 4B v1.1"
     arch: other
-    tier_in_family: ultra
+    tier_in_family: nano-4b
     capabilities: [chat, code]
     context_window: 131072
-    max_output_tokens: 32768
+    max_output_tokens: 8192
     moe:
-      total_params_b: 253
-      active_params_b: 253           # Dense
-      precision: "fp8"
-    reasoning:
-      supports_thinking: true
-      thinking_param: "enable_thinking"
-      supports_budget_control: true
-    structured:
-      json_schema: true
-      regex: true
-      choices: true
-    supports_tools: true
-    supports_parallel_tools: true
-    recommended_gpu: "8x H100 / 8x B200"
-    min_gpu_memory_gb: 640
-    min_gpus: 8
-
-  nvidia/llama-nemotron-reasoning-super-49b:
-    display_name: "Llama Nemotron Reasoning Super 49B"
-    arch: other
-    tier_in_family: super
-    capabilities: [chat, code]
-    context_window: 131072
-    max_output_tokens: 16384
-    moe:
-      total_params_b: 49
-      active_params_b: 49
-      precision: "fp8"
-    reasoning:
-      supports_thinking: true
-      thinking_param: "enable_thinking"
-      supports_budget_control: true
-    structured:
-      json_schema: true
-      regex: true
-    supports_tools: true
-    recommended_gpu: "H100 / B200"
-    min_gpu_memory_gb: 48
-    min_gpus: 1
-
-  nvidia/llama-nemotron-reasoning-8b:
-    display_name: "Llama Nemotron Reasoning 8B"
-    arch: other
-    tier_in_family: nano
-    capabilities: [chat, code]
-    context_window: 131072
-    max_output_tokens: 16384
-    moe:
-      total_params_b: 8
-      active_params_b: 8
+      total_params_b: 4
+      active_params_b: 4
       precision: "fp8"
     reasoning:
       supports_thinking: true
@@ -628,8 +563,30 @@ manifests:
     structured:
       json_schema: true
     supports_tools: true
-    recommended_gpu: "DGX Spark / L40S / RTX 4090"
-    min_gpu_memory_gb: 10
+    supports_lora: true
+    recommended_gpu: "Any (2GB+ VRAM)"
+    min_gpu_memory_gb: 2
+    min_gpus: 1
+
+  nvidia/nemotron-content-safety-reasoning-4b:
+    display_name: "Nemotron Content Safety 4B"
+    arch: other
+    tier_in_family: ""
+    capabilities: [chat]
+    context_window: 131072
+    max_output_tokens: 4096
+    supports_tools: false
+    min_gpu_memory_gb: 4
+    min_gpus: 1
+
+  nvidia/llama-nemotron-embed-vl-1b-v2:
+    display_name: "Nemotron Embed VL 1B v2"
+    arch: nemotron-embed
+    tier_in_family: ""
+    capabilities: [embed]
+    context_window: 8192
+    supports_tools: false
+    min_gpu_memory_gb: 2
     min_gpus: 1
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -734,20 +691,6 @@ formations:
       - role: reviewer
         endpoint: nim-super
         reasoning_mode: "low_effort"
-    tools: [fs, git, bash, rg]
-    verification_rounds: 1
-
-  # Full stack when Ultra ships.
-  ultra-swarm:
-    name: "Ultra Swarm"
-    description: "Ultra plans, Super executes, Ultra reviews. Repoint when Ultra ships."
-    slots:
-      - role: planner
-        endpoint: nim-ultra
-      - role: executor
-        endpoint: nim-super
-      - role: reviewer
-        endpoint: nim-ultra
     tools: [fs, git, bash, rg]
     verification_rounds: 1
 
@@ -920,19 +863,19 @@ formations:
     tools: [fs, git, bash, rg]
     verification_rounds: 0
 
-  # Deep reasoning: Llama Nemotron Ultra for hardest problems.
+  # Deep reasoning: Super with extra verification.
   deep-reason:
     name: "Deep Reasoning"
-    description: "Llama Nemotron Ultra 253B for the hardest architectural problems."
+    description: "Super plans, Nano executes, Super reviews twice. For critical changes."
     slots:
       - role: planner
-        endpoint: nim-llama-ultra
-      - role: executor
         endpoint: nim-super
+      - role: executor
+        endpoint: nim-nano
       - role: reviewer
-        endpoint: nim-llama-ultra
+        endpoint: nim-super
     tools: [fs, git, bash, rg]
-    verification_rounds: 1
+    verification_rounds: 2
 
 # ---------------------------------------------------------------------------
 # Permissions

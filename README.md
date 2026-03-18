@@ -25,15 +25,22 @@ export NVIDIA_API_KEY="nvapi-..."
 nemo code
 ```
 
-Or serve a model locally with [vLLM](https://docs.vllm.ai/) on any NVIDIA GPU:
+Or serve a model locally with [vLLM](https://docs.vllm.ai/) or [SGLang](https://sgl-project.github.io/) on any NVIDIA GPU:
 
 ```bash
+# vLLM
 vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \
   --trust-remote-code --mamba_ssm_cache_dtype float32 \
   --enable-auto-tool-choice \
   --tool-parser-plugin nemotron_toolcall_parser.py \
   --tool-call-parser nemotron_json
 nemo code -e local-vllm-nano9b
+
+# SGLang (best for Nemotron 3 Super long context on DGX Spark)
+python -m sglang.launch_server \
+  --model nvidia/nemotron-3-super-120b-a12b \
+  --quantization nvfp4 --trust-remote-code
+nemo code -e spark-sglang-super
 ```
 
 No GPU? Rent one via [Brev](https://console.brev.dev) — L40S from $1.03/hr:
@@ -58,12 +65,17 @@ Works with any OpenAI-compatible API. Pre-configured:
 
 | Endpoint | Model | Access |
 |----------|-------|--------|
-| `nim-super` | Nemotron 3 Super (12B/120B MoE) | NIM API key |
-| `nim-nano` | Nemotron 3 Nano (3B/30B MoE) | NIM API key |
+| `nim-super` | Nemotron 3 Super (12B/120B MoE, 1M ctx) | NIM API key |
+| `nim-nano` | Nemotron 3 Nano (3B/30B MoE, 1M ctx) | NIM API key |
 | `nim-nano-9b` | Nemotron Nano 9B v2 | NIM API key |
+| `nim-nano-4b` | Nemotron Nano 4B v1.1 (new!) | NIM API key |
+| `nim-vlm` | Nemotron Nano 12B VL (vision) | NIM API key |
+| `nim-embed` | Nemotron Embed 1B v2 | NIM API key |
+| `nim-rerank` | Nemotron Rerank 1B v2 | NIM API key |
 | `openrouter-super` | Super via OpenRouter | OpenRouter key |
 | `together-super` | Super via Together AI | Together key |
 | `local-vllm-*` | Any model on local vLLM | GPU + vLLM |
+| `local-sglang-*` | Any model on local SGLang | GPU + SGLang |
 | `local-nim-*` | Local NIM container | GPU + Docker |
 
 ## Formations
@@ -78,6 +90,9 @@ nemo code -f super-nano "implement caching"
 |-----------|----------|
 | `solo` | Super does everything (default) |
 | `super-nano` | Super plans + reviews, Nano executes |
+| `spark` | All-local on DGX Spark (Super + Nano 9B) |
+| `spark-sglang` | Super via SGLang on Spark (best long context) |
+| `vision` | VLM reads screenshots, Super writes code |
 | `local` | Nano on local GPU, no internet needed |
 
 ## Local GPU setup
@@ -85,6 +100,7 @@ nemo code -f super-nano "implement caching"
 ```bash
 nemo setup          # show all options
 nemo setup vllm     # vLLM serving guide
+nemo setup sglang   # SGLang serving guide
 nemo setup nim      # NIM container guide
 nemo setup brev     # rent a cloud GPU
 ```

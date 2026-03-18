@@ -26,19 +26,6 @@ KNOWN_KEYS: dict[str, str] = {
     "FIREWORKS_API_KEY": "Fireworks AI API Key",
 }
 
-# Endpoint to required key mapping
-ENDPOINT_KEY_MAP: dict[str, str] = {
-    "nim-super": "NVIDIA_API_KEY",
-    "nim-nano": "NVIDIA_API_KEY",
-    "nim-ultra": "NVIDIA_API_KEY",
-    "nim-embed": "NVIDIA_API_KEY",
-    "nim-rerank": "NVIDIA_API_KEY",
-    "nim-parse": "NVIDIA_API_KEY",
-    "openrouter-super": "OPENROUTER_API_KEY",
-    "together-super": "TOGETHER_API_KEY",
-    "deepinfra-super": "DEEPINFRA_API_KEY",
-}
-
 
 def _keyring_available() -> bool:
     """Check if keyring library is available and functional."""

@@ -455,7 +455,7 @@ class TestStatusBar:
         bar.mode = "code"
         bar.is_streaming = True
         rendered = bar.render()
-        assert "STREAMING" in rendered
+        assert "LIVE" in rendered
 
     def test_render_includes_context_pct(self):
         bar = StatusBar()

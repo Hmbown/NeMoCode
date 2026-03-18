@@ -229,6 +229,52 @@ class TestNIMChatStreamToolAssembly:
         assert tc.name == "read_file"
         assert tc.arguments == {"path": "test.py"}
 
+    @pytest.mark.asyncio
+    async def test_nim_chat_stream_allows_null_tool_calls(self, provider: NIMChatProvider):
+        """OpenAI-compatible stream payloads may send tool_calls: null."""
+
+        chunk1 = json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "content": "SGLang OK",
+                            "reasoning_content": "",
+                            "tool_calls": None,
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+        )
+        chunk2 = json.dumps(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 24, "completion_tokens": 31},
+            }
+        )
+        sse_lines = [
+            f"data: {chunk1}",
+            f"data: {chunk2}",
+            "data: [DONE]",
+        ]
+
+        async def mock_aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+        mock_response.aiter_lines = mock_aiter_lines
+
+        chunks = []
+        async for chunk in provider._process_stream(mock_response):
+            chunks.append(chunk)
+
+        assert [chunk.text for chunk in chunks if chunk.text] == ["SGLang OK"]
+        assert chunks[-1].tool_calls == []
+        assert chunks[-1].finish_reason == "stop"
+
 
 # ===================================================================
 # Test: Agent loop with tool execution

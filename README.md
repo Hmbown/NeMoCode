@@ -1,6 +1,6 @@
 # NeMoCode
 
-Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, makes edits, runs commands — powered by any model on the NIM API or your own GPU via vLLM.
+Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, makes edits, runs commands — powered by any model on the NIM API or your own GPU via [vLLM](https://docs.vllm.ai/) or [SGLang](https://sgl-project.github.io/).
 
 > **Community project** — not affiliated with or endorsed by NVIDIA.
 

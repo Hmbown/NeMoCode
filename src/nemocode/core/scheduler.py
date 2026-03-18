@@ -373,7 +373,9 @@ class Scheduler:
                 rev_session.add_user(review_input)
 
                 review_text = ""
-                async for ev in self._agent_loop(provider, rev_session, FormationRole.REVIEWER):
+                async for ev in self._agent_loop(
+                    provider, rev_session, FormationRole.REVIEWER, use_tools=False
+                ):
                     if ev.kind == "text":
                         review_text += ev.text
                     yield ev
@@ -404,9 +406,10 @@ class Scheduler:
     # ------------------------------------------------------------------
 
     async def _agent_loop(
-        self, provider: NIMChatProvider, session: Session, role: FormationRole
+        self, provider: NIMChatProvider, session: Session, role: FormationRole,
+        *, use_tools: bool = True,
     ) -> AsyncIterator[AgentEvent]:
-        schemas = self._tools.get_schemas()
+        schemas = self._tools.get_schemas() if use_tools else []
         self._stagnation.reset()
 
         for _ in range(self._max_tool_rounds):

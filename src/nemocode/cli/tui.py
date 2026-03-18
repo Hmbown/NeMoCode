@@ -63,7 +63,8 @@ _STYLESHEET = (
 
 Screen {
     layout: vertical;
-    background: $surface;
+    background: #0b0f0c;
+    color: $text;
 }
 
 /* ── Chat history ──────────────────────────────────────────── */
@@ -76,6 +77,7 @@ Screen {
     border-title-color: """
     + NV_GREEN
     + """;
+    background: #0d110d;
     padding: 0 1;
 }
 
@@ -138,6 +140,7 @@ Screen {
     border-title-color: """
     + NV_GREEN
     + """;
+    background: #11170f;
     padding: 0 1;
     display: none;
 }
@@ -173,7 +176,7 @@ Screen {
 }
 
 #mode-label {
-    width: 8;
+    width: 10;
     height: 3;
     content-align: center middle;
     text-style: bold;
@@ -204,6 +207,7 @@ Screen {
     border: tall """
     + NV_GREEN
     + """;
+    background: #0c100c;
 }
 
 #chat-input:focus {
@@ -217,8 +221,8 @@ Screen {
 #status-bar {
     dock: bottom;
     height: 1;
-    background: $surface-darken-2;
-    color: $text-muted;
+    background: #11170d;
+    color: #d6dfc4;
     padding: 0 1;
 }
 
@@ -455,7 +459,7 @@ class ModeLabel(Static):
     mode: reactive[str] = reactive("code")
 
     def render(self) -> str:
-        return f" {self.mode} "
+        return f" {self.mode.upper()} "
 
     def watch_mode(self, value: str) -> None:
         self.remove_class("mode-code", "mode-plan", "mode-auto")
@@ -463,22 +467,27 @@ class ModeLabel(Static):
 
 
 class StatusBar(Static):
-    """Bottom status bar showing context %, mode, endpoint, git branch, tokens."""
+    """Bottom status bar showing context %, mode, model name, git branch, tokens, tok/s."""
 
     context_pct: reactive[float] = reactive(0.0)
     mode: reactive[str] = reactive("code")
     endpoint: reactive[str] = reactive("")
+    model_name: reactive[str] = reactive("")
+    formation: reactive[str] = reactive("")
     git_branch: reactive[str] = reactive("")
     total_tokens: reactive[int] = reactive(0)
     total_cost: reactive[float] = reactive(0.0)
+    last_tps: reactive[float] = reactive(0.0)
     is_streaming: reactive[bool] = reactive(False)
 
     def render(self) -> str:
         parts: list[str] = []
 
+        parts.append(f"[bold {NV_GREEN}]NVIDIA[/bold {NV_GREEN}]")
+
         # Streaming indicator
         if self.is_streaming:
-            parts.append("[bold]STREAMING[/bold]")
+            parts.append(f"[bold {NV_GREEN}]LIVE[/bold {NV_GREEN}]")
 
         # Context %
         if self.context_pct > 0:
@@ -495,8 +504,13 @@ class StatusBar(Static):
         c = mode_colors.get(self.mode, NV_GREEN)
         parts.append(f"[{c}]{self.mode}[/{c}]")
 
-        # Endpoint
-        if self.endpoint:
+        if self.formation:
+            parts.append(f"[{NV_GREEN}]{self.formation}[/{NV_GREEN}]")
+
+        # Model display name (preferred) or endpoint fallback
+        if self.model_name:
+            parts.append(self.model_name)
+        elif self.endpoint:
             parts.append(self.endpoint)
 
         # Git branch
@@ -508,6 +522,10 @@ class StatusBar(Static):
             tok_str = _fmt_tokens(self.total_tokens)
             cost_str = f" ${self.total_cost:.4f}" if self.total_cost > 0 else ""
             parts.append(f"[dim]{tok_str} tok{cost_str}[/dim]")
+
+        # Last throughput
+        if self.last_tps > 0:
+            parts.append(f"[dim]{self.last_tps:.0f} tok/s[/dim]")
 
         # Version
         parts.append(f"[dim]v{__version__}[/dim]")
@@ -727,18 +745,21 @@ class NeMoCodeTUI(App):
         ep_name = self._state.config.default_endpoint
         ep = self._state.config.endpoints.get(ep_name)
         model_id = ep.model_id if ep else "unknown"
+        manifest = self._state.config.manifests.get(model_id) if ep else None
+        model_display = manifest.display_name if manifest else model_id
         formation = self._state.config.active_formation or ""
-        formation_str = f" [{formation}]" if formation else ""
+        formation_str = f" · {formation}" if formation else ""
 
-        chat.border_title = f"NeMoCode v{__version__}"
+        chat.border_title = "NeMoCode // NVIDIA NIM"
         chat.add_system(
-            f"NeMoCode v{__version__} -- {model_id} ({ep_name}){formation_str}\n"
+            f"NeMoCode // NVIDIA NIM\n"
+            f"{model_display} · {ep_name}{formation_str}\n"
             f"{Path.cwd()}\n"
-            f"Type /help for commands. Tab to cycle modes."
+            f"/help · Tab mode · Ctrl+T trace"
         )
 
         tool_panel = self.query_one("#tool-panel", ToolPanel)
-        tool_panel.border_title = "Tools"
+        tool_panel.border_title = "Inference Trace"
 
         mode_label = self.query_one("#mode-label", ModeLabel)
         mode_label.mode = self._state.mode
@@ -909,8 +930,13 @@ class NeMoCodeTUI(App):
                 f"  Completion tokens: {summary['completion_tokens']:,}",
                 f"  Total tokens:      {summary['total_tokens']:,}",
                 f"  Estimated cost:    ${summary['estimated_cost_usd']:.6f}",
-                f"  Session duration:  {summary['session_duration_s']:.0f}s",
+                f"  Avg latency:       {summary['avg_latency_ms']:.0f}ms",
             ]
+            if summary["avg_tokens_per_sec"] > 0:
+                lines.append(f"  Avg tok/s:         {summary['avg_tokens_per_sec']:.1f}")
+            if summary["avg_ttft_ms"] > 0:
+                lines.append(f"  Avg TTFT:          {summary['avg_ttft_ms']:.0f}ms")
+            lines.append(f"  Session duration:  {summary['session_duration_s']:.0f}s")
             chat.add_system("\n".join(lines))
             return
 
@@ -1080,6 +1106,9 @@ class NeMoCodeTUI(App):
         # Record metrics
         self._state.record_metrics()
 
+        # Show turn summary in chat
+        self._show_turn_summary(chat)
+
         self.streaming = False
         self._state.is_streaming = False
         self._update_status_bar()
@@ -1089,6 +1118,34 @@ class NeMoCodeTUI(App):
             self.query_one("#chat-input", TextArea).focus()
         except NoMatches:
             pass
+
+    def _show_turn_summary(self, chat: ChatScroll) -> None:
+        """Show a compact performance summary after a turn completes."""
+        s = self._state
+        elapsed = time.time() - s.turn_start if s.turn_start else 0
+        completion_tokens = s.last_usage.get("completion_tokens", 0)
+        total_tokens = s.last_usage.get("prompt_tokens", 0) + completion_tokens
+        if total_tokens == 0:
+            return
+
+        parts: list[str] = []
+        parts.append(f"{elapsed:.1f}s")
+        parts.append(f"{total_tokens:,} tok")
+
+        if completion_tokens > 0 and elapsed > 0:
+            tps = completion_tokens / elapsed
+            parts.append(f"{tps:.0f} tok/s")
+
+        if s.first_token_time is not None and s.turn_start:
+            ttft = s.first_token_time - s.turn_start
+            parts.append(f"TTFT {ttft:.1f}s")
+
+        if s.tool_call_count > 0:
+            parts.append(
+                f"{s.tool_call_count} tool{'s' if s.tool_call_count != 1 else ''}"
+            )
+
+        chat.add_system(f"▸ {' │ '.join(parts)}")
 
     # ── Status bar update ────────────────────────────────────
 
@@ -1101,8 +1158,21 @@ class NeMoCodeTUI(App):
 
         bar.mode = self._state.mode
         bar.endpoint = self._state.config.default_endpoint
+        bar.formation = self._state.config.active_formation or ""
         bar.git_branch = _get_git_branch()
         bar.is_streaming = self._state.is_streaming
+
+        # Model display name
+        ep_name = self._state.config.default_endpoint
+        ep = self._state.config.endpoints.get(ep_name)
+        if ep:
+            manifest = self._state.config.manifests.get(ep.model_id)
+            bar.model_name = manifest.display_name if manifest else ep.model_id
+        else:
+            bar.model_name = ""
+
+        # Last throughput
+        bar.last_tps = self._state.metrics.last_tokens_per_sec
 
         # Context usage
         total_tokens = 0

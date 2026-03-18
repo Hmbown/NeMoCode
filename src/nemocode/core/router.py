@@ -5,6 +5,7 @@
 
 Active when mode is 'auto' and no formation explicitly set.
 NVIDIA advantage: routes simple tasks to Nano (75% cheaper) automatically.
+On DGX Spark: prefers local endpoints for zero-latency, zero-cost inference.
 """
 
 from __future__ import annotations
@@ -91,13 +92,26 @@ def classify_task(user_input: str) -> str:
     return TaskComplexity.COMPLEX
 
 
+def _has_spark_endpoints(config: NeMoCodeConfig) -> bool:
+    """Check if Spark-local endpoints are configured."""
+    return any(
+        name.startswith("spark-nim-")
+        or name.startswith("spark-sglang-")
+        or name.startswith("spark-vllm-")
+        for name in config.endpoints
+    )
+
+
 def route_to_formation(user_input: str, config: NeMoCodeConfig) -> str | None:
     """Choose a formation based on task classification.
 
     Returns formation name to use, or None for default single-endpoint mode.
+    On DGX Spark, prefers local formations for all complexity levels.
     """
     complexity = classify_task(user_input)
     logger.debug("Task classified as: %s", complexity)
+
+    has_spark = _has_spark_endpoints(config)
 
     if complexity == TaskComplexity.SIMPLE:
         # Use Nano endpoint if available
@@ -107,7 +121,11 @@ def route_to_formation(user_input: str, config: NeMoCodeConfig) -> str | None:
                 return None  # Will use nano endpoint directly
 
     if complexity == TaskComplexity.COMPLEX:
-        # Use super-nano formation if available
+        # On Spark, prefer local formations.
+        if has_spark:
+            for fname in ("spark", "spark-sglang", "spark-vllm"):
+                if fname in config.formations:
+                    return fname
         if "super-nano" in config.formations:
             return "super-nano"
 
@@ -119,13 +137,26 @@ def get_auto_endpoint(user_input: str, config: NeMoCodeConfig) -> str | None:
     """Get the optimal endpoint for auto-routing.
 
     Returns endpoint name override, or None to keep default.
+    On DGX Spark, prefers spark-local endpoints.
     """
     complexity = classify_task(user_input)
+    has_spark = _has_spark_endpoints(config)
 
     if complexity == TaskComplexity.SIMPLE:
-        # Find a nano endpoint
+        # On Spark, use local Nano 9B for simple tasks (fastest, free)
+        if has_spark:
+            for name in ("spark-nim-nano9b", "spark-sglang-nano9b", "spark-vllm-nano9b"):
+                if name in config.endpoints:
+                    return name
+        # Otherwise, hosted Nano
         for name, ep in config.endpoints.items():
             if "nano" in ep.model_id.lower() and "local" not in name:
+                return name
+
+    if has_spark:
+        # On Spark, all tasks can use local Super.
+        for name in ("spark-nim-super", "spark-sglang-super", "spark-vllm-super"):
+            if name in config.endpoints:
                 return name
 
     # For everything else, use default (Super)

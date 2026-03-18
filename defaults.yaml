@@ -1,13 +1,18 @@
-# NeMoCode defaults — Nemotron 3 family
+# NeMoCode defaults — NVIDIA NIM full catalog
 # All model specs verified against March 2026 NVIDIA releases.
+# DGX Spark optimized: 128GB unified memory runs Super + Nano concurrently.
 
 default_endpoint: nim-super
 active_formation: null
 
 # ---------------------------------------------------------------------------
-# Endpoints — Nemotron 3 family + retrieval models
+# Endpoints — Nemotron family + full NIM catalog
 # ---------------------------------------------------------------------------
 endpoints:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CORE CODING MODELS (API Catalog — build.nvidia.com)
+  # ═══════════════════════════════════════════════════════════════════════════
 
   # ── Nemotron 3 Super (primary workhorse) ──────────────────────────
   nim-super:
@@ -19,15 +24,25 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 16384
 
-  # ── Nemotron 3 Nano (fast targeted subtasks) ──────────────────────
+  # ── Nemotron 3 Nano 30B (fast targeted subtasks) ─────────────────
   nim-nano:
-    name: "Nemotron 3 Nano (API Catalog)"
+    name: "Nemotron 3 Nano 30B (API Catalog)"
     tier: dev-hosted
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: NVIDIA_API_KEY
     model_id: "nvidia/nemotron-3-nano-30b-a3b"
     capabilities: [chat, code]
     max_tokens: 16384
+
+  # ── Nemotron Nano 9B v2 (ultra-lightweight mini-agent) ───────────
+  nim-nano-9b:
+    name: "Nemotron Nano 9B v2 (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-nano-9b-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
 
   # ── Nemotron 3 Ultra (placeholder — not yet public) ──────────────
   # ~500B total / ~50B active. Repoint when it ships.
@@ -40,7 +55,78 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 32768
 
-  # ── Retrieval models ──────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VISION / MULTIMODAL (API Catalog)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Nemotron Nano 12B VL (vision-language, screenshots/UI) ───────
+  nim-vlm:
+    name: "Nemotron Nano 12B VL v2 (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemotron-nano-12b-v2-vl"
+    capabilities: [chat, vlm]
+    max_tokens: 8192
+
+  # ── Llama Nemotron Nano VL 8B (document intelligence) ────────────
+  nim-docvlm:
+    name: "Llama Nemotron Nano VL 8B (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
+    capabilities: [chat, vlm, parse]
+    max_tokens: 8192
+
+  # ── Cosmos Nemotron (world foundation model) ─────────────────────
+  nim-cosmos:
+    name: "Cosmos Nemotron (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/cosmos-nemotron"
+    capabilities: [vlm, image]
+    max_tokens: 4096
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REASONING / SPECIALIZED (API Catalog)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Llama Nemotron Ultra 253B (cloud-only heavyweight reasoning) ──
+  nim-llama-ultra:
+    name: "Llama Nemotron Ultra 253B (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-nemotron-ultra-253b"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── Llama Nemotron Reasoning Super 49B ───────────────────────────
+  nim-reasoning-super:
+    name: "Llama Nemotron Reasoning Super 49B (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-nemotron-reasoning-super-49b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Llama Nemotron Reasoning 8B (lightweight reasoning) ──────────
+  nim-reasoning-8b:
+    name: "Llama Nemotron Reasoning 8B (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-nemotron-reasoning-8b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RETRIEVAL MODELS (API Catalog)
+  # ═══════════════════════════════════════════════════════════════════════════
+
   nim-embed:
     name: "Nemotron Embed 1B v2"
     tier: dev-hosted
@@ -65,7 +151,45 @@ endpoints:
     model_id: "nvidia/nemotron-parse"
     capabilities: [parse]
 
-  # ── Third-party hosted ────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPEECH (API Catalog)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Parakeet ASR (speech-to-text) ────────────────────────────────
+  nim-asr:
+    name: "Parakeet CTC 1.1B (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/parakeet-ctc-1.1b"
+    capabilities: [speech]
+
+  # ── FastPitch + HiFi-GAN TTS (text-to-speech) ───────────────────
+  nim-tts:
+    name: "FastPitch HiFi-GAN TTS (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/fastpitch-hifigan-tts"
+    capabilities: [speech]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SAFETY / GUARDRAILS (API Catalog)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  nim-guardrails:
+    name: "NeMo Guardrails (API Catalog)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/nemo-guardrails"
+    capabilities: [chat]
+    max_tokens: 4096
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # THIRD-PARTY HOSTED
+  # ═══════════════════════════════════════════════════════════════════════════
+
   openrouter-super:
     name: "Nemotron 3 Super (OpenRouter)"
     tier: openrouter
@@ -96,7 +220,114 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 16384
 
-  # ── Local deployment ──────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DGX SPARK LOCAL DEPLOYMENT
+  # 128GB unified memory — run Super + Nano concurrently!
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Super on Spark (main brain, port 8000) ───────────────────────
+  spark-nim-super:
+    name: "Local NIM Super (DGX Spark)"
+    tier: local-nim
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nano 30B on Spark (fast worker, port 8001) ──────────────────
+  spark-nim-nano:
+    name: "Local NIM Nano 30B (DGX Spark)"
+    tier: local-nim
+    base_url: "http://localhost:8001/v1"
+    model_id: "nvidia/nemotron-3-nano-30b-a3b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nano 9B on Spark (ultra-light mini-agent, port 8002) ────────
+  spark-nim-nano9b:
+    name: "Local NIM Nano 9B (DGX Spark)"
+    tier: local-nim
+    base_url: "http://localhost:8002/v1"
+    model_id: "nvidia/nemotron-nano-9b-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ── VLM on Spark (vision, port 8003) ────────────────────────────
+  spark-nim-vlm:
+    name: "Local NIM VLM 12B (DGX Spark)"
+    tier: local-nim
+    base_url: "http://localhost:8003/v1"
+    model_id: "nvidia/nemotron-nano-12b-v2-vl"
+    capabilities: [chat, vlm]
+    max_tokens: 8192
+
+  # ── Embed on Spark (retrieval, port 8004) ────────────────────────
+  spark-nim-embed:
+    name: "Local NIM Embed (DGX Spark)"
+    tier: local-nim
+    base_url: "http://localhost:8004/v1"
+    model_id: "nvidia/llama-nemotron-embed-1b-v2"
+    capabilities: [embed]
+
+  # ── Rerank on Spark (retrieval, port 8005) ───────────────────────
+  spark-nim-rerank:
+    name: "Local NIM Rerank (DGX Spark)"
+    tier: local-nim
+    base_url: "http://localhost:8005/v1"
+    model_id: "nvidia/llama-nemotron-rerank-1b-v2"
+    capabilities: [rerank]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DGX SPARK vLLM DEPLOYMENT
+  # Alternative to NIM containers — direct HuggingFace model serving.
+  # No tensor parallel needed on Spark (128GB unified memory).
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Super via vLLM on Spark (NVFP4, port 8000) ────────────────
+  spark-vllm-super:
+    name: "Local vLLM Super NVFP4 (DGX Spark)"
+    tier: local-vllm
+    base_url: "http://localhost:8000/v1"
+    model_id: "/home/hmbown/HF_Models/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nano 9B via vLLM on Spark (port 8001) ──────────────────────
+  spark-vllm-nano9b:
+    name: "Local vLLM Nano 9B (DGX Spark)"
+    tier: local-vllm
+    base_url: "http://localhost:8001/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DGX SPARK SGLANG DEPLOYMENT
+  # Best local path for Nemotron 3 Super long context on Spark.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Super via SGLang on Spark (NVFP4, port 8000) ───────────────
+  spark-sglang-super:
+    name: "Local SGLang Super NVFP4 (DGX Spark)"
+    tier: local-sglang
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nano 9B via SGLang on Spark (port 8001) ────────────────────
+  spark-sglang-nano9b:
+    name: "Local SGLang Nano 9B (DGX Spark)"
+    tier: local-sglang
+    base_url: "http://localhost:8001/v1"
+    model_id: "nvidia/nemotron-nano-9b-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # GENERIC LOCAL DEPLOYMENT (non-Spark workstations)
+  # ═══════════════════════════════════════════════════════════════════════════
+
   local-nim-super:
     name: "Local NIM (Super)"
     tier: local-nim
@@ -113,10 +344,54 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 16384
 
+  local-vllm-super:
+    name: "Local vLLM (Super)"
+    tier: local-vllm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  local-vllm-nano:
+    name: "Local vLLM (Nano 30B)"
+    tier: local-vllm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  local-vllm-nano9b:
+    name: "Local vLLM (Nano 9B)"
+    tier: local-vllm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  local-sglang-super:
+    name: "Local SGLang (Super)"
+    tier: local-sglang
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  local-sglang-nano9b:
+    name: "Local SGLang (Nano 9B)"
+    tier: local-sglang
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-nano-9b-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
 # ---------------------------------------------------------------------------
-# Manifests — Nemotron 3 architecture specifics
+# Manifests — model architecture specifics
 # ---------------------------------------------------------------------------
 manifests:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NEMOTRON 3 FAMILY
+  # ═══════════════════════════════════════════════════════════════════════════
 
   nvidia/nemotron-3-super-120b-a12b:
     display_name: "Nemotron 3 Super"
@@ -145,20 +420,20 @@ manifests:
     supports_tools: true
     supports_parallel_tools: false
     supports_lora: true
-    recommended_gpu: "B200 / H100"
+    recommended_gpu: "DGX Spark / B200 / H100"
     min_gpu_memory_gb: 80
     min_gpus: 1
 
   nvidia/nemotron-3-nano-30b-a3b:
-    display_name: "Nemotron 3 Nano"
+    display_name: "Nemotron 3 Nano 30B"
     arch: nemotron-3
     tier_in_family: nano
     capabilities: [chat, code]
     context_window: 1048576          # 1M tokens native
     max_output_tokens: 16384
     moe:
-      total_params_b: 30
-      active_params_b: 3
+      total_params_b: 31.6
+      active_params_b: 3.2
       uses_latent_moe: false
       uses_mtp: false
       uses_mamba: true
@@ -175,6 +450,33 @@ manifests:
     supports_lora: true
     recommended_gpu: "DGX Spark / H100 / B200"
     min_gpu_memory_gb: 24
+    min_gpus: 1
+
+  nvidia/nemotron-nano-9b-v2:
+    display_name: "Nemotron Nano 9B v2"
+    arch: nemotron-3
+    tier_in_family: nano-9b
+    capabilities: [chat, code]
+    context_window: 131072           # 128K tokens
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 9
+      active_params_b: 9             # Dense model, all params active
+      uses_latent_moe: false
+      uses_mtp: false
+      uses_mamba: true               # Hybrid Mamba-Transformer
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+      regex: true
+    supports_tools: true
+    supports_lora: true
+    recommended_gpu: "DGX Spark / L40S / RTX 4090"
+    min_gpu_memory_gb: 10
     min_gpus: 1
 
   nvidia/nemotron-3-ultra:
@@ -201,6 +503,139 @@ manifests:
     min_gpus: 8
     recommended_gpu: "8x H100 / 8x B200"
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VISION / MULTIMODAL
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  nvidia/nemotron-nano-12b-v2-vl:
+    display_name: "Nemotron Nano 12B VL v2"
+    arch: nemotron-vlm
+    tier_in_family: nano-vlm
+    capabilities: [chat, vlm]
+    context_window: 131072
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 12
+      active_params_b: 12
+      uses_mamba: true
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+    supports_tools: false
+    recommended_gpu: "DGX Spark / L40S / RTX 4090"
+    min_gpu_memory_gb: 16
+    min_gpus: 1
+
+  nvidia/llama-3.1-nemotron-nano-vl-8b-v1:
+    display_name: "Llama Nemotron Nano VL 8B"
+    arch: nemotron-vlm
+    tier_in_family: nano-docvlm
+    capabilities: [chat, vlm, parse]
+    context_window: 131072
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 8
+      active_params_b: 8
+      precision: "fp8"
+    supports_tools: false
+    recommended_gpu: "DGX Spark / L40S / RTX 4090"
+    min_gpu_memory_gb: 10
+    min_gpus: 1
+
+  nvidia/cosmos-nemotron:
+    display_name: "Cosmos Nemotron"
+    arch: cosmos
+    tier_in_family: ""
+    capabilities: [vlm, image]
+    context_window: 16384
+    max_output_tokens: 4096
+    supports_tools: false
+    recommended_gpu: "H100 / B200"
+    min_gpu_memory_gb: 80
+    min_gpus: 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REASONING / SPECIALIZED
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  nvidia/llama-nemotron-ultra-253b:
+    display_name: "Llama Nemotron Ultra 253B"
+    arch: other
+    tier_in_family: ultra
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 32768
+    moe:
+      total_params_b: 253
+      active_params_b: 253           # Dense
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: true
+    structured:
+      json_schema: true
+      regex: true
+      choices: true
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "8x H100 / 8x B200"
+    min_gpu_memory_gb: 640
+    min_gpus: 8
+
+  nvidia/llama-nemotron-reasoning-super-49b:
+    display_name: "Llama Nemotron Reasoning Super 49B"
+    arch: other
+    tier_in_family: super
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 49
+      active_params_b: 49
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: true
+    structured:
+      json_schema: true
+      regex: true
+    supports_tools: true
+    recommended_gpu: "H100 / B200"
+    min_gpu_memory_gb: 48
+    min_gpus: 1
+
+  nvidia/llama-nemotron-reasoning-8b:
+    display_name: "Llama Nemotron Reasoning 8B"
+    arch: other
+    tier_in_family: nano
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 8
+      active_params_b: 8
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+    supports_tools: true
+    recommended_gpu: "DGX Spark / L40S / RTX 4090"
+    min_gpu_memory_gb: 10
+    min_gpus: 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RETRIEVAL
+  # ═══════════════════════════════════════════════════════════════════════════
+
   nvidia/llama-nemotron-embed-1b-v2:
     display_name: "Nemotron Embed 1B v2"
     arch: nemotron-embed
@@ -208,6 +643,8 @@ manifests:
     capabilities: [embed]
     context_window: 32768
     supports_tools: false
+    min_gpu_memory_gb: 2
+    min_gpus: 1
 
   nvidia/llama-nemotron-rerank-1b-v2:
     display_name: "Nemotron Rerank 1B v2"
@@ -216,6 +653,8 @@ manifests:
     capabilities: [rerank]
     context_window: 32768
     supports_tools: false
+    min_gpu_memory_gb: 2
+    min_gpus: 1
 
   nvidia/nemotron-parse:
     display_name: "Nemotron Parse"
@@ -224,10 +663,51 @@ manifests:
     capabilities: [parse]
     supports_tools: false
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPEECH
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  nvidia/parakeet-ctc-1.1b:
+    display_name: "Parakeet CTC 1.1B ASR"
+    arch: speech-asr
+    tier_in_family: ""
+    capabilities: [speech]
+    supports_tools: false
+    min_gpu_memory_gb: 4
+    min_gpus: 1
+
+  nvidia/fastpitch-hifigan-tts:
+    display_name: "FastPitch HiFi-GAN TTS"
+    arch: speech-tts
+    tier_in_family: ""
+    capabilities: [speech]
+    supports_tools: false
+    min_gpu_memory_gb: 4
+    min_gpus: 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SAFETY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  nvidia/nemo-guardrails:
+    display_name: "NeMo Guardrails"
+    arch: guardrails
+    tier_in_family: ""
+    capabilities: [chat]
+    context_window: 8192
+    max_output_tokens: 4096
+    supports_tools: false
+    min_gpu_memory_gb: 4
+    min_gpus: 1
+
 # ---------------------------------------------------------------------------
-# Formations — matches NVIDIA's own deployment patterns
+# Formations — matches NVIDIA deployment patterns
 # ---------------------------------------------------------------------------
 formations:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STANDARD FORMATIONS (hosted / any hardware)
+  # ═══════════════════════════════════════════════════════════════════════════
 
   # Default: Super does everything. The daily driver.
   solo:
@@ -297,7 +777,124 @@ formations:
         endpoint: nim-super
     tools: [fs]
 
-  # Local-only: Nano on DGX Spark / workstation.
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DGX SPARK FORMATIONS (all-local, air-gapped capable)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Spark daily driver: Super locally, Nano 9B mini-agents.
+  spark:
+    name: "DGX Spark"
+    description: "Super on Spark + Nano 9B mini-agents. Fully local, zero cloud dependency."
+    slots:
+      - role: planner
+        endpoint: spark-nim-super
+      - role: fast
+        endpoint: spark-nim-nano9b
+      - role: executor
+        endpoint: spark-nim-super
+      - role: reviewer
+        endpoint: spark-nim-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Spark swarm: Super brain, multiple Nano workers.
+  spark-swarm:
+    name: "DGX Spark Swarm"
+    description: "Super plans and reviews. Nano 30B executes, Nano 9B explores. All local."
+    slots:
+      - role: planner
+        endpoint: spark-nim-super
+      - role: fast
+        endpoint: spark-nim-nano9b
+      - role: executor
+        endpoint: spark-nim-nano
+      - role: reviewer
+        endpoint: spark-nim-super
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Spark vision: VLM for screenshots + Super for coding.
+  spark-vision:
+    name: "DGX Spark Vision"
+    description: "VLM reads screenshots/diagrams, Super writes code. All local."
+    slots:
+      - role: parse
+        endpoint: spark-nim-vlm
+      - role: executor
+        endpoint: spark-nim-super
+    tools: [fs, git, bash, rg]
+    verification_rounds: 0
+
+  # Spark RAG: full local retrieval pipeline.
+  spark-retrieval:
+    name: "DGX Spark Retrieval"
+    description: "Embed + rerank + Super, all local on Spark."
+    slots:
+      - role: embed
+        endpoint: spark-nim-embed
+      - role: rerank
+        endpoint: spark-nim-rerank
+      - role: executor
+        endpoint: spark-nim-super
+    tools: [fs, git, bash, rg]
+
+  # Spark full-stack: everything local — vision + retrieval + coding.
+  spark-full:
+    name: "DGX Spark Full Stack"
+    description: "VLM + embed + rerank + Super + Nano. The complete local AI workstation."
+    slots:
+      - role: parse
+        endpoint: spark-nim-vlm
+      - role: embed
+        endpoint: spark-nim-embed
+      - role: rerank
+        endpoint: spark-nim-rerank
+      - role: planner
+        endpoint: spark-nim-super
+      - role: fast
+        endpoint: spark-nim-nano9b
+      - role: executor
+        endpoint: spark-nim-super
+      - role: reviewer
+        endpoint: spark-nim-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg, http]
+    verification_rounds: 1
+
+  # Spark vLLM: Same as spark but using vLLM instead of NIM containers.
+  spark-vllm:
+    name: "DGX Spark (vLLM)"
+    description: "Super + Nano 9B via vLLM on Spark. No Docker required."
+    slots:
+      - role: planner
+        endpoint: spark-vllm-super
+      - role: fast
+        endpoint: spark-vllm-nano9b
+      - role: executor
+        endpoint: spark-vllm-super
+      - role: reviewer
+        endpoint: spark-vllm-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Spark SGLang: single-backend local Super with long-context override support.
+  spark-sglang:
+    name: "DGX Spark (SGLang)"
+    description: "Super via SGLang on Spark. Best local path for Nemotron 3 Super long context."
+    slots:
+      - role: planner
+        endpoint: spark-sglang-super
+      - role: executor
+        endpoint: spark-sglang-super
+      - role: reviewer
+        endpoint: spark-sglang-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Lightweight local: Nano only on Spark or workstation.
   local:
     name: "Local"
     description: "Nano on local NIM for air-gapped / offline work."
@@ -306,6 +903,36 @@ formations:
         endpoint: local-nim-nano
     tools: [fs, git, bash, rg]
     verification_rounds: 0
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SPECIALTY FORMATIONS (hosted)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Vision: VLM understands screenshots, Super writes code.
+  vision:
+    name: "Vision"
+    description: "VLM reads screenshots/UI mockups, Super writes the code."
+    slots:
+      - role: parse
+        endpoint: nim-vlm
+      - role: executor
+        endpoint: nim-super
+    tools: [fs, git, bash, rg]
+    verification_rounds: 0
+
+  # Deep reasoning: Llama Nemotron Ultra for hardest problems.
+  deep-reason:
+    name: "Deep Reasoning"
+    description: "Llama Nemotron Ultra 253B for the hardest architectural problems."
+    slots:
+      - role: planner
+        endpoint: nim-llama-ultra
+      - role: executor
+        endpoint: nim-super
+      - role: reviewer
+        endpoint: nim-llama-ultra
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
 
 # ---------------------------------------------------------------------------
 # Permissions

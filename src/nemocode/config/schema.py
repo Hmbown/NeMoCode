@@ -44,6 +44,7 @@ class EndpointTier(str, Enum):
     PROD_HOSTED = "prod-hosted"
     LOCAL_NIM = "local-nim"
     LOCAL_OLLAMA = "local-ollama"
+    LOCAL_SGLANG = "local-sglang"
     LOCAL_VLLM = "local-vllm"
     OPENROUTER = "openrouter"
     INFERENCE_PARTNER = "inference-partner"
@@ -79,6 +80,10 @@ class NemotronArch(str, Enum):
     NEMOTRON_RERANK = "nemotron-rerank"
     NEMOTRON_PARSE = "nemotron-parse"
     NEMOTRON_VLM = "nemotron-vlm"
+    COSMOS = "cosmos"
+    SPEECH_ASR = "speech-asr"
+    SPEECH_TTS = "speech-tts"
+    GUARDRAILS = "guardrails"
     OTHER = "other"
 
 
@@ -145,6 +150,9 @@ class FormationRole(str, Enum):
     EMBED = "embed"
     RERANK = "rerank"
     PARSE = "parse"
+    VISION = "vision"
+    ASR = "asr"
+    TTS = "tts"
 
 
 class FormationSlot(BaseModel):

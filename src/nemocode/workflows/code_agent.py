@@ -24,6 +24,12 @@ from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
 
+_INSTRUCTION_FILENAMES = (
+    "agents.md",
+    "AGENTS.md",
+    "NEMOCODE.md",
+)
+
 
 def _detect_git_context() -> str:
     """Detect git branch, status, recent commits, and merge conflict state.
@@ -100,26 +106,50 @@ def _detect_git_context() -> str:
     return "\n".join(parts)
 
 
-def _discover_nemocode_md() -> str:
-    """Search for NEMOCODE.md files in hierarchy and return combined content.
+def _append_instruction_files(
+    base_dir: Path,
+    heading: str,
+    contents: list[str],
+    seen: set[Path],
+) -> None:
+    """Read supported instruction files from one directory in priority order."""
+    for filename in _INSTRUCTION_FILENAMES:
+        path = base_dir / filename
+        if not path.exists():
+            continue
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen:
+            continue
+        try:
+            text = path.read_text().strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        seen.add(resolved)
+        contents.append(f"# {heading} ({path.name})\n{text}")
 
-    Search order: ~/.config/nemocode/NEMOCODE.md → project root → cwd
+
+def _discover_instruction_files(start_dir: Path | None = None) -> str:
+    """Search for supported instruction files and return combined content.
+
+    Search order: ~/.config/nemocode/* → project root → cwd
+    Supported filenames are, in priority order per directory:
+      agents.md → AGENTS.md → NEMOCODE.md
     All found files are concatenated with source labels.
     """
     contents: list[str] = []
+    seen: set[Path] = set()
 
     # Global instructions
-    global_path = Path("~/.config/nemocode/NEMOCODE.md").expanduser()
-    if global_path.exists():
-        try:
-            text = global_path.read_text().strip()
-            if text:
-                contents.append(f"# Global Instructions\n{text}")
-        except Exception:
-            pass
+    global_dir = Path("~/.config/nemocode").expanduser()
+    _append_instruction_files(global_dir, "Global Instructions", contents, seen)
 
     # Walk up from cwd to find project root (has .nemocode.yaml or .git)
-    cwd = Path.cwd()
+    cwd = (start_dir or Path.cwd()).resolve()
     project_root = cwd
     for parent in [cwd, *cwd.parents]:
         if (parent / ".nemocode.yaml").exists() or (parent / ".git").exists():
@@ -128,26 +158,17 @@ def _discover_nemocode_md() -> str:
         if parent == Path.home():
             break
 
-    # Project root NEMOCODE.md
+    # Project root instructions
     if project_root != cwd:
-        root_md = project_root / "NEMOCODE.md"
-        if root_md.exists():
-            try:
-                text = root_md.read_text().strip()
-                if text:
-                    contents.append(f"# Project Instructions ({project_root.name})\n{text}")
-            except Exception:
-                pass
+        _append_instruction_files(
+            project_root,
+            f"Project Instructions ({project_root.name})",
+            contents,
+            seen,
+        )
 
-    # CWD NEMOCODE.md (if different from project root)
-    cwd_md = cwd / "NEMOCODE.md"
-    if cwd_md.exists() and cwd_md.resolve() != (project_root / "NEMOCODE.md").resolve():
-        try:
-            text = cwd_md.read_text().strip()
-            if text:
-                contents.append(f"# Directory Instructions ({cwd.name})\n{text}")
-        except Exception:
-            pass
+    # CWD instructions (if different from project root)
+    _append_instruction_files(cwd, f"Directory Instructions ({cwd.name})", contents, seen)
 
     return "\n\n".join(contents)
 
@@ -165,6 +186,7 @@ class CodeAgent:
         read_only: bool = False,
     ) -> None:
         self._config = config or load_config(project_dir)
+        self._project_dir = project_dir
         self._registry = Registry(self._config)
         self._read_only = read_only
         if read_only:
@@ -205,13 +227,13 @@ class CodeAgent:
             self._tool_registry.register(delegate_def)
 
     def _inject_project_context(self) -> None:
-        """Inject project context, NEMOCODE.md, memory, and git state into the system prompt."""
+        """Inject project context, instruction files, memory, and git state."""
         parts: list[str] = []
 
-        # NEMOCODE.md instructions (highest priority)
-        nemocode_md = _discover_nemocode_md()
-        if nemocode_md:
-            parts.append(nemocode_md)
+        # Project instruction files (highest priority)
+        instructions = _discover_instruction_files(self._project_dir)
+        if instructions:
+            parts.append(instructions)
 
         # Project context from .nemocode.yaml
         project = self._config.project

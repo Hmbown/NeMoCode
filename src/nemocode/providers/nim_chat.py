@@ -187,9 +187,17 @@ class NIMChatProvider(NIMProviderBase):
                             return
 
                         # Successful connection — stream the response
-                        async for chunk in self._process_stream(resp):
-                            yield chunk
-                        return  # Successfully completed
+                        try:
+                            async for chunk in self._process_stream(resp):
+                                yield chunk
+                        except httpx.RemoteProtocolError as exc:
+                            # Server dropped mid-stream (e.g. OOM, crash).
+                            # Cannot retry safely — partial data already yielded.
+                            logger.warning("Server disconnected mid-stream: %s", exc)
+                            yield StreamChunk(
+                                text=f"\n[Server disconnected mid-stream: {exc}]\n"
+                            )
+                        return  # Completed (possibly with mid-stream error)
 
             except (
                 httpx.ConnectError,
@@ -197,6 +205,7 @@ class NIMChatProvider(NIMProviderBase):
                 httpx.WriteError,
                 httpx.PoolTimeout,
                 httpx.ConnectTimeout,
+                httpx.RemoteProtocolError,
             ) as exc:
                 last_error = str(exc)
                 if attempt < _MAX_RETRIES:
@@ -241,14 +250,14 @@ class NIMChatProvider(NIMProviderBase):
                     yield StreamChunk(usage=usage)
                 continue
 
-            delta = choices[0].get("delta", {})
+            delta = choices[0].get("delta") or {}
             finish = choices[0].get("finish_reason")
 
             text = delta.get("content", "")
             thinking = delta.get("reasoning_content", "") or delta.get("thinking", "")
 
             # Handle streamed tool calls
-            tc_deltas = delta.get("tool_calls", [])
+            tc_deltas = delta.get("tool_calls") or []
             for tcd in tc_deltas:
                 idx = tcd.get("index", 0)
                 if idx not in tool_call_buffers:
@@ -341,10 +350,10 @@ class NIMChatProvider(NIMProviderBase):
 
         choices = data.get("choices", [])
         choice = choices[0] if choices else {}
-        message = choice.get("message", {})
+        message = choice.get("message") or {}
 
         tool_calls = []
-        for tc_data in message.get("tool_calls", []):
+        for tc_data in message.get("tool_calls") or []:
             fn = tc_data.get("function", {})
             try:
                 args = json.loads(fn.get("arguments", "{}"))
@@ -359,8 +368,8 @@ class NIMChatProvider(NIMProviderBase):
             )
 
         return CompletionResult(
-            content=message.get("content", ""),
-            thinking=message.get("reasoning_content", "") or message.get("thinking", ""),
+            content=message.get("content") or "",
+            thinking=message.get("reasoning_content") or message.get("thinking") or "",
             tool_calls=tool_calls,
             usage=data.get("usage", {}),
             finish_reason=choice.get("finish_reason", ""),

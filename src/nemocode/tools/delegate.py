@@ -3,7 +3,8 @@
 
 """Sub-agent delegation tool — spawn focused sub-agents for subtasks.
 
-NVIDIA advantage: explore/fast use Nano (75% cheaper), review uses Super.
+NVIDIA advantage: explore/fast/test use Nano mini-agents (75% cheaper),
+review/plan use Super. On DGX Spark, all agents run locally.
 """
 
 from __future__ import annotations
@@ -19,10 +20,10 @@ from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
 
-# Agent type → (preferred endpoint tier, tools, role)
+# Agent type → (preferred endpoint tier, tools, role, prompt)
 _AGENT_TYPES = {
     "explore": {
-        "prefer_tier": "nano",
+        "prefer_tier": "nano-9b",
         "tools": ["fs", "rg"],
         "role": FormationRole.FAST,
         "prompt": (
@@ -48,17 +49,91 @@ _AGENT_TYPES = {
         "role": FormationRole.FAST,
         "prompt": ROLE_PROMPTS[FormationRole.FAST],
     },
+    # New mini-agent types for Nano
+    "code-search": {
+        "prefer_tier": "nano-9b",
+        "tools": ["fs", "rg", "glob"],
+        "role": FormationRole.FAST,
+        "prompt": (
+            "You are a code search agent. Find specific code patterns, definitions, "
+            "usages, and references. Return file paths and line numbers."
+        ),
+    },
+    "test": {
+        "prefer_tier": "nano",
+        "tools": ["bash", "fs"],
+        "role": FormationRole.FAST,
+        "prompt": (
+            "You are a test execution agent. Run the specified tests and report "
+            "results. If tests fail, include the relevant error output."
+        ),
+    },
+    "doc": {
+        "prefer_tier": "nano-9b",
+        "tools": ["fs", "rg"],
+        "role": FormationRole.FAST,
+        "prompt": (
+            "You are a documentation agent. Read the code and generate clear, "
+            "concise documentation. Focus on what the code does and why."
+        ),
+    },
+    "debug": {
+        "prefer_tier": "nano",
+        "tools": ["fs", "bash", "rg", "git"],
+        "role": FormationRole.DEBUGGER,
+        "prompt": ROLE_PROMPTS[FormationRole.DEBUGGER],
+    },
 }
 
 
 def _pick_endpoint(config: NeMoCodeConfig, prefer_tier: str) -> str:
-    """Pick an endpoint based on preferred tier."""
+    """Pick an endpoint based on preferred tier.
+
+    Prefers Spark-local endpoints when available, then hosted.
+    Tier preference order:
+      nano-9b: spark-* -nano9b → nim-nano-9b → nim-nano → default
+      nano:    spark-* -nano → nim-nano → default
+      super:   spark-* -super → nim-super → default
+    """
+    # Priority 1: Spark-local endpoints (zero latency, free)
+    # Check NIM first, then SGLang, then vLLM — all are local on Spark.
+    spark_nim_map = {
+        "nano-9b": "spark-nim-nano9b",
+        "nano": "spark-nim-nano",
+        "super": "spark-nim-super",
+    }
+    spark_sglang_map = {
+        "nano-9b": "spark-sglang-nano9b",
+        "nano": "spark-sglang-nano9b",  # SGLang Spark defaults to Nano 9B for mini-agents
+        "super": "spark-sglang-super",
+    }
+    spark_vllm_map = {
+        "nano-9b": "spark-vllm-nano9b",
+        "nano": "spark-vllm-nano9b",  # vLLM Spark doesn't have Nano 30B, fall back to 9B
+        "super": "spark-vllm-super",
+    }
+    for spark_map in (spark_nim_map, spark_sglang_map, spark_vllm_map):
+        spark_name = spark_map.get(prefer_tier)
+        if spark_name and spark_name in config.endpoints:
+            return spark_name
+
+    # Priority 2: Match by tier keyword in model_id
+    tier_keywords = {
+        "nano-9b": ["nano-9b", "nano9b"],
+        "nano": ["nano"],
+        "super": ["super"],
+    }
+    keywords = tier_keywords.get(prefer_tier, [prefer_tier])
+
     for name, ep in config.endpoints.items():
         model_lower = ep.model_id.lower()
-        if prefer_tier == "nano" and "nano" in model_lower:
-            return name
-        if prefer_tier == "super" and "super" in model_lower:
-            return name
+        # Skip local endpoints that aren't running (Spark handles this above)
+        if "local" in name and "spark" not in name:
+            continue
+        for keyword in keywords:
+            if keyword in model_lower:
+                return name
+
     return config.default_endpoint
 
 
@@ -80,7 +155,8 @@ def create_delegate_tool(registry: Registry, config: NeMoCodeConfig) -> ToolDef:
         """Spawn a sub-agent to handle a focused subtask.
 
         task: The specific task or question for the sub-agent
-        agent_type: One of 'explore', 'plan', 'review', 'fast'
+        agent_type: One of 'explore', 'plan', 'review', 'fast',
+            'code-search', 'test', 'doc', 'debug'
         context: Additional context to provide to the sub-agent
         """
         spec = _AGENT_TYPES.get(agent_type)

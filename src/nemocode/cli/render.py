@@ -16,6 +16,7 @@ Design principles:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -190,6 +191,10 @@ class EventRenderer:
             self._interactive = console.file.isatty()
         except (AttributeError, ValueError):
             self._interactive = False
+        # Background thread that ticks the spinner elapsed time every second
+        self._timer_stop = threading.Event()
+        self._timer_thread: threading.Thread | None = None
+        self._spinner_label: str = ""  # current spinner prefix (without elapsed)
 
     def render(self, event: AgentEvent) -> None:
         """Render a single event to the console."""
@@ -221,11 +226,13 @@ class EventRenderer:
         if not self._interactive:
             return
         self._turn_start = time.monotonic()
+        self._spinner_label = phrase
         self._thinking_spinner = _beam_status(
             f"  [{_NV_GREEN}]{phrase}…[/{_NV_GREEN}]",
             self._console,
         )
         self._thinking_spinner.start()
+        self._start_elapsed_timer()
 
     # -- Event handlers --
 
@@ -392,11 +399,13 @@ class EventRenderer:
         if error_count > 0:
             err_s = "s" if error_count > 1 else ""
             self._console.print(
-                f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{summary}[/dim]"
+                f"  [{_NV_GREEN}]scan ▸[/{_NV_GREEN}] [dim]{summary}[/dim]"
                 f"{elapsed_str} [red]({error_count} error{err_s})[/red]"
             )
         else:
-            self._console.print(f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{summary}[/dim]{elapsed_str}")
+            self._console.print(
+                f"  [{_NV_GREEN}]scan ▸[/{_NV_GREEN}] [dim]{summary}[/dim]{elapsed_str}"
+            )
 
         self._tool_buffer.clear()
         # Restart spinner for the next API round
@@ -409,11 +418,13 @@ class EventRenderer:
         if self._thinking_spinner:
             return  # already running
         elapsed = time.monotonic() - self._turn_start if self._turn_start else 0
+        self._spinner_label = "Working"
         self._thinking_spinner = _beam_status(
             f"  [{_NV_GREEN}]Working ({elapsed:.0f}s)…[/{_NV_GREEN}]",
             self._console,
         )
         self._thinking_spinner.start()
+        self._start_elapsed_timer()
 
     def _error(self, event: AgentEvent) -> None:
         self._end_md_stream()
@@ -432,7 +443,7 @@ class EventRenderer:
         # Flush any buffered tool calls before showing response
         self._flush_tool_buffer_if_needed()
         self._console.print()
-        self._console.print(f"[{_NV_GREEN}]nemo ▸[/{_NV_GREEN}]")
+        self._console.print(f"[bold {_NV_GREEN}]━━ NeMoCode Response ━━[/]")
 
     def _end_md_stream(self) -> None:
         """Stop markdown streaming and finalize output."""
@@ -443,9 +454,35 @@ class EventRenderer:
 
     def _stop_thinking(self) -> None:
         """Stop the unified thinking/progress spinner."""
+        self._stop_elapsed_timer()
         if self._thinking_spinner:
             self._thinking_spinner.stop()
             self._thinking_spinner = None
+
+    def _start_elapsed_timer(self) -> None:
+        """Start a background thread that updates the spinner elapsed time every second."""
+        self._stop_elapsed_timer()
+        self._timer_stop.clear()
+
+        def _tick():
+            while not self._timer_stop.wait(1.0):
+                spinner = self._thinking_spinner
+                if spinner and self._turn_start:
+                    elapsed = time.monotonic() - self._turn_start
+                    label = self._spinner_label or "Working"
+                    spinner.update(
+                        f"  [{_NV_GREEN}]{label} ({elapsed:.0f}s)…[/{_NV_GREEN}]"
+                    )
+
+        self._timer_thread = threading.Thread(target=_tick, daemon=True)
+        self._timer_thread.start()
+
+    def _stop_elapsed_timer(self) -> None:
+        """Stop the elapsed time update thread."""
+        self._timer_stop.set()
+        if self._timer_thread:
+            self._timer_thread.join(timeout=2)
+            self._timer_thread = None
 
     # Minimum interval between spinner text updates (seconds)
     _SPINNER_THROTTLE_S = 0.25
@@ -470,23 +507,24 @@ class EventRenderer:
 
         if tool_name == "read_file":
             path = _short_path(tool_args.get("path", "?"))
-            status = f"Reading {path}"
+            label = f"Reading {path}"
         elif tool_name == "search_files":
             pattern = tool_args.get("pattern", "?")
-            status = f"Searching /{pattern}/"
+            label = f"Searching /{pattern}/"
         elif tool_name == "list_dir":
-            status = f"Listing {tool_args.get('path', '.')}"
+            label = f"Listing {tool_args.get('path', '.')}"
         elif tool_name in ("git_status", "git_diff", "git_log"):
-            status = tool_name.replace("_", " ").title()
+            label = tool_name.replace("_", " ").title()
         elif tool_name == "web_search":
             q = tool_args.get("query", "?")
             if len(q) > 40:
                 q = q[:37] + "..."
-            status = f"Searching: {q}"
+            label = f"Searching: {q}"
         else:
-            status = format_tool_call(tool_name, tool_args)
+            label = format_tool_call(tool_name, tool_args)
 
-        self._thinking_spinner.update(f"  [{_NV_GREEN}]{status}{elapsed_str}…[/{_NV_GREEN}]")
+        self._spinner_label = label
+        self._thinking_spinner.update(f"  [{_NV_GREEN}]{label}{elapsed_str}…[/{_NV_GREEN}]")
 
 
 # ---------------------------------------------------------------------------
@@ -718,10 +756,16 @@ def _render_tool_result_inline(
             extra = ""
             if "bytes" in parsed:
                 extra = f" ({parsed['bytes']:,} bytes)"
+            # Show diff stats inline on the success line
+            diff_text = parsed.get("diff", "")
+            if diff_text:
+                added, removed = _diff_stats(diff_text)
+                if added or removed:
+                    extra = f" +{added}/-{removed}"
             con.print(f" [{_NV_GREEN}]✓{extra}{time_suffix}[/{_NV_GREEN}]")
             # Show diff for mutations
-            if "diff" in parsed and parsed["diff"]:
-                _render_diff(con, parsed["diff"])
+            if diff_text:
+                _render_diff(con, diff_text)
             return
 
         if "exit_code" in parsed:
@@ -847,6 +891,33 @@ def _render_bash_inline(
                 )
             if len(lines) > _ERROR_RESULT_LINES:
                 con.print(f"    [dim]... ({len(lines)} total)[/dim]")
+
+
+def _diff_stats(diff_text: str) -> tuple[int, int]:
+    """Count added and removed lines in a unified diff."""
+    added = 0
+    removed = 0
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return added, removed
+
+
+def _format_diff_bar(added: int, removed: int) -> str:
+    """Format a compact diff stat bar like '+5 -2 +++--'."""
+    if added == 0 and removed == 0:
+        return ""
+    max_width = 10
+    total = added + removed
+    if total <= max_width:
+        bar = "+" * added + "-" * removed
+    else:
+        a = max(1, round(added / total * max_width)) if added else 0
+        r = max(1, round(removed / total * max_width)) if removed else 0
+        bar = "+" * a + "-" * r
+    return f"+{added} -{removed} {bar}"
 
 
 def _render_diff(con: Console, diff_text: str) -> None:

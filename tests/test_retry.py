@@ -104,3 +104,36 @@ class TestCompleteRetry:
 
         assert "400" in result.content
         assert result.finish_reason == "error"
+
+    @pytest.mark.asyncio
+    async def test_complete_allows_null_tool_calls(self, provider, messages):
+        """OpenAI-compatible responses may return tool_calls as null."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {}
+        mock_resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "NeMoCode OK",
+                        "reasoning_content": "short trace",
+                        "tool_calls": None,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("nemocode.providers.nim_chat.httpx.AsyncClient", return_value=mock_client):
+            result = await provider.complete(messages)
+
+        assert result.content == "NeMoCode OK"
+        assert result.thinking == "short trace"
+        assert result.tool_calls == []
+        assert result.finish_reason == "stop"

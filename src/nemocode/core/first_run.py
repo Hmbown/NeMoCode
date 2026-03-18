@@ -139,9 +139,7 @@ def run_first_run_wizard() -> None:
 
     # ── Quick Start ──
     console.print("[bold]Quick start:[/bold]")
-    console.print("  [cyan]nemo code[/cyan]                  Start interactive coding session")
-    console.print("  [cyan]nemo code 'fix the bug'[/cyan]    One-shot task")
-    console.print("  [cyan]nemo chat 'hello'[/cyan]          Simple chat (no tools)")
+    console.print("  [cyan]nemo[/cyan]                        Launch the interactive TUI")
     console.print("  [cyan]nemo init[/cyan]                  Create project config")
     console.print("  [cyan]nemo hardware recommend[/cyan]    Hardware-based recommendations")
     console.print()

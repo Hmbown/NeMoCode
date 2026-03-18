@@ -25,6 +25,8 @@ def dgx_spark_profile() -> HardwareProfile:
         has_microphone=True,
         has_speakers=True,
         platform_name="Linux",
+        is_dgx_spark=True,
+        unified_memory_gb=128,
     )
 
 
@@ -104,8 +106,8 @@ class TestRecommendations:
     def test_h100_recommends_super_nano(self, workstation_profile: HardwareProfile):
         assert workstation_profile.recommend_formation() == "super-nano"
 
-    def test_dgx_spark_recommends_super_nano(self, dgx_spark_profile: HardwareProfile):
-        assert dgx_spark_profile.recommend_formation() == "super-nano"
+    def test_dgx_spark_recommends_spark(self, dgx_spark_profile: HardwareProfile):
+        assert dgx_spark_profile.recommend_formation() == "spark"
 
     def test_no_gpu_no_local_models(self, no_gpu_profile: HardwareProfile):
         models = no_gpu_profile.recommend_local_models()

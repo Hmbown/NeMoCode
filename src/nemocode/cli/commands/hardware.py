@@ -28,7 +28,9 @@ def hardware_default(ctx: typer.Context) -> None:
 def hardware_show() -> None:
     """Show detected hardware profile."""
     profile = detect_hardware()
-    console.print(Panel(profile.summary(), title="Hardware Profile", border_style="blue"))
+    border = "bright_green" if profile.is_dgx_spark else "blue"
+    title = "DGX Spark Detected" if profile.is_dgx_spark else "Hardware Profile"
+    console.print(Panel(profile.summary(), title=title, border_style=border))
 
 
 @hardware_app.command("recommend")
@@ -37,8 +39,62 @@ def hardware_recommend() -> None:
     profile = detect_hardware()
     cfg = load_config()
 
-    console.print(Panel(profile.summary(), title="Hardware Profile", border_style="blue"))
+    border = "bright_green" if profile.is_dgx_spark else "blue"
+    title = "DGX Spark Detected" if profile.is_dgx_spark else "Hardware Profile"
+    console.print(Panel(profile.summary(), title=title, border_style=border))
     console.print()
+
+    # DGX Spark concurrent deployment info
+    if profile.is_dgx_spark:
+        console.print(
+            "[bold bright_green]DGX Spark — Run Multiple Models"
+            " Simultaneously[/bold bright_green]\n"
+        )
+
+        concurrent = profile.spark_concurrent_configs()
+        if concurrent:
+            table = Table(show_header=True, box=None, padding=(0, 2))
+            table.add_column("Role", style="cyan")
+            table.add_column("Model")
+            table.add_column("Memory", justify="right")
+            table.add_column("Port", justify="right")
+
+            total_mem = 0.0
+            for cfg_item in concurrent:
+                table.add_row(
+                    cfg_item["role"],
+                    cfg_item["model_id"].split("/")[-1],
+                    cfg_item["memory"],
+                    cfg_item["port"],
+                )
+                # Parse "~80GB" → 80
+                mem_str = cfg_item["memory"].replace("~", "").replace("GB", "").strip()
+                try:
+                    total_mem += float(mem_str)
+                except ValueError:
+                    pass
+
+            remaining = profile.unified_memory_gb - total_mem
+            table.add_row("", "", "─" * 8, "")
+            table.add_row(
+                "[dim]Total[/dim]",
+                "",
+                f"[bold]~{total_mem:.0f} GB[/bold]",
+                "",
+            )
+            table.add_row(
+                "[dim]Remaining[/dim]",
+                "[dim]OS + apps[/dim]",
+                f"[green]~{remaining:.0f} GB[/green]",
+                "",
+            )
+            console.print(table)
+            console.print()
+
+        console.print(
+            "[dim]Run [bold]nemo setup spark[/bold] for step-by-step"
+            " deployment instructions.[/dim]\n"
+        )
 
     # Formation recommendation
     rec_formation = profile.recommend_formation()
@@ -46,6 +102,18 @@ def hardware_recommend() -> None:
     f = cfg.formations.get(rec_formation)
     if f:
         console.print(f"  [dim]{f.description}[/dim]")
+
+    # Other good formations for this hardware
+    if profile.is_dgx_spark:
+        console.print("\n[bold]Also available on your Spark:[/bold]")
+        spark_formations = [
+            "spark", "spark-sglang", "spark-vllm", "spark-swarm",
+            "spark-vision", "spark-retrieval", "spark-full",
+        ]
+        for fname in spark_formations:
+            form = cfg.formations.get(fname)
+            if form and fname != rec_formation:
+                console.print(f"  [cyan]{fname}[/cyan] — {form.description}")
 
     # Local model recommendations
     local_models = profile.recommend_local_models()
@@ -55,12 +123,13 @@ def hardware_recommend() -> None:
             m = cfg.manifests.get(model_id)
             if m:
                 console.print(f"  [green]{model_id}[/green] — {m.display_name}")
-                active = f"{m.moe.active_params_b:.0f}B"
-                total = f"{m.moe.total_params_b:.0f}B"
-                vram = m.min_gpu_memory_gb
-                console.print(
-                    f"    [dim]{active} active / {total} total, needs {vram}GB VRAM[/dim]"
-                )
+                if m.moe.total_params_b > 0:
+                    active = f"{m.moe.active_params_b:.0f}B"
+                    total = f"{m.moe.total_params_b:.0f}B"
+                    vram = m.min_gpu_memory_gb
+                    console.print(
+                        f"    [dim]{active} active / {total} total, needs {vram}GB[/dim]"
+                    )
     else:
         console.print("\n[yellow]No Nemotron 3 models can run locally on this hardware.[/yellow]")
         console.print("[dim]Use hosted endpoints (build.nvidia.com) instead.[/dim]")
@@ -92,6 +161,6 @@ def hardware_refresh_cmd() -> None:
     """Force re-detection of hardware (clear cache)."""
     console.print("Refreshing hardware detection...")
     profile = refresh_hardware()
-    console.print(
-        Panel(profile.summary(), title="Hardware Profile (refreshed)", border_style="green")
-    )
+    border = "bright_green" if profile.is_dgx_spark else "green"
+    title = "DGX Spark (refreshed)" if profile.is_dgx_spark else "Hardware Profile (refreshed)"
+    console.print(Panel(profile.summary(), title=title, border_style=border))

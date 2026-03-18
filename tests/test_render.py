@@ -278,6 +278,7 @@ class TestEventRenderer:
         renderer.render(AgentEvent(kind="text", text="Here is my response"))
         renderer.flush()
         output = buf.getvalue()
+        assert "NeMoCode Response" in output
         assert "Here is my response" in output
 
 

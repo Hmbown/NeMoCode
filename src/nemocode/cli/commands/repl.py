@@ -231,7 +231,7 @@ class _InputReader:
                     pass  # No terminal available (e.g. Windows CI) — fall back to input()
 
     def _toolbar(self):
-        """Bottom toolbar — always shows mode, endpoint, git branch, context %."""
+        """Bottom toolbar — always shows mode, model name, git branch, context %, tok/s."""
         if self._state is None:
             return ""
         s = self._state
@@ -244,9 +244,15 @@ class _InputReader:
         mc = mode_colors.get(mode, "ansigreen")
         parts.append(f" <{mc}><b>▸ {mode}</b></{mc}>")
 
-        # Endpoint
+        # Model display name (instead of raw endpoint key)
         ep_name = s.config.default_endpoint
-        parts.append(f" <ansicyan>{ep_name}</ansicyan>")
+        ep = s.config.endpoints.get(ep_name)
+        if ep:
+            manifest = s.config.manifests.get(ep.model_id)
+            display = manifest.display_name if manifest else ep.model_id
+            parts.append(f" <ansicyan>{display}</ansicyan>")
+        else:
+            parts.append(f" <ansicyan>{ep_name}</ansicyan>")
 
         # Git branch
         branch = _get_git_branch()
@@ -281,6 +287,11 @@ class _InputReader:
                 else (f"{t / 1_000:.0f}K" if t >= 1_000 else str(t))
             )
             parts.append(f" {tok_str}tok")
+
+        # Last throughput
+        last_tps = s.metrics.last_tokens_per_sec
+        if last_tps > 0:
+            parts.append(f" {last_tps:.0f} tok/s")
 
         return HTML(" │".join(parts))
 
@@ -541,6 +552,11 @@ class _SlashDispatcher:
         table.add_row("Completion tokens", f"{summary['completion_tokens']:,}")
         table.add_row("Total tokens", f"{summary['total_tokens']:,}")
         table.add_row("Estimated cost", f"${summary['estimated_cost_usd']:.6f}")
+        table.add_row("Avg latency", f"{summary['avg_latency_ms']:.0f}ms")
+        if summary["avg_tokens_per_sec"] > 0:
+            table.add_row("Avg tok/s", f"{summary['avg_tokens_per_sec']:.1f}")
+        if summary["avg_ttft_ms"] > 0:
+            table.add_row("Avg TTFT", f"{summary['avg_ttft_ms']:.0f}ms")
         table.add_row("Session duration", f"{summary['session_duration_s']:.0f}s")
 
         console.print(table)
@@ -550,20 +566,30 @@ class _SlashDispatcher:
         for r in mc._requests:
             model = r.model_id or "unknown"
             if model not in by_model:
-                by_model[model] = {"prompt": 0, "completion": 0, "cost": 0.0, "requests": 0}
+                by_model[model] = {
+                    "prompt": 0, "completion": 0, "cost": 0.0,
+                    "requests": 0, "tps_sum": 0.0, "tps_count": 0,
+                }
             by_model[model]["prompt"] += r.prompt_tokens
             by_model[model]["completion"] += r.completion_tokens
             by_model[model]["cost"] += r.estimated_cost
             by_model[model]["requests"] += 1
+            if r.tokens_per_sec > 0:
+                by_model[model]["tps_sum"] += r.tokens_per_sec
+                by_model[model]["tps_count"] += 1
 
         if len(by_model) > 1:
             console.print("\n[bold]By model:[/bold]")
             for model, stats in by_model.items():
                 p = int(stats["prompt"])
                 c = int(stats["completion"])
+                tps_str = ""
+                if stats["tps_count"] > 0:
+                    avg_tps = stats["tps_sum"] / stats["tps_count"]
+                    tps_str = f"  {avg_tps:.0f} tok/s"
                 console.print(
                     f"  [dim]{model}[/dim]  {p:,}p + {c:,}c"
-                    f"  ${stats['cost']:.6f}  ({int(stats['requests'])} reqs)"
+                    f"  ${stats['cost']:.6f}  ({int(stats['requests'])} reqs){tps_str}"
                 )
 
         return True
@@ -1066,7 +1092,7 @@ class _TurnRenderer:
         self._renderer.render(event)
 
     def finalize(self) -> None:
-        """Flush pending output and record metrics."""
+        """Flush pending output, print turn summary, and record metrics."""
         self._renderer.flush()
         # If the model did tool work but produced no text, show a summary
         if not self._text_buf.strip() and self._tool_call_count > 0:
@@ -1079,6 +1105,37 @@ class _TurnRenderer:
             parts.append(f"{elapsed:.1f}s")
             console.print(f"\n[dim]Done — {' · '.join(parts)}[/dim]")
         self._record_metrics()
+        self._print_turn_summary()
+
+    def _print_turn_summary(self) -> None:
+        """Print a compact performance summary line after each turn."""
+        elapsed = time.time() - self._turn_start
+        completion_tokens = self._last_usage.get("completion_tokens", 0)
+        total_tokens = (
+            self._last_usage.get("prompt_tokens", 0) + completion_tokens
+        )
+        if total_tokens == 0:
+            return
+
+        parts: list[str] = []
+        parts.append(f"{elapsed:.1f}s")
+        parts.append(f"{total_tokens:,} tok")
+
+        # Throughput
+        if completion_tokens > 0 and elapsed > 0:
+            tps = completion_tokens / elapsed
+            parts.append(f"{tps:.0f} tok/s")
+
+        # TTFT
+        if self._first_token_time is not None:
+            ttft = self._first_token_time - self._turn_start
+            parts.append(f"TTFT {ttft:.1f}s")
+
+        # Tool calls
+        if self._tool_call_count > 0:
+            parts.append(f"{self._tool_call_count} tool{'s' if self._tool_call_count != 1 else ''}")
+
+        console.print(f"\n  [dim]▸ {' │ '.join(parts)}[/dim]")
 
     def _record_metrics(self) -> None:
         """Record metrics for this turn into the collector."""
@@ -1119,19 +1176,32 @@ def _fmt_tokens(n: int) -> str:
 def _render_status_bar(state: _ReplState) -> None:
     """Print a persistent status bar after each turn.
 
-    Always visible — shows mode, endpoint, git branch, context %, tokens, cost.
-    Uses a dim background strip so it reads as a status bar, not just text.
+    Always visible — shows mode, model display name, git branch, context %,
+    tokens, tok/s, cost.
+    Kept to a single compact line so it feels like instrumentation, not clutter.
     """
     parts: list[str] = []
+
+    parts.append(f"[bold {_NVIDIA_GREEN}]NVIDIA[/bold {_NVIDIA_GREEN}]")
 
     # Mode
     mode = state.mode
     mode_colors = {"code": "green", "plan": "yellow", "auto": "red"}
     mc = mode_colors.get(mode, "green")
-    parts.append(f"[bold {mc}]▸ {mode}[/bold {mc}]")
+    parts.append(f"[bold {mc}]{mode}[/bold {mc}]")
 
-    # Endpoint
-    parts.append(f"[cyan]{state.config.default_endpoint}[/cyan]")
+    # Model display name (instead of raw endpoint key)
+    ep_name = state.config.default_endpoint
+    ep = state.config.endpoints.get(ep_name)
+    if ep:
+        manifest = state.config.manifests.get(ep.model_id)
+        display = manifest.display_name if manifest else ep.model_id
+        parts.append(f"[cyan]{display}[/cyan]")
+    else:
+        parts.append(f"[cyan]{ep_name}[/cyan]")
+
+    if state.config.active_formation:
+        parts.append(f"[{_NVIDIA_GREEN}]{state.config.active_formation}[/{_NVIDIA_GREEN}]")
 
     # Git branch
     branch = _get_git_branch()
@@ -1156,15 +1226,18 @@ def _render_status_bar(state: _ReplState) -> None:
     if total_tokens > 0:
         parts.append(f"[dim]{_fmt_tokens(total_tokens)}tok[/dim]")
 
+    # Last tok/s
+    last_tps = state.metrics.last_tokens_per_sec
+    if last_tps > 0:
+        parts.append(f"[dim]{last_tps:.0f} tok/s[/dim]")
+
     # Cost
     total_cost = state.metrics.total_cost
     if total_cost > 0:
         parts.append(f"[dim]${total_cost:.4f}[/dim]")
 
-    bar = "  │  ".join(parts)
-    console.print("[dim]─[/dim]")
+    bar = " [dim]│[/dim] ".join(parts)
     console.print(f"  {bar}")
-    console.print("[dim]─[/dim]")
 
 
 # ===================================================================
@@ -1214,11 +1287,48 @@ def _auto_save_session(state: _ReplState) -> None:
 _NVIDIA_GREEN = "bright_green"
 
 
+def _compact_gpu_name(name: str) -> str:
+    """Shorten vendor-heavy GPU names for display."""
+    cleaned = name.strip()
+    for prefix in ("NVIDIA GeForce ", "NVIDIA RTX ", "NVIDIA ", "GeForce "):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+    return cleaned
+
+
+def _get_hardware_line() -> str:
+    """Build a compact hardware description for the banner.
+
+    DGX Spark: 'DGX Spark (GB10) │ 128GB unified │ spark-vllm'
+    Other GPU: 'RTX 4090 (24GB)' etc.
+    Returns empty string if detection fails or no GPUs.
+    Uses cached detect_hardware() — no startup penalty.
+    """
+    try:
+        from nemocode.core.hardware import detect_hardware
+
+        hw = detect_hardware()
+        if hw.is_dgx_spark:
+            mem = f"{hw.unified_memory_gb:.0f}GB unified"
+            return f"DGX Spark · {mem}"
+        elif hw.gpus:
+            gpu = hw.gpus[0]
+            vram = f"{gpu.vram_gb:.0f}GB"
+            gpu_name = _compact_gpu_name(gpu.name)
+            if len(hw.gpus) > 1:
+                return f"{len(hw.gpus)}× {gpu_name} · {vram} each"
+            return f"{gpu_name} · {vram}"
+    except Exception:
+        pass
+    return ""
+
+
 def _print_banner(state: _ReplState) -> None:
     """Print a clean NVIDIA-themed welcome banner.
 
     Detects terminal height — if < 30 rows, uses a compact 2-line banner.
-    Full banner for tall terminals.
+    Full banner for tall terminals. Shows hardware info when available.
     """
     ep_name = state.config.default_endpoint
     ep = state.config.endpoints.get(ep_name)
@@ -1233,7 +1343,11 @@ def _print_banner(state: _ReplState) -> None:
     else:
         ctx_k = "128K"
 
-    formation_str = f" ▸ {formation}" if formation else ""
+    mode_colors = {"code": _NVIDIA_GREEN, "plan": "yellow", "auto": "red"}
+    mode_style = mode_colors.get(state.mode, _NVIDIA_GREEN)
+    formation_str = f" · {formation}" if formation else ""
+    hw_line = _get_hardware_line()
+    path_line = str(Path.cwd())
 
     # Compact banner for small terminals (< 30 rows)
     try:
@@ -1243,11 +1357,16 @@ def _print_banner(state: _ReplState) -> None:
 
     if term_height < 30:
         console.print(
-            f"[bold {_NVIDIA_GREEN}]  ▸▸ NeMoCode[/bold {_NVIDIA_GREEN}] "
-            f"[dim]v{__version__} · {model_display} · {ep_name} · {ctx_k} ctx"
-            f"{formation_str}[/dim]"
+            f"[bold {_NVIDIA_GREEN}]NeMoCode // NVIDIA NIM[/bold {_NVIDIA_GREEN}] "
+            f"[dim]v{__version__}[/dim]"
         )
-        console.print(f"[dim]     {Path.cwd()}[/dim]")
+        console.print(
+            f"[bold]{model_display}[/bold] [dim]· {ep_name} · {ctx_k} ctx{formation_str} · [/dim]"
+            f"[bold {mode_style}]{state.mode.upper()}[/bold {mode_style}]"
+        )
+        if hw_line:
+            console.print(f"[dim]{hw_line}[/dim]")
+        console.print(f"[dim]{path_line}[/dim]")
         return
 
     # Full banner for tall terminals
@@ -1255,23 +1374,29 @@ def _print_banner(state: _ReplState) -> None:
     from rich.text import Text
 
     content = Text()
-    content.append("\n")
-    content.append("  ▸▸  ", style=f"bold {_NVIDIA_GREEN}")
-    content.append("N e M o C o d e", style=f"bold {_NVIDIA_GREEN}")
-    content.append("\n")
-    content.append("      ━━━━━━━━━━━━━━━━━━━━━━━", style=_NVIDIA_GREEN)
-    content.append("\n\n")
-    content.append(f"      v{__version__}  ", style="dim")
     content.append(model_display, style="bold")
-    content.append(f"  {ep_name}  {ctx_k} ctx{formation_str}\n", style="dim")
-    content.append(f"      {Path.cwd()}\n", style="dim")
+    content.append("  ·  ", style="dim")
+    content.append(ep_name, style="dim")
+    content.append("  ·  ", style="dim")
+    content.append(f"{ctx_k} ctx", style="dim")
+    if formation:
+        content.append("  ·  ", style="dim")
+        content.append(formation, style=f"bold {_NVIDIA_GREEN}")
+    content.append("  ·  ", style="dim")
+    content.append(state.mode.upper(), style=f"bold {mode_style}")
     content.append("\n")
-    content.append('      /help · """ for multi-line · Tab: mode · Ctrl+D: exit\n', style="dim")
+    if hw_line:
+        content.append(f"{hw_line}\n", style="dim")
+    content.append(f"{path_line}\n", style="dim")
+    content.append('/help · """ multi-line · Tab mode · Ctrl+D exit', style="dim")
 
     panel = Panel(
         content,
+        title=f"[bold {_NVIDIA_GREEN}]NeMoCode // NVIDIA NIM[/bold {_NVIDIA_GREEN}]",
+        subtitle=f"[dim]v{__version__}[/dim]",
         border_style=_NVIDIA_GREEN,
         padding=(0, 1),
+        expand=False,
     )
     console.print()
     console.print(panel)
@@ -1438,6 +1563,7 @@ async def run_repl(
             finally:
                 state._turn_active = False
                 renderer.finalize()
+                _render_status_bar(state)
 
             # Auto-save session after each turn
             _auto_save_session(state)

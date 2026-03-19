@@ -173,6 +173,34 @@ class Formation(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Agent profiles
+# ---------------------------------------------------------------------------
+
+
+class AgentMode(str, Enum):
+    PRIMARY = "primary"
+    SUBAGENT = "subagent"
+    ALL = "all"
+
+
+class AgentConfig(BaseModel):
+    """A named agent profile for primary sessions or delegated sub-agents."""
+
+    name: str
+    description: str = ""
+    display_name: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    nickname_candidates: list[str] = Field(default_factory=list)
+    mode: AgentMode = AgentMode.SUBAGENT
+    hidden: bool = False
+    endpoint: str | None = None
+    prefer_tiers: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    role: FormationRole = FormationRole.FAST
+    prompt: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Tool permissions
 # ---------------------------------------------------------------------------
 
@@ -256,6 +284,7 @@ class NeMoCodeConfig(BaseModel):
     endpoints: dict[str, Endpoint] = Field(default_factory=dict)
     manifests: dict[str, Manifest] = Field(default_factory=dict)
     formations: dict[str, Formation] = Field(default_factory=dict)
+    agents: dict[str, AgentConfig] = Field(default_factory=dict)
     permissions: ToolPermissions = Field(default_factory=ToolPermissions)
     project: ProjectContext = Field(default_factory=ProjectContext)
     mcp: MCPConfig = Field(default_factory=MCPConfig)

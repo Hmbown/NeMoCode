@@ -10,16 +10,17 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from nemocode.config.agents import resolve_agent_reference
 from nemocode.config import load_config
-from nemocode.config.schema import NeMoCodeConfig
+from nemocode.config.schema import AgentConfig, AgentMode, FormationRole, NeMoCodeConfig
 from nemocode.core.hooks import HookRunner
 from nemocode.core.memory import load_all_memories
 from nemocode.core.permissions import PermissionEngine
 from nemocode.core.registry import Registry
 from nemocode.core.router import get_auto_endpoint, route_to_formation
-from nemocode.core.scheduler import AgentEvent, Scheduler
+from nemocode.core.scheduler import ROLE_PROMPTS, AgentEvent, Scheduler, FormationRole
 from nemocode.core.snapshot import SnapshotManager
-from nemocode.tools.delegate import create_delegate_tool
+from nemocode.tools.delegate import create_delegate_tools
 from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
@@ -184,12 +185,16 @@ class CodeAgent:
         *,
         auto_route: bool = False,
         read_only: bool = False,
+        agent_name: str | None = None,
     ) -> None:
         self._config = config or load_config(project_dir)
         self._project_dir = project_dir
         self._registry = Registry(self._config)
         self._read_only = read_only
-        if read_only:
+        self._agent_profile = self._resolve_primary_agent(agent_name)
+        if self._agent_profile:
+            self._tool_registry = load_tools(self._agent_profile.tools)
+        elif read_only:
             # Plan mode: read-only tools only — no writes, edits, bash, commits
             self._tool_registry = load_tools(["fs_read", "git_read", "rg", "glob", "clarify"])
         else:
@@ -218,13 +223,49 @@ class CodeAgent:
             read_only=read_only,
             permission_engine=permission_engine,
             max_tool_rounds=self._config.max_tool_rounds,
+            single_role=self._agent_profile.role if self._agent_profile else FormationRole.EXECUTOR,
+            single_prompt=self._single_prompt_for_agent(),
         )
         self._inject_project_context()
 
-        # Register delegate tool bound to our registry/config
-        if not read_only:
-            delegate_def = create_delegate_tool(self._registry, self._config)
-            self._tool_registry.register(delegate_def)
+        # Register sub-agent orchestration tools if the agent profile includes any of them
+        agent_control_tool_names = {"delegate", "spawn_agent", "wait_agent", "close_agent", "resume_agent"}
+        if self._agent_profile and any(tool in self._agent_profile.tools for tool in agent_control_tool_names):
+            agent_control_defs = create_delegate_tools(
+                self._registry,
+                self._config,
+                project_context=self._scheduler._project_context,
+                hook_runner=hook_runner,
+                permission_engine=permission_engine,
+                parent_agent_name=self._agent_profile.name if self._agent_profile else "main",
+            )
+            for tool_def in agent_control_defs:
+                self._tool_registry.register(tool_def)
+
+    def _resolve_primary_agent(self, agent_name: str | None) -> AgentConfig | None:
+        resolved_name = agent_name
+        if resolved_name is None:
+            resolved_name = "plan" if self._read_only else "build"
+        else:
+            resolved_name = resolve_agent_reference(self._config.agents, resolved_name) or resolved_name
+
+        agent = self._config.agents.get(resolved_name)
+        if agent is None:
+            if agent_name is None:
+                return None
+            raise ValueError(f"Unknown agent profile: {resolved_name}")
+
+        if agent.mode == AgentMode.SUBAGENT:
+            raise ValueError(f"Agent profile {resolved_name} is subagent-only")
+
+        return agent
+
+    def _single_prompt_for_agent(self) -> str | None:
+        if self._agent_profile is None:
+            return None
+        if self._agent_profile.prompt:
+            return self._agent_profile.prompt
+        return ROLE_PROMPTS.get(self._agent_profile.role)
 
     def _inject_project_context(self) -> None:
         """Inject project context, instruction files, memory, and git state."""
@@ -307,8 +348,54 @@ class CodeAgent:
                 yield event
         else:
             endpoint = self._config.default_endpoint
-            async for event in self._scheduler.run_single(endpoint, user_input):
-                yield event
+            # Check if we are in plan mode (single planner agent)
+            if not formation and self._agent_profile and self._agent_profile.role == FormationRole.PLANNER:
+                # Plan interaction loop
+                max_iterations = 5  # avoid infinite loop
+                for i in range(max_iterations):
+                    # Run the planner to get a plan
+                    plan_text = ""
+                    async for event in self._scheduler.run_single(endpoint, user_input):
+                        if event.kind == "text":
+                            plan_text += event.text
+                        yield event
+                    # Now we have the plan in plan_text
+                    # Ask the user for approval
+                    yield AgentEvent(kind="text", text="\n---\nPlan generated. Asking for approval...\n")
+                    # Use the ask_user tool
+                    ask_tool = self._tool_registry.get("ask_user")
+                    if ask_tool is None:
+                        # Fallback: just break and let the user decide
+                        yield AgentEvent(kind="text", text="ask_user tool not available. Please approve the plan manually.")
+                        break
+                    # We need to call the tool. We are in an async method, so we can await.
+                    result = await ask_tool.fn(question=f"Do you approve the following plan?\n\n{plan_text}\n\nApprove? (y/n)")
+                    # The ask_user tool returns a string. We expect "y" or "yes" for approval.
+                    if result.strip().lower() in ("y", "yes"):
+                        # User approved, now run the plan with an executor agent
+                        # Create a new CodeAgent in executor mode
+                        executor_agent = CodeAgent(
+                            config=self._config,
+                            confirm_fn=self._confirm_fn,
+                            agent_name="build",  # or whatever the executor is
+                            read_only=False,
+                        )
+                        # The input for the executor is the original user input plus the plan
+                        executor_input = f"{user_input}\n\nPlan:\n{plan_text}"
+                        async for event in executor_agent.run(executor_input):
+                            yield event
+                        return  # we are done
+                    else:
+                        # User did not approve, ask for feedback and replan
+                        feedback = await ask_tool.fn(question="Please provide feedback on the plan to revise:")
+                        user_input = f"{user_input}\n\nFeedback on previous plan:\n{feedback}\n\nPlease revise the plan."
+                        # Loop again to replan
+                # If we exit the loop, we have maxed out iterations
+                yield AgentEvent(kind="text", text="Max plan iterations reached. Please try again with a clearer request.")
+            else:
+                # Normal execution
+                async for event in self._scheduler.run_single(endpoint, user_input):
+                    yield event
 
     async def run_with_endpoint(
         self, endpoint_name: str, user_input: str

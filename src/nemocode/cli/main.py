@@ -19,6 +19,7 @@ app = typer.Typer(
 
 
 def _register_commands() -> None:
+    from nemocode.cli.commands.agent import agent_app
     from nemocode.cli.commands.auth import auth_app
     from nemocode.cli.commands.chat import chat_cmd
     from nemocode.cli.commands.code import code_cmd
@@ -35,6 +36,7 @@ def _register_commands() -> None:
 
     app.command("chat")(chat_cmd)
     app.command("code")(code_cmd)
+    app.add_typer(agent_app, name="agent")
     app.add_typer(endpoint_app, name="endpoint")
     app.add_typer(model_app, name="model")
     app.add_typer(formation_app, name="formation")
@@ -77,7 +79,7 @@ def main(
         # Launch the REPL (same as `nemo code` with no args)
         from nemocode.cli.commands.repl import start_repl
 
-        start_repl(endpoint=None, formation=None, think=False, yes=False)
+        start_repl(endpoint=None, formation=None, agent_name=None, think=False, yes=False)
 
 
 _register_commands()

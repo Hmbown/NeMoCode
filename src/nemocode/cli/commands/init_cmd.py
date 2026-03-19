@@ -23,8 +23,6 @@ _TEMPLATE = {
         "context_files": ["README.md"],
         "ignore": ["*.pyc", "__pycache__/", ".venv/", "node_modules/"],
     },
-    "default_endpoint": "nim-super",
-    "active_formation": None,
     "permissions": {
         "auto_approve_shell": False,
         "require_confirmation": ["bash_exec", "git_commit"],
@@ -35,6 +33,10 @@ _TEMPLATE = {
 def init_cmd(
     name: str = typer.Option(None, "--name", help="Project name"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing config"),
+    endpoint: str = typer.Option(None, "--endpoint", help="Project-specific default endpoint"),
+    formation: str = typer.Option(
+        None, "--formation", help="Project-specific active formation"
+    ),
 ) -> None:
     """Create a .nemocode.yaml project config in the current directory."""
     config_path = Path.cwd() / ".nemocode.yaml"
@@ -73,8 +75,16 @@ def init_cmd(
             context_files.append(fname)
     config["project"]["context_files"] = context_files
 
+    if endpoint:
+        config["default_endpoint"] = endpoint
+    if formation:
+        config["active_formation"] = formation
+
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
     console.print(f"[green]Created {config_path}[/green]")
-    console.print("[dim]Edit to customize project context, conventions, and endpoints.[/dim]")
+    console.print(
+        "[dim]Project config now inherits your user-level runtime defaults unless you set"
+        " --endpoint or --formation here.[/dim]"
+    )

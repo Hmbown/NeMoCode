@@ -13,6 +13,7 @@ and none require user confirmation.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import hashlib
 import json
 import logging
@@ -37,6 +38,12 @@ ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
 # Tool output truncation threshold (characters)
 _TRUNCATION_THRESHOLD = 20_000
 _SCRATCH_DIR = Path(os.environ.get("NEMOCODE_SCRATCH_DIR", "/tmp/nemocode-scratch"))
+_STREAM_DONE = object()
+
+
+@dataclass
+class _StreamFailure:
+    error: BaseException
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +180,7 @@ def _truncate_output(result: str, tool_name: str) -> str:
 
 @dataclass
 class AgentEvent:
-    kind: str  # text, thinking, tool_call, tool_result, error, usage, phase
+    kind: str  # text, thinking, status, tool_call, tool_result, error, usage, phase
     text: str = ""
     thinking: str = ""
     tool_name: str = ""
@@ -217,12 +224,18 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "- multi_edit: Apply multiple edits to one file atomically. Use when making 2+ changes.\n"
         "- write_file: Create new files or full rewrites.\n"
         "- bash_exec: Run shell commands (tests, builds, git, etc.).\n"
+        "- spawn_agent: Launch a background sub-agent for a bounded parallel subtask.\n"
+        "- wait_agent: Wait for a spawned sub-agent only when its result is on the critical path.\n"
+        "- close_agent / resume_agent: Manage spawned sub-agent handles when needed.\n"
+        "- delegate: Synchronous compatibility wrapper that spawns a child and waits for it.\n"
         "- ask_user: Ask the user a question when you need clarification.\n\n"
         "## Rules\n"
         "- ALWAYS use tools — never just describe changes.\n"
         "- Read a file before editing it.\n"
         "- Keep text responses SHORT. The code speaks for itself.\n"
         "- Do not ask for permission — just do the work.\n"
+        "- Only use sub-agent tools when the user has explicitly asked for delegation, sub-agents, or parallel agent work.\n"
+        "- Spawn sidecar tasks that can run in parallel with your immediate next local step. Do not block on wait_agent unless necessary.\n"
         "- If something is unclear, use ask_user to get clarification.\n"
         "- Batch operations efficiently — use multi_edit for multiple changes in one file.\n"
     ),
@@ -279,6 +292,10 @@ class Scheduler:
         read_only: bool = False,
         permission_engine: Any = None,
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+        single_role: FormationRole = FormationRole.EXECUTOR,
+        single_prompt: str | None = None,
+        single_session_id: str = "main",
+        status_interval_s: float = 8.0,
     ) -> None:
         self._reg = registry
         self._tools = tool_registry
@@ -291,6 +308,10 @@ class Scheduler:
         self._permission_engine = permission_engine
         self._max_tool_rounds = max_tool_rounds
         self._stagnation = _StagnationTracker()
+        self._single_role = single_role
+        self._single_prompt = single_prompt
+        self._single_session_id = single_session_id
+        self._status_interval_s = max(status_interval_s, 0.0)
 
     # ------------------------------------------------------------------
     # Single-model mode
@@ -298,16 +319,20 @@ class Scheduler:
 
     async def run_single(self, endpoint_name: str, user_input: str) -> AsyncIterator[AgentEvent]:
         provider = self._reg.get_chat_provider(endpoint_name)
-        if FormationRole.EXECUTOR not in self._sessions:
-            s = Session(id="main", endpoint_name=endpoint_name)
-            prompt = _PLAN_MODE_PROMPT if self._read_only else ROLE_PROMPTS[FormationRole.EXECUTOR]
+        session_role = self._single_role
+        if session_role not in self._sessions:
+            s = Session(id=self._single_session_id, endpoint_name=endpoint_name)
+            prompt = self._single_prompt or (
+                _PLAN_MODE_PROMPT if self._read_only else ROLE_PROMPTS[FormationRole.EXECUTOR]
+            )
             if self._project_context:
                 prompt = f"{prompt}\n\n## Project Context\n{self._project_context}"
             s.add_system(prompt)
-            self._sessions[FormationRole.EXECUTOR] = s
-        session = self._sessions[FormationRole.EXECUTOR]
+            self._sessions[session_role] = s
+        session = self._sessions[session_role]
+        session.endpoint_name = endpoint_name
         session.add_user(user_input)
-        async for ev in self._agent_loop(provider, session, FormationRole.EXECUTOR):
+        async for ev in self._agent_loop(provider, session, session_role):
             yield ev
 
     # ------------------------------------------------------------------
@@ -436,21 +461,68 @@ class Scheduler:
 
             text_buf, think_buf = "", ""
             tool_calls: list[ToolCall] = []
+            round_start = time.monotonic()
+            last_status_at = round_start
+            visible_progress = False
+            stream_queue: asyncio.Queue[Any] = asyncio.Queue()
 
-            async for chunk in provider.stream(session.messages, tools=schemas or None):
-                if chunk.text:
-                    text_buf += chunk.text
-                    yield AgentEvent(kind="text", text=chunk.text, role=role)
-                if chunk.thinking:
-                    think_buf += chunk.thinking
-                    yield AgentEvent(kind="thinking", thinking=chunk.thinking, role=role)
-                if chunk.tool_calls:
-                    tool_calls.extend(chunk.tool_calls)
-                if chunk.usage:
-                    session.usage.add(
-                        chunk.usage.get("prompt_tokens", 0), chunk.usage.get("completion_tokens", 0)
-                    )
-                    yield AgentEvent(kind="usage", usage=chunk.usage, role=role)
+            async def _pump_stream() -> None:
+                try:
+                    async for chunk in provider.stream(session.messages, tools=schemas or None):
+                        await stream_queue.put(chunk)
+                except BaseException as exc:  # pragma: no cover - defensive pass-through
+                    await stream_queue.put(_StreamFailure(exc))
+                finally:
+                    await stream_queue.put(_STREAM_DONE)
+
+            pump_task = asyncio.create_task(_pump_stream())
+            try:
+                while True:
+                    timeout: float | None = None
+                    if self._status_interval_s > 0 and not visible_progress:
+                        timeout = max(
+                            self._status_interval_s - (time.monotonic() - last_status_at),
+                            0.05,
+                        )
+                    try:
+                        item = await asyncio.wait_for(stream_queue.get(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        elapsed = time.monotonic() - round_start
+                        yield AgentEvent(
+                            kind="status",
+                            text=self._format_wait_status(session, role, elapsed),
+                            role=role,
+                            phase="waiting",
+                        )
+                        last_status_at = time.monotonic()
+                        continue
+
+                    if item is _STREAM_DONE:
+                        break
+                    if isinstance(item, _StreamFailure):
+                        raise item.error
+
+                    chunk = item
+                    if chunk.text:
+                        visible_progress = True
+                        text_buf += chunk.text
+                        yield AgentEvent(kind="text", text=chunk.text, role=role)
+                    if chunk.thinking:
+                        think_buf += chunk.thinking
+                        yield AgentEvent(kind="thinking", thinking=chunk.thinking, role=role)
+                    if chunk.tool_calls:
+                        visible_progress = True
+                        tool_calls.extend(chunk.tool_calls)
+                    if chunk.usage:
+                        session.usage.add(
+                            chunk.usage.get("prompt_tokens", 0), chunk.usage.get("completion_tokens", 0)
+                        )
+                        yield AgentEvent(kind="usage", usage=chunk.usage, role=role)
+            finally:
+                if not pump_task.done():
+                    pump_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pump_task
 
             # Track progress — tool-using rounds count as active
             self._stagnation.record_turn(text_buf, had_tool_calls=bool(tool_calls))
@@ -669,3 +741,47 @@ class Scheduler:
                 current = session.messages[0].content
                 if "## Project Context" not in current:
                     session.add_system(f"{current}\n\n## Project Context\n{context}")
+
+    def _format_wait_status(
+        self,
+        session: Session,
+        role: FormationRole,
+        elapsed_s: float,
+    ) -> str:
+        """Describe long silent waits between visible model outputs."""
+        endpoint_label = session.endpoint_name
+        try:
+            endpoint = self._reg.get_endpoint(session.endpoint_name)
+            endpoint_label = endpoint.name or endpoint.model_id or session.endpoint_name
+        except KeyError:
+            pass
+
+        state = "thinking"
+        for msg in reversed(session.messages):
+            if msg.role == Role.SYSTEM:
+                continue
+            if msg.role == Role.TOOL:
+                state = "reviewing tool output"
+                break
+            if msg.role == Role.ASSISTANT and msg.tool_calls:
+                state = "planning the next tool call"
+                break
+            if msg.role == Role.USER:
+                state = "analyzing the request"
+                break
+            if msg.role == Role.ASSISTANT and msg.content:
+                state = "continuing the response"
+                break
+
+        elapsed = self._format_elapsed_compact(elapsed_s)
+        return f"Still working after {elapsed}: {state} on {endpoint_label}."
+
+    @staticmethod
+    def _format_elapsed_compact(elapsed_s: float) -> str:
+        if elapsed_s < 60:
+            return f"{elapsed_s:.0f}s"
+        minutes, seconds = divmod(int(elapsed_s), 60)
+        if minutes < 60:
+            return f"{minutes}m{seconds:02d}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h{minutes:02d}m"

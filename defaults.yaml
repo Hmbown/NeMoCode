@@ -384,6 +384,14 @@ endpoints:
     capabilities: [chat, code]
     max_tokens: 8192
 
+  local-sglang-nano4b:
+    name: "Local SGLang (Nano 4B)"
+    tier: local-sglang
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/llama-3.1-nemotron-nano-4b-v1.1"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
 # ---------------------------------------------------------------------------
 # Manifests — model architecture specifics
 # ---------------------------------------------------------------------------

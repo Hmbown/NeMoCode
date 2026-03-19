@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -106,6 +107,33 @@ class TestScheduler:
 
         usage_events = [e for e in events if e.kind == "usage"]
         assert len(usage_events) > 0
+
+    @pytest.mark.asyncio
+    async def test_run_single_emits_status_during_silent_wait(self, scheduler_config):
+        registry = Registry(scheduler_config)
+        tools = load_tools(["fs"])
+
+        async def slow_stream(messages, tools=None, extra_body=None):
+            await asyncio.sleep(0.1)
+            yield StreamChunk(text="Done.")
+            yield StreamChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+            )
+
+        provider = AsyncMock()
+        provider.stream = slow_stream
+
+        with patch.object(registry, "get_chat_provider", return_value=provider):
+            scheduler = Scheduler(registry, tools, status_interval_s=0.02)
+            events = []
+            async for ev in scheduler.run_single("test-ep", "Hello"):
+                events.append(ev)
+
+        status_events = [e for e in events if e.kind == "status"]
+        assert status_events
+        assert "Still working after" in status_events[0].text
+        assert "analyzing the request" in status_events[0].text
 
     def test_reset_clears_sessions(self, scheduler_config):
         registry = Registry(scheduler_config)

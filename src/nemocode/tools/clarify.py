@@ -27,11 +27,11 @@ def set_ask_fn(fn: Callable[[str, list[str]], Awaitable[str]] | None) -> None:
 
 
 @tool(
-    name="ask_user",
+    name="ask_clarify",
     description="Ask the user a clarifying question and wait for their response.",
     category="clarify",
 )
-async def ask_user(
+async def ask_clarify(
     question: str,
     options: str = "",
 ) -> str:

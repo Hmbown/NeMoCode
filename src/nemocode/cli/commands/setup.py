@@ -6,20 +6,34 @@
 from __future__ import annotations
 
 import shutil
+import sys
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from nemocode.core.setup_wizard import run_setup_wizard
+
 console = Console()
 setup_app = typer.Typer(help="Set up local inference backends.")
 
 
 @setup_app.callback(invoke_without_command=True)
-def setup_default(ctx: typer.Context) -> None:
-    """Show available setup options."""
+def setup_default(
+    ctx: typer.Context,
+    guided: bool = typer.Option(
+        True,
+        "--guided/--list",
+        help="Run the guided setup wizard instead of only listing setup topics.",
+    ),
+) -> None:
+    """Run guided setup or show available setup options."""
     if ctx.invoked_subcommand is None:
+        if guided and sys.stdin.isatty():
+            run_setup_wizard()
+            return
+
         console.print(
             Panel(
                 "[bold]NeMoCode Local Inference Setup[/bold]\n\n"
@@ -68,6 +82,17 @@ def setup_default(ctx: typer.Context) -> None:
             "[dim]All backends serve an OpenAI-compatible API that "
             "NeMoCode connects to automatically.[/dim]"
         )
+        if guided and not sys.stdin.isatty():
+            console.print(
+                "[dim]Interactive wizard needs a TTY. Run [bold]nemo setup wizard[/bold]"
+                " in a terminal, or use one of the subcommands below.[/dim]"
+            )
+
+
+@setup_app.command("wizard")
+def setup_wizard() -> None:
+    """Run the guided runtime setup wizard."""
+    run_setup_wizard()
 
 
 @setup_app.command("spark")

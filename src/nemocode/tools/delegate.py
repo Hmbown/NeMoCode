@@ -1,209 +1,512 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: MIT
 
-"""Sub-agent delegation tool — spawn focused sub-agents for subtasks.
-
-NVIDIA advantage: explore/fast/test use Nano mini-agents (75% cheaper),
-review/plan use Super. On DGX Spark, all agents run locally.
-"""
+"""Sub-agent orchestration tools backed by named agent profiles."""
 
 from __future__ import annotations
 
+import asyncio
+import itertools
 import json
 import logging
 
-from nemocode.config.schema import FormationRole, NeMoCodeConfig
+from nemocode.config.agents import resolve_agent_reference
+from nemocode.config.schema import (
+    AgentConfig,
+    AgentMode,
+    Endpoint,
+    EndpointTier,
+    FormationRole,
+    NeMoCodeConfig,
+)
 from nemocode.core.registry import Registry
 from nemocode.core.scheduler import ROLE_PROMPTS, Scheduler
+from nemocode.core.subagents import (
+    append_output,
+    attach_task,
+    cancel_run,
+    close_run,
+    complete_run,
+    fail_run,
+    get_run,
+    is_final_status,
+    record_tool_result,
+    resume_run,
+    snapshot_run,
+    start_run,
+    wait_for_run,
+)
 from nemocode.tools import ToolDef, tool
 from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
+_nickname_counters: dict[str, itertools.count] = {}
 
-# Agent type → (preferred endpoint tier, tools, role, prompt)
-_AGENT_TYPES = {
-    "explore": {
-        "prefer_tier": "nano-9b",
-        "tools": ["fs", "rg"],
-        "role": FormationRole.FAST,
-        "prompt": (
-            "You are an exploration agent. Search the codebase to answer the question. "
-            "Read files and search for patterns. Report your findings concisely."
-        ),
-    },
-    "plan": {
-        "prefer_tier": "super",
-        "tools": [],
-        "role": FormationRole.PLANNER,
-        "prompt": ROLE_PROMPTS[FormationRole.PLANNER],
-    },
-    "review": {
-        "prefer_tier": "super",
-        "tools": ["fs", "rg", "git"],
-        "role": FormationRole.REVIEWER,
-        "prompt": ROLE_PROMPTS[FormationRole.REVIEWER],
-    },
-    "fast": {
-        "prefer_tier": "nano",
-        "tools": ["fs", "git", "bash", "rg"],
-        "role": FormationRole.FAST,
-        "prompt": ROLE_PROMPTS[FormationRole.FAST],
-    },
-    # New mini-agent types for Nano
-    "code-search": {
-        "prefer_tier": "nano-9b",
-        "tools": ["fs", "rg", "glob"],
-        "role": FormationRole.FAST,
-        "prompt": (
-            "You are a code search agent. Find specific code patterns, definitions, "
-            "usages, and references. Return file paths and line numbers."
-        ),
-    },
-    "test": {
-        "prefer_tier": "nano",
-        "tools": ["bash", "fs"],
-        "role": FormationRole.FAST,
-        "prompt": (
-            "You are a test execution agent. Run the specified tests and report "
-            "results. If tests fail, include the relevant error output."
-        ),
-    },
-    "doc": {
-        "prefer_tier": "nano-9b",
-        "tools": ["fs", "rg"],
-        "role": FormationRole.FAST,
-        "prompt": (
-            "You are a documentation agent. Read the code and generate clear, "
-            "concise documentation. Focus on what the code does and why."
-        ),
-    },
-    "debug": {
-        "prefer_tier": "nano",
-        "tools": ["fs", "bash", "rg", "git"],
-        "role": FormationRole.DEBUGGER,
-        "prompt": ROLE_PROMPTS[FormationRole.DEBUGGER],
-    },
+_LOCAL_TIERS = {
+    EndpointTier.LOCAL_NIM,
+    EndpointTier.LOCAL_OLLAMA,
+    EndpointTier.LOCAL_SGLANG,
+    EndpointTier.LOCAL_VLLM,
 }
 
 
-def _pick_endpoint(config: NeMoCodeConfig, prefer_tier: str) -> str:
-    """Pick an endpoint based on preferred tier.
+def _agent_is_subagent(agent: AgentConfig) -> bool:
+    return agent.mode in {AgentMode.SUBAGENT, AgentMode.ALL}
 
-    Prefers Spark-local endpoints when available, then hosted.
-    Tier preference order:
-      nano-9b: spark-* -nano9b → nim-nano-9b → nim-nano → default
-      nano:    spark-* -nano → nim-nano → default
-      super:   spark-* -super → nim-super → default
-    """
-    # Priority 1: Spark-local endpoints (zero latency, free)
-    # Check NIM first, then SGLang, then vLLM — all are local on Spark.
-    spark_nim_map = {
-        "nano-9b": "spark-nim-nano9b",
-        "nano": "spark-nim-nano",
-        "super": "spark-nim-super",
-    }
-    spark_sglang_map = {
-        "nano-9b": "spark-sglang-nano9b",
-        "nano": "spark-sglang-nano9b",  # SGLang Spark defaults to Nano 9B for mini-agents
-        "super": "spark-sglang-super",
-    }
-    spark_vllm_map = {
-        "nano-9b": "spark-vllm-nano9b",
-        "nano": "spark-vllm-nano9b",  # vLLM Spark doesn't have Nano 30B, fall back to 9B
-        "super": "spark-vllm-super",
-    }
-    for spark_map in (spark_nim_map, spark_sglang_map, spark_vllm_map):
-        spark_name = spark_map.get(prefer_tier)
-        if spark_name and spark_name in config.endpoints:
-            return spark_name
 
-    # Priority 2: Match by tier keyword in model_id
-    tier_keywords = {
-        "nano-9b": ["nano-9b", "nano9b"],
-        "nano": ["nano"],
-        "super": ["super"],
-    }
-    keywords = tier_keywords.get(prefer_tier, [prefer_tier])
-
-    for name, ep in config.endpoints.items():
-        model_lower = ep.model_id.lower()
-        # Skip local endpoints that aren't running (Spark handles this above)
-        if "local" in name and "spark" not in name:
+def _list_subagents(
+    config: NeMoCodeConfig,
+    *,
+    include_hidden: bool = False,
+) -> list[tuple[str, AgentConfig]]:
+    items = []
+    for name, agent in config.agents.items():
+        if not _agent_is_subagent(agent):
             continue
-        for keyword in keywords:
-            if keyword in model_lower:
-                return name
+        if agent.hidden and not include_hidden:
+            continue
+        items.append((name, agent))
+    return sorted(items, key=lambda item: item[0])
+
+
+def _resolve_subagent(config: NeMoCodeConfig, name: str) -> AgentConfig | None:
+    resolved = resolve_agent_reference(config.agents, name) or name
+    agent = config.agents.get(resolved)
+    if agent and _agent_is_subagent(agent):
+        return agent
+    return None
+
+
+def _resolve_subagent_name(config: NeMoCodeConfig, name: str) -> str | None:
+    resolved = resolve_agent_reference(config.agents, name) or name
+    agent = config.agents.get(resolved)
+    if agent and _agent_is_subagent(agent):
+        return resolved
+    return None
+
+
+def _matches_tier(endpoint_name: str, endpoint: Endpoint, prefer_tier: str) -> bool:
+    prefer = prefer_tier.lower()
+    blob = f"{endpoint_name} {endpoint.name} {endpoint.model_id}".lower()
+
+    if prefer == "nano-4b":
+        return any(token in blob for token in ("nano-4b", "nano4b", "nemotron nano 4b"))
+    if prefer == "nano-9b":
+        return any(token in blob for token in ("nano-9b", "nano9b", "nemotron nano 9b"))
+    if prefer == "nano":
+        return any(
+            token in blob
+            for token in (
+                "nemotron-3-nano",
+                "nemotron 3 nano",
+                "nano 30b",
+                " nano ",
+                "-nano",
+            )
+        )
+    if prefer == "super":
+        return "super" in blob
+    return prefer in blob
+
+
+def _prefer_local_endpoints(config: NeMoCodeConfig) -> bool:
+    default_endpoint = config.endpoints.get(config.default_endpoint)
+    if default_endpoint and default_endpoint.tier in _LOCAL_TIERS:
+        return True
+
+    if config.active_formation:
+        formation = config.formations.get(config.active_formation)
+        if formation:
+            for slot in formation.slots:
+                endpoint = config.endpoints.get(slot.endpoint)
+                if endpoint and endpoint.tier in _LOCAL_TIERS:
+                    return True
+
+    return False
+
+
+def _endpoint_rank(
+    name: str,
+    endpoint: Endpoint,
+    *,
+    prefer_local: bool,
+) -> tuple[int, int, int, int, str]:
+    if prefer_local:
+        locality_rank = 0 if name.startswith("spark-") else 1 if endpoint.tier in _LOCAL_TIERS else 2
+    else:
+        locality_rank = 0 if endpoint.tier not in _LOCAL_TIERS else 1 if name.startswith("spark-") else 2
+
+    transport_rank = {
+        EndpointTier.LOCAL_SGLANG: 0,
+        EndpointTier.LOCAL_NIM: 1,
+        EndpointTier.LOCAL_VLLM: 2,
+        EndpointTier.LOCAL_OLLAMA: 3,
+        EndpointTier.DEV_HOSTED: 4,
+        EndpointTier.PROD_HOSTED: 4,
+        EndpointTier.INFERENCE_PARTNER: 5,
+        EndpointTier.OPENROUTER: 6,
+    }.get(endpoint.tier, 99)
+
+    nvidia_hosted_rank = (
+        0
+        if endpoint.base_url.startswith("https://integrate.api.nvidia.com")
+        or name.startswith("nim-")
+        else 1
+    )
+
+    return (locality_rank, transport_rank, nvidia_hosted_rank, len(endpoint.model_id), name)
+
+
+def _pick_endpoint(
+    config: NeMoCodeConfig,
+    prefer_tier: str | list[str] | None,
+    explicit_endpoint: str | None = None,
+) -> str:
+    """Pick an endpoint based on explicit override or preferred family tiers."""
+    if explicit_endpoint:
+        if explicit_endpoint in config.endpoints:
+            return explicit_endpoint
+        logger.warning("Agent requested unknown endpoint %s", explicit_endpoint)
+
+    tiers: list[str] = []
+    if isinstance(prefer_tier, str):
+        if prefer_tier:
+            tiers = [prefer_tier]
+    elif prefer_tier:
+        tiers = [tier for tier in prefer_tier if tier]
+
+    for tier in tiers:
+        matches = [
+            (name, endpoint)
+            for name, endpoint in config.endpoints.items()
+            if _matches_tier(name, endpoint, tier)
+        ]
+        if matches:
+            prefer_local = _prefer_local_endpoints(config)
+            matches.sort(
+                key=lambda item: _endpoint_rank(item[0], item[1], prefer_local=prefer_local)
+            )
+            return matches[0][0]
 
     return config.default_endpoint
 
 
-def create_delegate_tool(registry: Registry, config: NeMoCodeConfig) -> ToolDef:
-    """Create a delegate tool bound to the given registry and config.
+def _agent_prompt(agent: AgentConfig) -> str:
+    if agent.prompt:
+        return agent.prompt
+    return ROLE_PROMPTS.get(agent.role, ROLE_PROMPTS[FormationRole.FAST])
 
-    Returns a ToolDef that can be registered on a ToolRegistry.
-    """
+
+def _display_name(agent_name: str, agent: AgentConfig) -> str:
+    return agent.display_name or agent_name
+
+
+def _pick_nickname(agent_name: str, agent: AgentConfig) -> str:
+    candidates = agent.nickname_candidates or [_display_name(agent_name, agent)]
+    counter = _nickname_counters.setdefault(agent_name, itertools.count(0))
+    idx = next(counter) % len(candidates)
+    return candidates[idx]
+
+
+def _available_subagents_text(config: NeMoCodeConfig) -> list[str]:
+    visible = _list_subagents(config)
+    if not visible:
+        return ["No sub-agents are configured."]
+
+    lines = ["Available sub-agents:"]
+    for name, agent in visible:
+        title = _display_name(name, agent)
+        detail = agent.description or "Specialized sub-agent."
+        if agent.prefer_tiers:
+            detail += f" Preferred tiers: {', '.join(agent.prefer_tiers)}."
+        lines.append(f"- {name} ({title}): {detail}")
+    return lines
+
+
+def _delegate_description(config: NeMoCodeConfig) -> str:
+    lines = ["Delegate a focused subtask to a named sub-agent and wait for the final result."]
+    lines.extend(_available_subagents_text(config))
+    return "\n".join(lines)
+
+
+def _spawn_description(config: NeMoCodeConfig) -> str:
+    lines = [
+        "Spawn a background sub-agent for a bounded parallel task.",
+        "Use this only when the user has explicitly asked for delegation, sub-agents, or parallel agent work.",
+        "Continue with non-overlapping local work after spawning. Only call wait_agent when blocked on the child result.",
+    ]
+    lines.extend(_available_subagents_text(config))
+    return "\n".join(lines)
+
+
+def _compose_user_message(task: str, context: str) -> str:
+    if context:
+        return f"## Context\n{context}\n\n## Task\n{task}"
+    return task
+
+
+def _result_payload(
+    run_id: str,
+    *,
+    include_output: bool = False,
+    timed_out: bool = False,
+) -> dict[str, object]:
+    run = get_run(run_id)
+    if run is None:
+        return {"error": f"Unknown sub-agent run: {run_id}"}
+    return snapshot_run(run, include_output=include_output, timed_out=timed_out)
+
+
+async def _drive_subagent(
+    run_id: str,
+    scheduler: Scheduler,
+    endpoint: str,
+    user_msg: str,
+) -> None:
+    last_error = ""
+    try:
+        async for event in scheduler.run_single(endpoint, user_msg):
+            if event.kind == "text":
+                append_output(run_id, event.text)
+            elif event.kind == "tool_result":
+                record_tool_result(run_id, is_error=event.is_error)
+            elif event.kind == "error":
+                last_error = event.text or last_error
+                append_output(run_id, f"[ERROR] {event.text}")
+    except asyncio.CancelledError:
+        cancel_run(run_id, "Cancelled by close_agent")
+        raise
+    except Exception as exc:
+        fail_run(run_id, f"Sub-agent failed: {exc}")
+        return
+
+    run = get_run(run_id)
+    if run is None:
+        return
+
+    if last_error:
+        fail_run(run_id, last_error)
+        return
+
+    complete_run(
+        run_id,
+        output_preview=run.output[:500],
+        output=run.output,
+        tool_calls=run.tool_calls,
+        errors=run.errors,
+    )
+
+
+def _spawn_subagent_run(
+    registry: Registry,
+    config: NeMoCodeConfig,
+    *,
+    task: str,
+    agent_type: str,
+    context: str,
+    project_context: str,
+    hook_runner: object | None,
+    permission_engine: object | None,
+    parent_agent_name: str,
+) -> dict[str, object]:
+    resolved_name = _resolve_subagent_name(config, agent_type)
+    agent = _resolve_subagent(config, agent_type)
+    if agent is None or resolved_name is None:
+        valid = ", ".join(name for name, _ in _list_subagents(config, include_hidden=True))
+        return {"error": f"Unknown sub-agent: {agent_type}. Available: {valid or '(none)'}"}
+
+    endpoint = _pick_endpoint(
+        config,
+        agent.prefer_tiers,
+        explicit_endpoint=agent.endpoint,
+    )
+    nickname = _pick_nickname(resolved_name, agent)
+    session_id = f"{resolved_name}-{next(_nickname_counters.setdefault('__session__', itertools.count(1))):04d}"
+
+    tool_registry = load_tools(agent.tools) if agent.tools else load_tools([])
+    scheduler = Scheduler(
+        registry=registry,
+        tool_registry=tool_registry,
+        confirm_fn=None,
+        hook_runner=hook_runner,
+        permission_engine=permission_engine,
+        max_tool_rounds=config.max_tool_rounds,
+        single_role=agent.role,
+        single_prompt=_agent_prompt(agent),
+        single_session_id=session_id,
+    )
+    if project_context:
+        scheduler.inject_system_context(project_context)
+
+    run = start_run(
+        agent_name=resolved_name,
+        display_name=_display_name(resolved_name, agent),
+        nickname=nickname,
+        parent_agent=parent_agent_name,
+        task=task,
+        context=context,
+        endpoint=endpoint,
+        session_id=session_id,
+    )
+
+    child_task = asyncio.create_task(
+        _drive_subagent(
+            run.id,
+            scheduler,
+            endpoint,
+            _compose_user_message(task, context),
+        )
+    )
+    attach_task(run.id, child_task)
+    return snapshot_run(run, include_output=False)
+
+
+def create_delegate_tools(
+    registry: Registry,
+    config: NeMoCodeConfig,
+    *,
+    project_context: str = "",
+    hook_runner: object | None = None,
+    permission_engine: object | None = None,
+    parent_agent_name: str = "main",
+) -> list[ToolDef]:
+    """Create the sub-agent orchestration tool suite bound to the given runtime."""
 
     @tool(
-        description="Delegate a subtask to a focused sub-agent.",
+        description=_delegate_description(config),
         category="delegate",
     )
     async def delegate(
         task: str,
-        agent_type: str = "explore",
+        agent_type: str = "general",
         context: str = "",
     ) -> str:
-        """Spawn a sub-agent to handle a focused subtask.
+        """Spawn a focused sub-agent and wait for the final result.
 
-        task: The specific task or question for the sub-agent
-        agent_type: One of 'explore', 'plan', 'review', 'fast',
-            'code-search', 'test', 'doc', 'debug'
-        context: Additional context to provide to the sub-agent
+        task: The subtask for the delegated agent.
+        agent_type: Name of the configured sub-agent profile to use.
+        context: Extra context to prepend before the delegated task.
         """
-        spec = _AGENT_TYPES.get(agent_type)
-        if spec is None:
-            valid = ", ".join(_AGENT_TYPES.keys())
-            return json.dumps({"error": f"Unknown agent type: {agent_type}. Use: {valid}"})
+        spawned = _spawn_subagent_run(
+            registry,
+            config,
+            task=task,
+            agent_type=agent_type,
+            context=context,
+            project_context=project_context,
+            hook_runner=hook_runner,
+            permission_engine=permission_engine,
+            parent_agent_name=parent_agent_name,
+        )
+        if "error" in spawned:
+            return json.dumps(spawned)
 
-        endpoint = _pick_endpoint(config, spec["prefer_tier"])
-        tool_cats = spec["tools"]
-        tool_registry = load_tools(tool_cats) if tool_cats else load_tools([])
+        run_id = str(spawned["run_id"])
+        run, _ = await wait_for_run(run_id, timeout_s=None)
+        if run is None:
+            return json.dumps({"error": f"Unknown sub-agent run: {run_id}"})
+        return json.dumps(snapshot_run(run, include_output=True))
 
-        scheduler = Scheduler(
-            registry=registry,
-            tool_registry=tool_registry,
-            confirm_fn=None,  # sub-agents auto-approve
+    @tool(
+        description=_spawn_description(config),
+        category="delegate",
+    )
+    async def spawn_agent(
+        task: str,
+        agent_type: str = "general",
+        context: str = "",
+    ) -> str:
+        """Spawn a background sub-agent and return its run metadata.
+
+        task: The subtask for the spawned agent.
+        agent_type: Name of the configured sub-agent profile to use.
+        context: Extra context to prepend before the delegated task.
+        """
+        return json.dumps(
+            _spawn_subagent_run(
+                registry,
+                config,
+                task=task,
+                agent_type=agent_type,
+                context=context,
+                project_context=project_context,
+                hook_runner=hook_runner,
+                permission_engine=permission_engine,
+                parent_agent_name=parent_agent_name,
+            )
         )
 
-        user_msg = task
-        if context:
-            user_msg = f"## Context\n{context}\n\n## Task\n{task}"
+    @tool(
+        description=(
+            "Wait for a spawned sub-agent to finish. Use this sparingly and only when the child "
+            "result is on the critical path."
+        ),
+        category="delegate",
+    )
+    async def wait_agent(
+        agent_id: str,
+        timeout_s: float = 30.0,
+    ) -> str:
+        """Wait for a spawned sub-agent to reach a final state.
 
-        output_parts: list[str] = []
-        tool_results: list[dict] = []
+        agent_id: Run id returned by spawn_agent.
+        timeout_s: Maximum seconds to wait before returning the current status.
+        """
+        if timeout_s <= 0:
+            return json.dumps({"error": "timeout_s must be greater than zero"})
 
-        try:
-            async for event in scheduler.run_single(endpoint, user_msg):
-                if event.kind == "text":
-                    output_parts.append(event.text)
-                elif event.kind == "tool_result":
-                    tool_results.append(
-                        {
-                            "tool": event.tool_name,
-                            "is_error": event.is_error,
-                        }
-                    )
-                elif event.kind == "error":
-                    output_parts.append(f"[ERROR] {event.text}")
-        except Exception as e:
-            return json.dumps({"error": f"Sub-agent failed: {e}"})
+        run, timed_out = await wait_for_run(agent_id, timeout_s=timeout_s)
+        if run is None:
+            return json.dumps({"error": f"Unknown sub-agent run: {agent_id}"})
 
-        result = {
-            "agent_type": agent_type,
-            "endpoint": endpoint,
-            "output": "".join(output_parts),
-            "tool_calls": len(tool_results),
-            "errors": sum(1 for t in tool_results if t["is_error"]),
-        }
-        return json.dumps(result)
+        include_output = not timed_out and is_final_status(run.status)
+        return json.dumps(_result_payload(agent_id, include_output=include_output, timed_out=timed_out))
 
-    return delegate._tool_def
+    @tool(
+        description=(
+            "Close a spawned sub-agent handle. Set cancel=true to stop a running child; otherwise "
+            "the child continues in the background and can be reopened with resume_agent."
+        ),
+        category="delegate",
+    )
+    async def close_agent(
+        agent_id: str,
+        cancel: bool = False,
+    ) -> str:
+        """Close a spawned sub-agent handle.
+
+        agent_id: Run id returned by spawn_agent.
+        cancel: When true, cancel a running child before closing it.
+        """
+        run, previous_status = await close_run(agent_id, cancel=cancel)
+        if run is None:
+            return json.dumps({"error": f"Unknown sub-agent run: {agent_id}"})
+
+        payload = snapshot_run(run, include_output=is_final_status(run.status))
+        payload["previous_status"] = previous_status
+        payload["cancel_requested"] = cancel
+        return json.dumps(payload)
+
+    @tool(
+        description="Resume a previously closed sub-agent handle so it can be waited on or inspected again.",
+        category="delegate",
+    )
+    async def resume_agent(
+        agent_id: str,
+    ) -> str:
+        """Reopen a previously closed sub-agent handle.
+
+        agent_id: Run id returned by spawn_agent.
+        """
+        run = resume_run(agent_id)
+        if run is None:
+            return json.dumps({"error": f"Unknown sub-agent run: {agent_id}"})
+        return json.dumps(snapshot_run(run, include_output=is_final_status(run.status)))
+
+    return [
+        delegate._tool_def,
+        spawn_agent._tool_def,
+        wait_agent._tool_def,
+        close_agent._tool_def,
+        resume_agent._tool_def,
+    ]

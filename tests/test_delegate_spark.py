@@ -102,12 +102,46 @@ class TestPickEndpointSpark:
         result = _pick_endpoint(hosted_only_config, "unknown-tier")
         assert result == "nim-super"  # default endpoint
 
+    def test_explicit_endpoint_wins(self, spark_config):
+        result = _pick_endpoint(spark_config, ["nano-9b", "super"], explicit_endpoint="nim-super")
+        assert result == "nim-super"
+
+    def test_hosted_default_prefers_hosted_even_if_local_exists(self):
+        config = NeMoCodeConfig(
+            default_endpoint="nim-super",
+            endpoints={
+                "spark-sglang-nano9b": Endpoint(
+                    name="Spark SGLang Nano 9B",
+                    tier=EndpointTier.LOCAL_SGLANG,
+                    base_url="http://localhost:8001/v1",
+                    model_id="nvidia/nemotron-nano-9b-v2",
+                    capabilities=[Capability.CHAT],
+                ),
+                "nim-nano-9b": Endpoint(
+                    name="Hosted Nano 9B",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    model_id="nvidia/nemotron-nano-9b-v2",
+                    capabilities=[Capability.CHAT],
+                ),
+                "nim-super": Endpoint(
+                    name="Hosted Super",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert _pick_endpoint(config, "nano-9b") == "nim-nano-9b"
+
 
 class TestPickEndpointVllm:
     def test_vllm_spark_endpoints(self):
         """vLLM Spark endpoints should also be preferred."""
         config = NeMoCodeConfig(
-            default_endpoint="nim-super",
+            default_endpoint="spark-vllm-super",
             endpoints={
                 "spark-vllm-super": Endpoint(
                     name="Spark vLLM Super",
@@ -141,7 +175,7 @@ class TestPickEndpointSGLang:
     def test_sglang_spark_endpoints(self):
         """SGLang Spark endpoints should also be preferred."""
         config = NeMoCodeConfig(
-            default_endpoint="nim-super",
+            default_endpoint="spark-sglang-super",
             endpoints={
                 "spark-sglang-super": Endpoint(
                     name="Spark SGLang Super",
@@ -169,3 +203,33 @@ class TestPickEndpointSGLang:
         )
         assert _pick_endpoint(config, "super") == "spark-sglang-super"
         assert _pick_endpoint(config, "nano-9b") == "spark-sglang-nano9b"
+
+    def test_sglang_local_nano4b_is_preferred(self):
+        config = NeMoCodeConfig(
+            default_endpoint="local-sglang-nano4b",
+            endpoints={
+                "local-sglang-nano4b": Endpoint(
+                    name="Local SGLang Nano 4B",
+                    tier=EndpointTier.LOCAL_SGLANG,
+                    base_url="http://localhost:9001/v1",
+                    model_id="nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+                    capabilities=[Capability.CHAT],
+                ),
+                "nim-nano-4b": Endpoint(
+                    name="Hosted Nano 4B",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    model_id="nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+                    capabilities=[Capability.CHAT],
+                ),
+                "nim-super": Endpoint(
+                    name="Hosted Super",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert _pick_endpoint(config, ["nano-4b", "super"]) == "local-sglang-nano4b"

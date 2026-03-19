@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nemocode.config import _parse_config
 from nemocode.cli.commands.repl import (
     _fmt_tokens,
     _InputReader,
@@ -213,6 +214,13 @@ class TestSlashDispatcher:
         # Clean up
         _UNDO_STACK.clear()
 
+    def test_agent_switch_by_alias(self, repl_state):
+        repl_state.config.agents = _parse_config({}).agents
+        dispatcher = _SlashDispatcher(repl_state)
+        result = dispatcher.dispatch("/agent builder")
+        assert result is True
+        assert repl_state.agent_name == "build"
+
 
 class TestReplState:
     def test_initial_state(self, sample_config):
@@ -233,6 +241,11 @@ class TestReplState:
         repl_state.turn_count = 10
         repl_state.rebuild_agent()
         assert repl_state.turn_count == 0
+
+    def test_primary_agent_display_defaults_when_no_profiles(self, sample_config):
+        state = _ReplState(config=sample_config, show_thinking=False, auto_yes=True)
+        assert state.current_primary_agent_name() is None
+        assert state.current_primary_agent_display() == "default"
 
 
 class TestTurnRenderer:

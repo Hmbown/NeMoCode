@@ -18,6 +18,8 @@ from nemocode.cli.render import (
     format_tool_call,
     render_confirm_detail,
     render_tool_result,
+    summarize_delegate_result,
+    tool_result_has_embedded_error,
 )
 from nemocode.core.scheduler import AgentEvent
 
@@ -188,6 +190,71 @@ class TestRenderToolResult:
         # git_log is read-only — shows inline summary, not raw content
         assert "1 lines" in output or "line" in output
 
+    def test_delegate_summary(self):
+        con, buf = _capture_console()
+        result = json.dumps(
+            {
+                "run_id": "subagent-0001",
+                "agent_type": "general",
+                "display_name": "Joe Nemotron",
+                "nickname": "Orbit Joe",
+                "status": "completed",
+                "endpoint": "nim-nano",
+                "output": "Found the relevant code path.\nAnd another line.",
+                "tool_calls": 2,
+                "errors": 0,
+            }
+        )
+        render_tool_result(con, "delegate", result, False)
+        output = buf.getvalue()
+        assert "Orbit Joe" in output
+        assert "subagent-0001" in output
+        assert "Found the relevant code path." in output
+
+    def test_delegate_embedded_error(self):
+        con, buf = _capture_console()
+        result = json.dumps(
+            {
+                "run_id": "subagent-0002",
+                "agent_type": "debug",
+                "display_name": "Joebug Nemotron",
+                "nickname": "Crash Carson",
+                "status": "failed",
+                "endpoint": "nim-super",
+                "error": "Sub-agent failed: boom",
+            }
+        )
+        render_tool_result(con, "delegate", result, False)
+        output = buf.getvalue()
+        assert "Crash Carson" in output
+        assert "Sub-agent failed: boom" in output
+
+
+class TestDelegateHelpers:
+    def test_summarize_delegate_result(self):
+        summary = summarize_delegate_result(
+            {
+                "run_id": "subagent-0003",
+                "agent_type": "explore",
+                "display_name": "Geronemo",
+                "nickname": "Needle Joe",
+                "endpoint": "nim-nano",
+                "output": "Looked through the codebase.",
+                "tool_calls": 1,
+                "errors": 0,
+            }
+        )
+        assert summary is not None
+        headline, preview = summary
+        assert "Needle Joe" in headline
+        assert "subagent-0003" in headline
+        assert preview == "Looked through the codebase."
+
+    def test_tool_result_has_embedded_error_for_delegate(self):
+        result = json.dumps({"status": "failed", "error": "boom"})
+        assert tool_result_has_embedded_error("delegate", result) is True
+        assert tool_result_has_embedded_error("write_file", result) is False
+
 
 class TestRenderDiff:
     def test_colored_diff(self):
@@ -223,6 +290,7 @@ class TestEventRenderer:
         renderer.render(AgentEvent(kind="thinking", thinking="hmm"))
         output = buf.getvalue()
         assert "hmm" not in output
+        assert "Reasoning trace hidden" in output
 
     def test_thinking_shown_when_enabled(self):
         con, buf = _capture_console()
@@ -230,6 +298,14 @@ class TestEventRenderer:
         renderer.render(AgentEvent(kind="thinking", thinking="hmm"))
         output = buf.getvalue()
         assert "hmm" in output
+
+    def test_status_event_renders_worklog_line(self):
+        con, buf = _capture_console()
+        renderer = EventRenderer(con, show_thinking=False)
+        renderer.render(AgentEvent(kind="status", text="Still working after 24s: reviewing tool output."))
+        output = buf.getvalue()
+        assert "Still working after 24s" in output
+        assert "Reasoning trace hidden" in output
 
     def test_tool_call_breaks_stream(self):
         con, buf = _capture_console()

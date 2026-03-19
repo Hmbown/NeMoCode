@@ -91,6 +91,10 @@ class TestToolRegistry:
         assert "search_files" in names
         assert "http_fetch" in names
 
+    def test_load_no_tools_with_empty_list(self):
+        registry = load_tools([])
+        assert registry.list_tools() == []
+
 
 class TestFSTools:
     @pytest.mark.asyncio

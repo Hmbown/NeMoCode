@@ -14,13 +14,16 @@ from typing import Any
 
 import yaml
 
+from nemocode.config.agents import builtin_agents_raw, discover_agent_markdown
 from nemocode.config.schema import (
+    AgentConfig,
     Capability,
     Endpoint,
     EndpointTier,
     Formation,
     FormationRole,
     FormationSlot,
+    HooksConfig,
     Manifest,
     MCPConfig,
     MCPServerConfig,
@@ -129,6 +132,23 @@ def _parse_formation(name: str, data: dict[str, Any]) -> Formation:
     )
 
 
+def _parse_agent(name: str, data: dict[str, Any]) -> AgentConfig:
+    return AgentConfig(
+        name=data.get("name", name),
+        description=data.get("description", ""),
+        display_name=data.get("display_name", ""),
+        aliases=data.get("aliases", []),
+        nickname_candidates=data.get("nickname_candidates", []),
+        mode=data.get("mode", "subagent"),
+        hidden=data.get("hidden", False),
+        endpoint=data.get("endpoint"),
+        prefer_tiers=data.get("prefer_tiers", []),
+        tools=data.get("tools", []),
+        role=data.get("role", FormationRole.FAST),
+        prompt=data.get("prompt", ""),
+    )
+
+
 def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
     endpoints = {}
     for name, edata in raw.get("endpoints", {}).items():
@@ -142,6 +162,12 @@ def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
     for name, fdata in raw.get("formations", {}).items():
         formations[name] = _parse_formation(name, fdata)
 
+    agents = {}
+    agents_raw = builtin_agents_raw()
+    agents_raw = _deep_merge(agents_raw, raw.get("agents", {}))
+    for name, adata in agents_raw.items():
+        agents[name] = _parse_agent(name, adata)
+
     perms_data = raw.get("permissions", {})
     perms = ToolPermissions(**perms_data) if perms_data else ToolPermissions()
 
@@ -154,15 +180,21 @@ def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
         mcp_servers.append(MCPServerConfig(**srv))
     mcp = MCPConfig(servers=mcp_servers)
 
+    hooks_data = raw.get("hooks", {})
+    hooks = HooksConfig(**hooks_data) if hooks_data else HooksConfig()
+
     return NeMoCodeConfig(
         default_endpoint=raw.get("default_endpoint", "nim-super"),
         active_formation=raw.get("active_formation"),
+        max_tool_rounds=raw.get("max_tool_rounds", 100),
         endpoints=endpoints,
         manifests=manifests,
         formations=formations,
+        agents=agents,
         permissions=perms,
         project=project,
         mcp=mcp,
+        hooks=hooks,
     )
 
 
@@ -194,6 +226,11 @@ def load_config(project_dir: Path | None = None) -> NeMoCodeConfig:
     project_raw = _load_yaml(project_path)
     if project_raw:
         raw = _deep_merge(raw, project_raw)
+
+    # Layer 3b: Agent markdown profiles
+    discovered_agents = discover_agent_markdown(project_dir)
+    if discovered_agents:
+        raw["agents"] = _deep_merge(raw.get("agents", {}), discovered_agents)
 
     # Parse into typed config
     cfg = _parse_config(raw)

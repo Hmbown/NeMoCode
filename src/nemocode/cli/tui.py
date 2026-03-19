@@ -37,9 +37,14 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Static, TextArea
 
 from nemocode import __version__
-from nemocode.cli.render import format_tool_call
+from nemocode.cli.render import (
+    format_tool_call,
+    summarize_delegate_result,
+    tool_result_has_embedded_error,
+)
+from nemocode.config.agents import resolve_agent_reference
 from nemocode.config import load_config
-from nemocode.config.schema import NeMoCodeConfig
+from nemocode.config.schema import AgentMode, NeMoCodeConfig
 from nemocode.core.context import ContextManager
 from nemocode.core.metrics import MetricsCollector, RequestMetrics
 from nemocode.core.scheduler import AgentEvent
@@ -319,6 +324,7 @@ _HELP_TEXT = """\
 [bold]Configuration:[/bold]
   /endpoint      List endpoints  |  /endpoint <name>  Switch
   /formation     List formations |  /formation <name>  Activate
+  /agent         List primary agents | /agent <name> Switch
 
 [bold]Keyboard:[/bold]
   Enter          Send message (Shift+Enter for newline)
@@ -339,6 +345,7 @@ class _TUIState:
     metrics: MetricsCollector = field(default_factory=MetricsCollector)
     context_mgr: ContextManager = field(default_factory=ContextManager)
     agent: CodeAgent | None = None
+    agent_name: str | None = None
     mode_idx: int = 0
     is_streaming: bool = False
     cancelled: bool = False
@@ -351,6 +358,7 @@ class _TUIState:
     turn_start: float = 0.0
     first_token_time: float | None = None
     current_model_id: str = ""
+    reasoning_hint_shown: bool = False
 
     @property
     def mode(self) -> str:
@@ -375,6 +383,7 @@ class _TUIState:
         self.tool_error_count = 0
         self.first_token_time = None
         self.current_model_id = ""
+        self.reasoning_hint_shown = False
         self.turn_start = time.time()
 
     def record_metrics(self) -> None:
@@ -409,7 +418,22 @@ class _TUIState:
             config=self.config,
             confirm_fn=confirm_fn,
             read_only=(self.mode == "plan"),
+            agent_name=self.current_primary_agent_name(),
         )
+
+    def current_primary_agent_name(self) -> str | None:
+        if self.mode == "plan":
+            return "plan" if "plan" in self.config.agents else None
+        return self.agent_name
+
+    def current_primary_agent_display(self) -> str:
+        current = self.current_primary_agent_name()
+        if current is None:
+            return "default"
+        agent = self.config.agents.get(current)
+        if agent is None:
+            return current
+        return agent.display_name or agent.name
 
     def resolve_context_window(self) -> int:
         ep_name = self.config.default_endpoint
@@ -474,6 +498,7 @@ class StatusBar(Static):
     endpoint: reactive[str] = reactive("")
     model_name: reactive[str] = reactive("")
     formation: reactive[str] = reactive("")
+    agent_name: reactive[str] = reactive("")
     git_branch: reactive[str] = reactive("")
     total_tokens: reactive[int] = reactive(0)
     total_cost: reactive[float] = reactive(0.0)
@@ -506,6 +531,8 @@ class StatusBar(Static):
 
         if self.formation:
             parts.append(f"[{NV_GREEN}]{self.formation}[/{NV_GREEN}]")
+        if self.agent_name:
+            parts.append(f"[blue]{self.agent_name}[/blue]")
 
         # Model display name (preferred) or endpoint fallback
         if self.model_name:
@@ -552,28 +579,43 @@ class ToolPanel(VerticalScroll):
         if len(display) > 500:
             display = display[:500] + "..."
 
+        parsed = None
+        try:
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        embedded_error = tool_result_has_embedded_error(name, result)
+        if embedded_error:
+            is_error = True
+
         if is_error:
             cls = "tool-result-error"
             prefix = "x"
+            if embedded_error and isinstance(parsed, dict):
+                summary = summarize_delegate_result(parsed)
+                if summary:
+                    headline, preview = summary
+                    display = headline if not preview else f"{headline}\n{preview}"
         else:
             cls = "tool-result-ok"
             prefix = "ok"
             # For structured OK results, show just a summary
-            try:
-                parsed = json.loads(result)
-                if isinstance(parsed, dict):
-                    if parsed.get("status") == "ok":
-                        b = parsed.get("bytes", "")
-                        display = "ok" + (f" ({b:,} bytes)" if b else "")
-                    elif "exit_code" in parsed:
-                        code = parsed["exit_code"]
-                        if code == 0:
-                            display = "ok (exit 0)"
-                        else:
-                            stderr = parsed.get("stderr", "")
-                            display = f"exit {code}: {stderr[:200]}" if stderr else f"exit {code}"
-            except (json.JSONDecodeError, ValueError):
-                pass
+            if isinstance(parsed, dict):
+                summary = summarize_delegate_result(parsed)
+                if summary:
+                    headline, preview = summary
+                    display = headline if not preview else f"{headline}\n{preview}"
+                elif parsed.get("status") == "ok":
+                    b = parsed.get("bytes", "")
+                    display = "ok" + (f" ({b:,} bytes)" if b else "")
+                elif "exit_code" in parsed:
+                    code = parsed["exit_code"]
+                    if code == 0:
+                        display = "ok (exit 0)"
+                    else:
+                        stderr = parsed.get("stderr", "")
+                        display = f"exit {code}: {stderr[:200]}" if stderr else f"exit {code}"
 
         w = Static(f"  [{cls}]{prefix}[/{cls}] [dim]{display}[/dim]", classes=cls)
         self.mount(w)
@@ -644,6 +686,11 @@ class ChatScroll(VerticalScroll):
         self.mount(w)
         w.scroll_visible()
 
+    def add_status(self, text: str) -> None:
+        w = Static(f"[dim]· {text}[/dim]", classes="chat-system")
+        self.mount(w)
+        w.scroll_visible()
+
     def add_error(self, text: str) -> None:
         w = Static(f"[bold red]Error: {text}[/bold red]", classes="chat-error")
         self.mount(w)
@@ -702,6 +749,7 @@ class NeMoCodeTUI(App):
         config: NeMoCodeConfig | None = None,
         endpoint: str | None = None,
         formation: str | None = None,
+        agent_name: str | None = None,
         show_thinking: bool = False,
         auto_yes: bool = False,
     ) -> None:
@@ -717,6 +765,12 @@ class NeMoCodeTUI(App):
             show_thinking=show_thinking,
             auto_yes=auto_yes,
         )
+        if agent_name:
+            self._state.agent_name = resolve_agent_reference(cfg.agents, agent_name) or (
+                agent_name if agent_name in cfg.agents else None
+            )
+        elif "build" in cfg.agents:
+            self._state.agent_name = "build"
         self._state.context_mgr = ContextManager(
             context_window=self._state.resolve_context_window(),
         )
@@ -749,11 +803,12 @@ class NeMoCodeTUI(App):
         model_display = manifest.display_name if manifest else model_id
         formation = self._state.config.active_formation or ""
         formation_str = f" · {formation}" if formation else ""
+        agent_label = self._state.current_primary_agent_display()
 
         chat.border_title = "NeMoCode // NVIDIA NIM"
         chat.add_system(
             f"NeMoCode // NVIDIA NIM\n"
-            f"{model_display} · {ep_name}{formation_str}\n"
+            f"{model_display} · {ep_name}{formation_str} · {agent_label}\n"
             f"{Path.cwd()}\n"
             f"/help · Tab mode · Ctrl+T trace"
         )
@@ -997,6 +1052,40 @@ class NeMoCodeTUI(App):
                 chat.add_error(f"Unknown formation: {arg}  (available: {available})")
             return
 
+        if cmd == "/agent":
+            primary_agents = {
+                name: agent
+                for name, agent in self._state.config.agents.items()
+                if agent.mode != AgentMode.SUBAGENT
+            }
+            if not arg:
+                if not primary_agents:
+                    chat.add_system("No primary agents configured.")
+                    return
+                current = self._state.current_primary_agent_name()
+                lines = ["Primary agents:"]
+                for name, agent in sorted(primary_agents.items()):
+                    marker = " (active)" if name == current else ""
+                    display = f"  {agent.display_name}" if agent.display_name else ""
+                    lines.append(f"  {name}{marker}{display}")
+                chat.add_system("\n".join(lines))
+                return
+
+            resolved = resolve_agent_reference(primary_agents, arg) or arg
+            agent = primary_agents.get(resolved)
+            if agent is None:
+                available = ", ".join(sorted(primary_agents.keys()))
+                chat.add_error(f"Unknown primary agent: {arg}  (available: {available})")
+                return
+
+            self._state.agent_name = resolved
+            self._state.agent = self._state.build_agent()
+            chat.add_system(
+                f"Switched primary agent: {resolved} ({agent.display_name or resolved})"
+            )
+            self._update_status_bar()
+            return
+
         if cmd == "/mode":
             self.action_cycle_mode()
             return
@@ -1071,14 +1160,24 @@ class NeMoCodeTUI(App):
             role = event.role.value if event.role else "agent"
             chat.add_phase(role, event.text)
 
+        elif event.kind == "status":
+            if not self._state.show_thinking and not self._state.reasoning_hint_shown:
+                chat.add_system("Reasoning trace hidden. Use /think to show it when available.")
+                self._state.reasoning_hint_shown = True
+            chat.add_status(event.text)
+
         elif event.kind == "tool_call":
             self._state.tool_call_count += 1
             tool_panel.add_tool_call(event.tool_name, event.tool_args)
 
         elif event.kind == "tool_result":
-            if event.is_error:
+            is_error = event.is_error or tool_result_has_embedded_error(
+                event.tool_name,
+                event.tool_result,
+            )
+            if is_error:
                 self._state.tool_error_count += 1
-            tool_panel.add_tool_result(event.tool_name, event.tool_result, event.is_error)
+            tool_panel.add_tool_result(event.tool_name, event.tool_result, is_error)
 
         elif event.kind == "error":
             chat.remove_streaming_indicator()
@@ -1157,6 +1256,7 @@ class NeMoCodeTUI(App):
         bar.mode = self._state.mode
         bar.endpoint = self._state.config.default_endpoint
         bar.formation = self._state.config.active_formation or ""
+        bar.agent_name = self._state.current_primary_agent_display()
         bar.git_branch = _get_git_branch()
         bar.is_streaming = self._state.is_streaming
 
@@ -1196,6 +1296,7 @@ def run_tui(
     config: NeMoCodeConfig | None = None,
     endpoint: str | None = None,
     formation: str | None = None,
+    agent_name: str | None = None,
     show_thinking: bool = False,
     auto_yes: bool = False,
 ) -> None:
@@ -1207,6 +1308,7 @@ def run_tui(
         config=config,
         endpoint=endpoint,
         formation=formation,
+        agent_name=agent_name,
         show_thinking=show_thinking,
         auto_yes=auto_yes,
     )
@@ -1216,6 +1318,7 @@ def run_tui(
 def start_tui(
     endpoint: str | None = None,
     formation: str | None = None,
+    agent_name: str | None = None,
     think: bool = False,
     yes: bool = False,
 ) -> None:
@@ -1228,6 +1331,7 @@ def start_tui(
         config=config,
         endpoint=endpoint,
         formation=formation,
+        agent_name=agent_name,
         show_thinking=think,
         auto_yes=yes,
     )

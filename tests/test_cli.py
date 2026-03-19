@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import yaml
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from nemocode.cli.main import app
+from nemocode.core.subagents import complete_run, reset_runs, start_run
 
 runner = CliRunner()
 
@@ -26,6 +28,11 @@ class TestCLIHelp:
 
     def test_code_help(self):
         result = runner.invoke(app, ["code", "--help"])
+        assert result.exit_code == 0
+        assert "--agent" in result.stdout
+
+    def test_agent_help(self):
+        result = runner.invoke(app, ["agent", "--help"])
         assert result.exit_code == 0
 
     def test_endpoint_help(self):
@@ -76,6 +83,31 @@ class TestFormationCommand:
         assert result.exit_code == 0
 
 
+class TestAgentCommand:
+    def test_agent_ls(self):
+        result = runner.invoke(app, ["agent", "ls"])
+        assert result.exit_code == 0
+
+    def test_agent_runs(self):
+        reset_runs()
+        run = start_run(
+            agent_name="general",
+            display_name="Joe Nemotron",
+            nickname="Orbit Joe",
+            parent_agent="build",
+            task="Inspect the repo",
+            endpoint="nim-nano",
+        )
+        complete_run(run.id, output_preview="done", tool_calls=2, errors=0)
+        try:
+            result = runner.invoke(app, ["agent", "runs"])
+            assert result.exit_code == 0
+            assert run.id in result.stdout
+            assert "Orbit Joe" in result.stdout
+        finally:
+            reset_runs()
+
+
 class TestAuthCommand:
     def test_auth_show(self):
         with patch("nemocode.core.credentials._keyring_available", return_value=False):
@@ -91,7 +123,21 @@ class TestInitCommand:
         os.chdir(tmp_path)
         result = runner.invoke(app, ["init", "--name", "TestProject"])
         assert result.exit_code == 0
-        assert (tmp_path / ".nemocode.yaml").exists()
+        config_path = tmp_path / ".nemocode.yaml"
+        assert config_path.exists()
+        raw = yaml.safe_load(config_path.read_text())
+        assert raw["project"]["name"] == "TestProject"
+        assert "default_endpoint" not in raw
+        assert "active_formation" not in raw
+
+    def test_init_can_set_project_endpoint_override(self, tmp_path):
+        import os
+
+        os.chdir(tmp_path)
+        result = runner.invoke(app, ["init", "--endpoint", "nim-nano-4b"])
+        assert result.exit_code == 0
+        raw = yaml.safe_load((tmp_path / ".nemocode.yaml").read_text())
+        assert raw["default_endpoint"] == "nim-nano-4b"
 
     def test_init_refuses_overwrite(self, tmp_path):
         import os

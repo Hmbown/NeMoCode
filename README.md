@@ -18,12 +18,22 @@ pip install nemocode
 
 ## Setup
 
-Get a free API key from [build.nvidia.com](https://build.nvidia.com):
+Run the guided setup wizard:
+
+```bash
+nemo setup
+```
+
+It defaults to hosted NVIDIA NIM, prompts for `NVIDIA_API_KEY`, and can also configure a local `vllm` or `sglang` endpoint and model for you.
+
+If you just want hosted NIM manually, get a free API key from [build.nvidia.com](https://build.nvidia.com):
 
 ```bash
 export NVIDIA_API_KEY="nvapi-..."
 nemo code
 ```
+
+Hosted Nemotron/NIM endpoints in NeMoCode use `NVIDIA_API_KEY` by default.
 
 Or serve a model locally with [vLLM](https://docs.vllm.ai/) or [SGLang](https://sgl-project.github.io/) on any NVIDIA GPU:
 
@@ -95,10 +105,41 @@ nemo code -f super-nano "implement caching"
 | `vision` | VLM reads screenshots, Super writes code |
 | `local` | Nano on local GPU, no internet needed |
 
+## Agents
+
+NeMoCode now supports named agent profiles for top-level sessions and delegated sub-agents.
+
+- Built-in primary agents: `build`, `plan`
+- Built-in sub-agents: `general`, `explore`, `review`, `debug`, `test`, `doc`, `code-search`, `fast`
+- Inspect them with `nemo agent ls` and `nemo agent show <name>`
+- Switch primary agents with `nemo code --agent <name>` or `/agent <name>` in the REPL/TUI
+- Sub-agent orchestration tools are now available in coding sessions: `delegate`, `spawn_agent`, `wait_agent`, `close_agent`, and `resume_agent`
+- Define custom agents in `.nemocode.yaml` under `agents:` or in markdown files under `.nemocode/agents/*.md`
+
+Example markdown agent:
+
+```markdown
+---
+description: Review code for bugs and regressions
+mode: subagent
+role: reviewer
+prefer_tiers:
+  - super
+tools:
+  - fs_read
+  - git_read
+  - rg
+---
+
+Review the requested changes. Focus on correctness, regressions, and missing tests.
+```
+
 ## Local GPU setup
 
 ```bash
-nemo setup          # show all options
+nemo setup          # guided wizard
+nemo setup --list   # show all setup topics
+nemo setup wizard   # force the interactive wizard
 nemo setup vllm     # vLLM serving guide
 nemo setup sglang   # SGLang serving guide
 nemo setup nim      # NIM container guide
@@ -111,11 +152,12 @@ nemo setup brev     # rent a cloud GPU
 nemo endpoint ls / test     # manage endpoints
 nemo model ls / show        # inspect model manifests
 nemo formation ls / show    # inspect formations
+nemo agent ls / show        # inspect agent profiles
 nemo hardware recommend     # GPU-based recommendations
 nemo doctor                 # run diagnostics to check setup
 nemo session ls             # past conversations
 nemo obs pricing            # token pricing
-nemo init                   # create .nemocode.yaml
+nemo init                   # create .nemocode.yaml without overriding your user default endpoint
 ```
 
 ## Contributing

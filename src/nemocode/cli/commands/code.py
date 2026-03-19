@@ -21,6 +21,7 @@ def code_cmd(
     prompt: str = typer.Argument(None, help="Coding task (omit to start interactive REPL)"),
     endpoint: str = typer.Option(None, "-e", "--endpoint", help="Endpoint override"),
     formation: str = typer.Option(None, "-f", "--formation", help="Formation to use"),
+    agent: str = typer.Option(None, "-a", "--agent", help="Primary agent profile to use"),
     think: bool = typer.Option(False, "--think", help="Show thinking trace"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Auto-approve all tool calls"),
     tui: bool = typer.Option(False, "--tui", help="Launch full-screen TUI instead of REPL"),
@@ -44,6 +45,7 @@ def code_cmd(
             start_tui(
                 endpoint=endpoint,
                 formation=formation,
+                agent_name=agent,
                 think=think,
                 yes=yes,
             )
@@ -53,13 +55,14 @@ def code_cmd(
             start_repl(
                 endpoint=endpoint,
                 formation=formation,
+                agent_name=agent,
                 think=think,
                 yes=yes,
             )
         return
 
     # One-shot mode with a prompt
-    asyncio.run(_code(prompt, endpoint, formation, think, yes))
+    asyncio.run(_code(prompt, endpoint, formation, agent, think, yes))
 
 
 async def _confirm(tool_name: str, args: dict) -> bool:
@@ -83,6 +86,7 @@ async def _code(
     prompt: str,
     endpoint_name: str | None,
     formation_name: str | None,
+    agent_name: str | None,
     show_thinking: bool,
     auto_yes: bool,
 ) -> None:
@@ -96,7 +100,7 @@ async def _code(
         cfg.active_formation = formation_name
 
     confirm_fn = _auto_confirm if auto_yes else _confirm
-    agent = CodeAgent(config=cfg, confirm_fn=confirm_fn)
+    agent = CodeAgent(config=cfg, confirm_fn=confirm_fn, agent_name=agent_name)
 
     renderer = EventRenderer(console, show_thinking=show_thinking)
     renderer.start_thinking("Working")

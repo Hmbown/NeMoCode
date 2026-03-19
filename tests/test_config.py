@@ -12,7 +12,8 @@ from unittest.mock import patch
 import yaml
 
 from nemocode.config import _deep_merge, _parse_config, load_config
-from nemocode.config.schema import Capability, EndpointTier
+from nemocode.config.agents import resolve_agent_reference
+from nemocode.config.schema import AgentMode, Capability, EndpointTier, FormationRole
 
 
 class TestDeepMerge:
@@ -95,6 +96,50 @@ class TestParseConfig:
         assert len(f.slots) == 1
         assert f.slots[0].role.value == "executor"
 
+    def test_agent_parsing(self):
+        raw = {
+            "agents": {
+                "reviewer": {
+                    "description": "Review changes",
+                    "display_name": "Lint Eastwood",
+                    "aliases": ["critic"],
+                    "nickname_candidates": ["Sheriff Diff"],
+                    "mode": "subagent",
+                    "role": "reviewer",
+                    "prefer_tiers": ["super"],
+                    "tools": ["fs_read", "git_read"],
+                }
+            }
+        }
+        cfg = _parse_config(raw)
+        agent = cfg.agents["reviewer"]
+        assert agent.mode == AgentMode.SUBAGENT
+        assert agent.role == FormationRole.REVIEWER
+        assert agent.display_name == "Lint Eastwood"
+        assert agent.aliases == ["critic"]
+        assert agent.nickname_candidates == ["Sheriff Diff"]
+        assert agent.prefer_tiers == ["super"]
+        assert agent.tools == ["fs_read", "git_read"]
+
+    def test_agent_reference_resolution(self):
+        cfg = _parse_config({})
+        assert resolve_agent_reference(cfg.agents, "builder") == "build"
+        assert resolve_agent_reference(cfg.agents, "NeMoCode") == "build"
+        assert resolve_agent_reference(cfg.agents, "planner") == "plan"
+        assert resolve_agent_reference(cfg.agents, "Joe Nemotron") == "general"
+        assert resolve_agent_reference(cfg.agents, "missing") is None
+
+    def test_max_tool_rounds_and_hooks_are_parsed(self):
+        raw = {
+            "max_tool_rounds": 17,
+            "hooks": {
+                "post_write_file": ["ruff format {path}"],
+            },
+        }
+        cfg = _parse_config(raw)
+        assert cfg.max_tool_rounds == 17
+        assert cfg.hooks.post_write_file == ["ruff format {path}"]
+
 
 class TestEnvOverrides:
     def test_endpoint_override(self):
@@ -134,3 +179,36 @@ class TestProjectConfig:
                 cfg = load_config(tmp_path)
                 assert cfg.project.name == "TestProject"
                 assert cfg.default_endpoint == "nim-nano"
+
+    def test_load_project_agent_markdown(self, tmp_path: Path):
+        agent_dir = tmp_path / ".nemocode" / "agents"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "review.md").write_text(
+            "---\n"
+            "description: Review code\n"
+            "mode: subagent\n"
+            "role: reviewer\n"
+            "prefer_tiers:\n"
+            "  - super\n"
+            "tools:\n"
+            "  - fs_read\n"
+            "  - git_read\n"
+            "---\n\n"
+            "Inspect the diff and highlight regressions.\n"
+        )
+
+        config_root = tmp_path / "config-root"
+        config_root.mkdir()
+
+        with (
+            patch("nemocode.config._DEFAULTS_PATH", tmp_path / "nonexistent.yaml"),
+            patch("nemocode.config._USER_CONFIG_PATH", tmp_path / "nonexistent2.yaml"),
+            patch.dict(os.environ, {"NEMOCODE_CONFIG_DIR": str(config_root)}),
+        ):
+            cfg = load_config(tmp_path)
+
+        agent = cfg.agents["review"]
+        assert agent.mode == AgentMode.SUBAGENT
+        assert agent.role == FormationRole.REVIEWER
+        assert agent.prefer_tiers == ["super"]
+        assert "Inspect the diff" in agent.prompt

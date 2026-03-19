@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+import typer
 
 from nemocode import __version__
 from nemocode.config import ensure_config_dir
+from nemocode.core.setup_wizard import run_setup_wizard
 
 console = Console()
 
@@ -87,14 +90,18 @@ def run_first_run_wizard() -> None:
         table.add_column("Action")
 
         table.add_row("1.", "Go to [link=https://build.nvidia.com]https://build.nvidia.com[/link]")
-        table.add_row("2.", "Sign up (free) and generate an API key")
-        table.add_row("3.", "Run: [cyan]nemo auth setup[/cyan]")
+        table.add_row("2.", "Generate an API key or choose a local backend")
+        table.add_row("3.", "Run: [cyan]nemo setup[/cyan]")
         table.add_row("", "")
-        table.add_row("", "Or set the environment variable:")
+        table.add_row("", "Hosted NIM also works with:")
         table.add_row("", '[dim]export NVIDIA_API_KEY="nvapi-..."[/dim]')
 
         console.print(table)
         console.print()
+        if sys.stdin.isatty() and typer.confirm("Run guided setup now?", default=True):
+            console.print()
+            run_setup_wizard()
+            console.print()
     else:
         console.print("[green]API key found.[/green] Ready to use.\n")
 
@@ -158,5 +165,5 @@ def check_and_run_first_run() -> None:
     elif not has_any_api_key():
         console.print(
             "[yellow]No API key configured.[/yellow] "
-            "Run [cyan]nemo auth setup[/cyan] or set NVIDIA_API_KEY.\n"
+            "Run [cyan]nemo setup[/cyan] or set NVIDIA_API_KEY.\n"
         )

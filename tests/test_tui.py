@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nemocode.config import _parse_config
 from nemocode.cli.tui import (
     NeMoCodeTUI,
     StatusBar,
@@ -155,11 +156,13 @@ class TestTUIState:
         state.think_buf = "some thinking"
         state.tool_call_count = 5
         state.tool_error_count = 2
+        state.reasoning_hint_shown = True
         state.reset_turn()
         assert state.text_buf == ""
         assert state.think_buf == ""
         assert state.tool_call_count == 0
         assert state.tool_error_count == 0
+        assert state.reasoning_hint_shown is False
         assert state.first_token_time is None
         assert state.turn_start > 0
 
@@ -201,6 +204,12 @@ class TestTUIState:
         state.mode_idx = 2  # auto
         agent = state.build_agent()
         assert agent is not None
+
+    def test_primary_agent_display_defaults_when_no_profiles(self):
+        state = _TUIState(config=NeMoCodeConfig())
+        assert state.current_primary_agent_name() is None
+        assert state.current_primary_agent_display() == "default"
+        assert state.build_agent() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +312,15 @@ class TestSlashCommands:
             app._state.config.active_formation = "solo"
             app._dispatch_slash("/formation off")
             assert app._state.config.active_formation is None
+
+    @pytest.mark.asyncio
+    async def test_agent_switch_by_alias(self, sample_config):
+        """The /agent <alias> command should resolve built-in aliases."""
+        sample_config.agents = _parse_config({}).agents
+        async with NeMoCodeTUI(config=sample_config).run_test() as pilot:
+            app = pilot.app
+            app._dispatch_slash("/agent builder")
+            assert app._state.agent_name == "build"
 
     @pytest.mark.asyncio
     async def test_unknown_command(self, sample_config):

@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from nemocode.tools import ToolRegistry
 from nemocode.tools.bash import bash_exec
-from nemocode.tools.clarify import ask_user
+from nemocode.tools.clarify import ask_clarify
+from nemocode.tools.ask_user import ask_user
 from nemocode.tools.fs import edit_file, list_dir, read_file, write_file
 from nemocode.tools.git import git_commit, git_diff, git_log, git_status
 from nemocode.tools.glob import glob_files
@@ -34,7 +35,7 @@ _CATEGORY_MAP: dict[str, list] = {
     "tasks": [create_task, update_task, list_tasks],
     "web": [web_search],
     "parse": [parse_document],
-    "clarify": [ask_user],
+    "clarify": [ask_clarify, ask_user],
     "lsp": [],  # populated lazily when LSP tools are available
 }
 
@@ -55,7 +56,7 @@ _CATEGORY_MAP["lsp"] = _try_load_lsp_tools()
 def load_tools(categories: list[str] | None = None) -> ToolRegistry:
     """Create a ToolRegistry with tools from the specified categories."""
     registry = ToolRegistry()
-    cats = categories or list(_CATEGORY_MAP.keys())
+    cats = list(_CATEGORY_MAP.keys()) if categories is None else categories
     for cat in cats:
         fns = _CATEGORY_MAP.get(cat, [])
         for fn in fns:

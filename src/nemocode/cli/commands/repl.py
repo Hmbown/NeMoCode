@@ -26,8 +26,14 @@ from rich.console import Console
 from rich.table import Table
 
 from nemocode import __version__
-from nemocode.cli.render import EventRenderer, format_confirm_summary, render_confirm_detail
-from nemocode.config.schema import NeMoCodeConfig
+from nemocode.cli.render import (
+    EventRenderer,
+    format_confirm_summary,
+    render_confirm_detail,
+    tool_result_has_embedded_error,
+)
+from nemocode.config.agents import resolve_agent_reference
+from nemocode.config.schema import AgentMode, NeMoCodeConfig
 from nemocode.core.context import ContextManager
 from nemocode.core.metrics import MetricsCollector, RequestMetrics
 from nemocode.core.scheduler import AgentEvent
@@ -108,6 +114,13 @@ class _SlashCompleter(Completer):
                 for f in list(self._state.config.formations) + ["off"]:
                     if f.startswith(arg):
                         yield Completion(f, start_position=-len(arg))
+            elif cmd_name == "/agent" and self._state:
+                for agent_name, agent in self._state.config.agents.items():
+                    if agent.mode == AgentMode.SUBAGENT:
+                        continue
+                    for candidate in [agent_name, *agent.aliases]:
+                        if candidate.startswith(arg):
+                            yield Completion(candidate, start_position=-len(arg))
             elif cmd_name == "/resume":
                 try:
                     from nemocode.core.persistence import list_sessions
@@ -122,6 +135,7 @@ class _SlashCompleter(Completer):
 
 # All known slash command names (for autocomplete)
 _SLASH_COMMANDS = [
+    "/agent",
     "/help",
     "/think",
     "/compact",
@@ -253,6 +267,7 @@ class _InputReader:
             parts.append(f" <ansicyan>{display}</ansicyan>")
         else:
             parts.append(f" <ansicyan>{ep_name}</ansicyan>")
+        parts.append(f" <ansiblue>{s.current_primary_agent_display()}</ansiblue>")
 
         # Git branch
         branch = _get_git_branch()
@@ -436,6 +451,7 @@ _HELP_TEXT = """\
 [bold]Configuration:[/bold]
   [cyan]/endpoint[/cyan]           List endpoints  |  [cyan]/endpoint <name>[/cyan]  Switch
   [cyan]/formation[/cyan]          List formations  |  [cyan]/formation <name>[/cyan] Activate
+  [cyan]/agent[/cyan]              List primary agents  |  [cyan]/agent <name>[/cyan]  Switch
   [cyan]/model[/cyan]              Show current model details
   [cyan]/hardware[/cyan]           Show detected hardware
 
@@ -470,6 +486,7 @@ class _SlashDispatcher:
             "/cost": self._cmd_cost,
             "/endpoint": self._cmd_endpoint,
             "/formation": self._cmd_formation,
+            "/agent": self._cmd_agent,
             "/mode": self._cmd_mode,
             "/tab": self._cmd_mode,
             "/model": self._cmd_model,
@@ -659,6 +676,38 @@ class _SlashDispatcher:
         f = self._state.config.formations[arg]
         roles = ", ".join(s.role.value for s in f.slots)
         console.print(f"[dim]Activated formation: {arg} [{roles}][/dim]")
+        return True
+
+    def _cmd_agent(self, arg: str) -> bool:
+        primary_agents = {
+            name: agent
+            for name, agent in self._state.config.agents.items()
+            if agent.mode != AgentMode.SUBAGENT
+        }
+
+        if not arg:
+            if not primary_agents:
+                console.print("[dim]No primary agents configured.[/dim]")
+                return True
+            console.print("[bold]Primary agents:[/bold]")
+            current = self._state.current_primary_agent_name()
+            for name, agent in sorted(primary_agents.items()):
+                marker = " [green](active)[/green]" if name == current else ""
+                display = f"  [dim]{agent.display_name}[/dim]" if agent.display_name else ""
+                console.print(f"  [cyan]{name}[/cyan]{marker}{display}")
+            return True
+
+        resolved = resolve_agent_reference(primary_agents, arg) or arg
+        agent = primary_agents.get(resolved)
+        if agent is None:
+            available = ", ".join(sorted(primary_agents.keys()))
+            console.print(f"[red]Unknown primary agent: {arg}[/red]\n[dim]Available: {available}[/dim]")
+            return True
+
+        self._state.agent_name = resolved
+        self._state.rebuild_agent()
+        label = agent.display_name or resolved
+        console.print(f"[dim]Switched primary agent: {resolved} ({label})[/dim]")
         return True
 
     def _cmd_mode(self, _arg: str) -> bool:
@@ -939,10 +988,20 @@ class _ReplState:
         config: NeMoCodeConfig,
         show_thinking: bool,
         auto_yes: bool,
+        agent_name: str | None = None,
     ) -> None:
         self.config = config
         self.show_thinking = show_thinking
         self.auto_yes = auto_yes
+        resolved_agent = resolve_agent_reference(config.agents, agent_name) if agent_name else None
+        if resolved_agent:
+            self.agent_name: str | None = resolved_agent
+        elif agent_name and agent_name in config.agents:
+            self.agent_name = agent_name
+        elif "build" in config.agents:
+            self.agent_name = "build"
+        else:
+            self.agent_name = None
         self.turn_count: int = 0
         self.metrics = MetricsCollector()
         self.context_mgr = ContextManager(
@@ -977,6 +1036,7 @@ class _ReplState:
             config=self.config,
             confirm_fn=confirm_fn,
             read_only=(self.mode == "plan"),
+            agent_name=self.current_primary_agent_name(),
         )
 
     def rebuild_agent(self) -> None:
@@ -986,6 +1046,20 @@ class _ReplState:
         )
         self.agent = self._build_agent()
         self.turn_count = 0
+
+    def current_primary_agent_name(self) -> str | None:
+        if self.mode == "plan":
+            return "plan" if "plan" in self.config.agents else None
+        return self.agent_name
+
+    def current_primary_agent_display(self) -> str:
+        current = self.current_primary_agent_name()
+        if current is None:
+            return "default"
+        agent = self.config.agents.get(current)
+        if agent is None:
+            return current
+        return agent.display_name or agent.name
 
     @property
     def mode(self) -> str:
@@ -1083,8 +1157,9 @@ class _TurnRenderer:
             self._think_buf += event.thinking
         elif event.kind == "tool_call":
             self._tool_call_count += 1
-        elif event.kind == "tool_result" and event.is_error:
-            self._tool_error_count += 1
+        elif event.kind == "tool_result":
+            if event.is_error or tool_result_has_embedded_error(event.tool_name, event.tool_result):
+                self._tool_error_count += 1
         elif event.kind == "usage":
             self._last_usage = event.usage
             ep_name = self._state.config.default_endpoint
@@ -1201,6 +1276,7 @@ def _render_status_bar(state: _ReplState) -> None:
         parts.append(f"[cyan]{display}[/cyan]")
     else:
         parts.append(f"[cyan]{ep_name}[/cyan]")
+    parts.append(f"[blue]{state.current_primary_agent_display()}[/blue]")
 
     if state.config.active_formation:
         parts.append(f"[{_NVIDIA_GREEN}]{state.config.active_formation}[/{_NVIDIA_GREEN}]")
@@ -1414,6 +1490,7 @@ async def run_repl(
     config: NeMoCodeConfig,
     endpoint_name: str | None,
     formation_name: str | None,
+    agent_name: str | None,
     show_thinking: bool,
     auto_yes: bool,
 ) -> None:
@@ -1432,6 +1509,7 @@ async def run_repl(
         config=config,
         show_thinking=show_thinking,
         auto_yes=auto_yes,
+        agent_name=agent_name,
     )
     reader = _InputReader(state)
     commands = _SlashDispatcher(state)
@@ -1629,6 +1707,7 @@ async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer)
 def start_repl(
     endpoint: str | None,
     formation: str | None,
+    agent_name: str | None,
     think: bool,
     yes: bool,
 ) -> None:
@@ -1646,6 +1725,7 @@ def start_repl(
                 config=config,
                 endpoint_name=endpoint,
                 formation_name=formation,
+                agent_name=agent_name,
                 show_thinking=think,
                 auto_yes=yes,
             )

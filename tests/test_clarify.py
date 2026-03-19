@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from nemocode.tools.clarify import ask_user, set_ask_fn
+from nemocode.tools.clarify import ask_clarify, set_ask_fn
 
 
 @pytest.fixture(autouse=True)
@@ -21,28 +21,28 @@ def reset_ask_fn():
 
 
 @pytest.mark.asyncio
-async def test_ask_user_no_callback():
+async def test_ask_clarify_no_callback():
     """Without a callback, returns pending message."""
-    result = json.loads(await ask_user("What language?"))
+    result = json.loads(await ask_clarify("What language?"))
     assert result["question"] == "What language?"
     assert result["pending"] is True
 
 
 @pytest.mark.asyncio
-async def test_ask_user_with_callback():
+async def test_ask_clarify_with_callback():
     """With a callback, returns the user's answer."""
 
     async def mock_ask(question: str, options: list[str]) -> str:
         return "Python"
 
     set_ask_fn(mock_ask)
-    result = json.loads(await ask_user("What language?"))
+    result = json.loads(await ask_clarify("What language?"))
     assert result["answer"] == "Python"
     assert result["question"] == "What language?"
 
 
 @pytest.mark.asyncio
-async def test_ask_user_with_options():
+async def test_ask_clarify_with_options():
     """Options are passed to the callback."""
 
     received_options = []
@@ -52,24 +52,24 @@ async def test_ask_user_with_options():
         return "Python"
 
     set_ask_fn(mock_ask)
-    result = json.loads(await ask_user("Pick language", options="Python, Rust, Go"))
+    result = json.loads(await ask_clarify("Pick language", options="Python, Rust, Go"))
     assert result["answer"] == "Python"
     assert received_options == ["Python", "Rust", "Go"]
 
 
 @pytest.mark.asyncio
-async def test_ask_user_empty_question():
-    result = json.loads(await ask_user(""))
+async def test_ask_clarify_empty_question():
+    result = json.loads(await ask_clarify(""))
     assert "error" in result
 
 
 @pytest.mark.asyncio
-async def test_ask_user_callback_error():
+async def test_ask_clarify_callback_error():
     """Callback errors are handled gracefully."""
 
     async def failing_ask(question: str, options: list[str]) -> str:
         raise RuntimeError("Input failed")
 
     set_ask_fn(failing_ask)
-    result = json.loads(await ask_user("question"))
+    result = json.loads(await ask_clarify("question"))
     assert "error" in result

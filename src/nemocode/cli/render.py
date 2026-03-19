@@ -195,12 +195,14 @@ class EventRenderer:
         self._timer_stop = threading.Event()
         self._timer_thread: threading.Thread | None = None
         self._spinner_label: str = ""  # current spinner prefix (without elapsed)
+        self._hidden_reasoning_hint_shown = False
 
     def render(self, event: AgentEvent) -> None:
         """Render a single event to the console."""
         handler = {
             "text": self._text,
             "thinking": self._thinking,
+            "status": self._status,
             "phase": self._phase,
             "tool_call": self._tool_call,
             "tool_result": self._tool_result,
@@ -254,6 +256,7 @@ class EventRenderer:
 
     def _thinking(self, event: AgentEvent) -> None:
         if not self.show_thinking:
+            self._maybe_show_hidden_reasoning_hint()
             return
 
         # First thinking chunk: stop the spinner, thinking text takes over
@@ -288,6 +291,10 @@ class EventRenderer:
         if now - self._last_think_refresh >= 0.05:
             self._render_think_live(now)
             self._last_think_refresh = now
+
+    def _status(self, event: AgentEvent) -> None:
+        self._maybe_show_hidden_reasoning_hint()
+        self._console.print(f"  [dim]· {event.text}[/dim]")
 
     def _render_think_live(self, now: float) -> None:
         """Update the thinking Live widget with a rolling window of lines."""
@@ -524,6 +531,15 @@ class EventRenderer:
         self._spinner_label = label
         self._thinking_spinner.update(f"  [{_NV_GREEN}]{label}{elapsed_str}…[/{_NV_GREEN}]")
 
+    def _maybe_show_hidden_reasoning_hint(self) -> None:
+        if self.show_thinking or self._hidden_reasoning_hint_shown:
+            return
+        self._hidden_reasoning_hint_shown = True
+        self._console.print(
+            "  [dim]Reasoning trace hidden. Use [bold]--think[/bold] or"
+            " [bold]/think[/bold] to show it when available.[/dim]"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Error recovery hints
@@ -648,6 +664,33 @@ def format_tool_call(name: str, args: dict) -> str:
             task = task[:37] + "..."
         return f"delegate ({agent_type}): {task}"
 
+    if name == "spawn_agent":
+        agent_type = args.get("agent_type", "?")
+        task = args.get("task", "")
+        if len(task) > 40:
+            task = task[:37] + "..."
+        return f"spawn ({agent_type}): {task}"
+
+    if name == "send_input":
+        agent_id = args.get("agent_id", "?")
+        task = args.get("task", "")
+        if len(task) > 36:
+            task = task[:33] + "..."
+        return f"send {agent_id}: {task}"
+
+    if name == "wait_agent":
+        agent_id = args.get("agent_id", "?")
+        timeout_s = args.get("timeout_s")
+        suffix = f" ({timeout_s}s)" if timeout_s else ""
+        return f"wait {agent_id}{suffix}"
+
+    if name == "close_agent":
+        suffix = " (cancel)" if args.get("cancel") else ""
+        return f"close {args.get('agent_id', '?')}{suffix}"
+
+    if name == "resume_agent":
+        return f"resume {args.get('agent_id', '?')}"
+
     if name in ("save_memory_tool", "forget_memory_tool", "list_memories_tool"):
         key = args.get("key", "")
         return f"{name.replace('_tool', '')} {key}"
@@ -702,6 +745,106 @@ def _short_path(path: str) -> str:
     return ".../" + "/".join(parts[-2:])
 
 
+_AGENT_CONTROL_TOOLS = {
+    "delegate",
+    "spawn_agent",
+    "send_input",
+    "wait_agent",
+    "close_agent",
+    "resume_agent",
+}
+
+
+def tool_result_has_embedded_error(tool_name: str, result: str) -> bool:
+    """Detect tool-specific logical failures encoded inside a successful tool result."""
+    if tool_name not in _AGENT_CONTROL_TOOLS:
+        return False
+
+    try:
+        parsed = json.loads(result)
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+    if not isinstance(parsed, dict):
+        return False
+
+    status = str(parsed.get("status") or "").lower()
+    return bool(parsed.get("error")) or status == "failed"
+
+
+def summarize_delegate_result(parsed: dict) -> tuple[str, str | None] | None:
+    """Return a compact agent-control summary and optional one-line preview."""
+    if not isinstance(parsed, dict):
+        return None
+    if not any(
+        key in parsed for key in ("run_id", "agent_id", "agent_type", "nickname", "display_name")
+    ):
+        return None
+
+    nickname = str(parsed.get("nickname") or "").strip()
+    display_name = str(parsed.get("display_name") or "").strip()
+    agent_type = str(parsed.get("agent_type") or "").strip()
+    agent_id = str(parsed.get("agent_id") or "").strip()
+    run_id = str(parsed.get("run_id") or "").strip()
+
+    label = nickname or display_name or agent_type or "sub-agent"
+    if display_name and display_name not in {label, agent_type}:
+        label = f"{label} ({display_name})"
+    elif agent_type and agent_type not in {label, display_name}:
+        label = f"{label} [{agent_type}]"
+
+    parts = [label]
+    if run_id:
+        parts.append(run_id)
+    elif agent_id:
+        parts.append(agent_id)
+
+    status = str(parsed.get("status") or "").strip()
+    if status and status not in {"completed"}:
+        parts.append(status)
+    if parsed.get("closed"):
+        parts.append("closed")
+    if parsed.get("timed_out"):
+        parts.append("timed out")
+
+    tool_calls = parsed.get("tool_calls")
+    if isinstance(tool_calls, int):
+        suffix = "s" if tool_calls != 1 else ""
+        parts.append(f"{tool_calls} tool call{suffix}")
+
+    errors = parsed.get("errors")
+    if isinstance(errors, int) and errors:
+        suffix = "s" if errors != 1 else ""
+        parts.append(f"{errors} error{suffix}")
+
+    endpoint = str(parsed.get("endpoint") or "").strip()
+    if endpoint:
+        parts.append(endpoint)
+
+    queue_depth = parsed.get("queue_depth")
+    if isinstance(queue_depth, int) and queue_depth:
+        suffix = "s" if queue_depth != 1 else ""
+        parts.append(f"{queue_depth} queued item{suffix}")
+
+    preview = ""
+    if parsed.get("error"):
+        preview = str(parsed["error"]).strip()
+    elif parsed.get("output"):
+        preview = str(parsed.get("output") or "").strip()
+    else:
+        preview = str(
+            parsed.get("last_output_preview")
+            or parsed.get("output_preview")
+            or ""
+        ).strip()
+    if preview:
+        preview = preview.splitlines()[0].strip()
+        if len(preview) > 160:
+            preview = preview[:157] + "..."
+
+    return (" · ".join(parts), preview or None)
+
+
 # ---------------------------------------------------------------------------
 # Tool result formatting (inline — appended to tool call line)
 # ---------------------------------------------------------------------------
@@ -741,6 +884,30 @@ def _render_tool_result_inline(
             err_msg = result.strip().splitlines()[0][:80] if result.strip() else "failed"
         con.print(f" [red]✗ {err_msg}[/red]")
         return
+
+    if tool_name in _AGENT_CONTROL_TOOLS and isinstance(parsed, dict):
+        summary = summarize_delegate_result(parsed)
+        if summary:
+            headline, preview = summary
+            if tool_result_has_embedded_error(tool_name, result):
+                con.print(f" [red]✗ {headline}{time_suffix}[/red]")
+                if preview:
+                    con.print(
+                        f"    {preview}",
+                        style="red",
+                        highlight=False,
+                        markup=False,
+                    )
+            else:
+                con.print(f" [{_NV_GREEN}]✓ {headline}{time_suffix}[/{_NV_GREEN}]")
+                if preview:
+                    con.print(
+                        f"    {preview}",
+                        style="dim",
+                        highlight=False,
+                        markup=False,
+                    )
+            return
 
     # --- Read-only tools: compact inline suffix (legacy/direct calls) ---
     if tool_name in _READ_ONLY_TOOLS:

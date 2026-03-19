@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import sys
 from nemocode.tools import tool
+from nemocode.tools.clarify import request_user_response
+
 
 @tool(
     name="ask_user",
@@ -22,17 +22,10 @@ async def ask_user(question: str) -> str:
     Returns:
         The user's response as a string.
     """
-    # If stdin is not a TTY, we cannot interact; return empty string or default?
-    if not sys.stdin.isatty():
-        # In non-interactive mode, we return an empty string or a default?
-        # For now, return empty string to avoid blocking.
-        return ""
-    # Run the blocking input in a thread to avoid blocking the event loop
     try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, lambda: input(f"{question} ")
-        )
+        response, pending = await request_user_response(question)
+        if pending:
+            return ""
         return response.strip()
     except (EOFError, KeyboardInterrupt):
         return ""

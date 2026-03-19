@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from typing import Awaitable, Callable
 
 from nemocode.tools import tool
@@ -24,6 +25,33 @@ def set_ask_fn(fn: Callable[[str, list[str]], Awaitable[str]] | None) -> None:
     """Register the user-input callback (called by REPL/TUI at init)."""
     global _ask_fn
     _ask_fn = fn
+
+
+async def request_user_response(
+    question: str,
+    options: list[str] | None = None,
+) -> tuple[str, bool]:
+    """Get a user response via the registered callback or a TTY fallback.
+
+    Returns a tuple of ``(answer, pending)`` where ``pending`` indicates that no
+    interactive input path was available and the caller should defer to a later turn.
+    """
+    option_list = [o.strip() for o in (options or []) if o.strip()]
+
+    if _ask_fn is not None:
+        answer = await _ask_fn(question, option_list)
+        return answer, False
+
+    if sys.stdin.isatty():
+        prompt = question
+        if option_list:
+            prompt += f"\nOptions: {', '.join(option_list)}"
+        prompt += "\n> "
+        loop = asyncio.get_running_loop()
+        answer = await loop.run_in_executor(None, lambda: input(prompt))
+        return answer.strip(), False
+
+    return "", True
 
 
 @tool(
@@ -44,18 +72,16 @@ async def ask_clarify(
 
     option_list = [o.strip() for o in options.split(",") if o.strip()] if options else []
 
-    if _ask_fn is not None:
-        try:
-            answer = await _ask_fn(question, option_list)
-            return json.dumps({"question": question, "answer": answer})
-        except asyncio.CancelledError:
-            return json.dumps({"question": question, "answer": "(cancelled)"})
-        except Exception as e:
-            return json.dumps({"error": f"Failed to get user input: {e}"})
-    else:
-        # No callback registered — return instruction for non-interactive mode
-        msg = f"[Clarification needed] {question}"
-        if option_list:
-            msg += f"\nOptions: {', '.join(option_list)}"
-        msg += "\nPlease answer this question in your next message."
-        return json.dumps({"question": question, "answer": "", "pending": True, "message": msg})
+    try:
+        answer, pending = await request_user_response(question, option_list)
+        if pending:
+            msg = f"[Clarification needed] {question}"
+            if option_list:
+                msg += f"\nOptions: {', '.join(option_list)}"
+            msg += "\nPlease answer this question in your next message."
+            return json.dumps({"question": question, "answer": "", "pending": True, "message": msg})
+        return json.dumps({"question": question, "answer": answer})
+    except asyncio.CancelledError:
+        return json.dumps({"question": question, "answer": "(cancelled)"})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to get user input: {e}"})

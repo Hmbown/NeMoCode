@@ -41,6 +41,20 @@ from nemocode.tools.loader import load_tools
 
 logger = logging.getLogger(__name__)
 _nickname_counters: dict[str, itertools.count] = {}
+_READ_ONLY_CATEGORY_ALIASES = {
+    "fs": "fs_read",
+    "git": "git_read",
+}
+_READ_ONLY_SAFE_CATEGORIES = {
+    "fs_read",
+    "git_read",
+    "rg",
+    "glob",
+    "clarify",
+    "web",
+    "parse",
+    "lsp",
+}
 
 _LOCAL_TIERS = {
     EndpointTier.LOCAL_NIM,
@@ -208,12 +222,20 @@ def _pick_nickname(agent_name: str, agent: AgentConfig) -> str:
     return candidates[idx]
 
 
-def _available_subagents_text(config: NeMoCodeConfig) -> list[str]:
+def _available_subagents_text(
+    config: NeMoCodeConfig,
+    *,
+    parent_read_only: bool = False,
+) -> list[str]:
     visible = _list_subagents(config)
     if not visible:
         return ["No sub-agents are configured."]
 
     lines = ["Available sub-agents:"]
+    if parent_read_only:
+        lines.append(
+            "All delegated sub-agents inherit read-only mode here: no file writes, shell commands, or commits."
+        )
     for name, agent in visible:
         title = _display_name(name, agent)
         detail = agent.description or "Specialized sub-agent."
@@ -223,19 +245,27 @@ def _available_subagents_text(config: NeMoCodeConfig) -> list[str]:
     return lines
 
 
-def _delegate_description(config: NeMoCodeConfig) -> str:
+def _delegate_description(
+    config: NeMoCodeConfig,
+    *,
+    parent_read_only: bool = False,
+) -> str:
     lines = ["Delegate a focused subtask to a named sub-agent and wait for the final result."]
-    lines.extend(_available_subagents_text(config))
+    lines.extend(_available_subagents_text(config, parent_read_only=parent_read_only))
     return "\n".join(lines)
 
 
-def _spawn_description(config: NeMoCodeConfig) -> str:
+def _spawn_description(
+    config: NeMoCodeConfig,
+    *,
+    parent_read_only: bool = False,
+) -> str:
     lines = [
         "Spawn a background sub-agent for a bounded parallel task.",
         "Use this only when the user has explicitly asked for delegation, sub-agents, or parallel agent work.",
         "Continue with non-overlapping local work after spawning. Only call wait_agent when blocked on the child result.",
     ]
-    lines.extend(_available_subagents_text(config))
+    lines.extend(_available_subagents_text(config, parent_read_only=parent_read_only))
     return "\n".join(lines)
 
 
@@ -243,6 +273,18 @@ def _compose_user_message(task: str, context: str) -> str:
     if context:
         return f"## Context\n{context}\n\n## Task\n{task}"
     return task
+
+
+def _restrict_to_read_only_categories(categories: list[str]) -> list[str]:
+    """Map mixed tool categories to a read-only-safe subset."""
+    restricted: list[str] = []
+    seen: set[str] = set()
+    for name in categories:
+        mapped = _READ_ONLY_CATEGORY_ALIASES.get(name, name)
+        if mapped in _READ_ONLY_SAFE_CATEGORIES and mapped not in seen:
+            restricted.append(mapped)
+            seen.add(mapped)
+    return restricted
 
 
 def _result_payload(
@@ -308,6 +350,7 @@ def _spawn_subagent_run(
     hook_runner: object | None,
     permission_engine: object | None,
     parent_agent_name: str,
+    parent_read_only: bool,
 ) -> dict[str, object]:
     resolved_name = _resolve_subagent_name(config, agent_type)
     agent = _resolve_subagent(config, agent_type)
@@ -323,12 +366,16 @@ def _spawn_subagent_run(
     nickname = _pick_nickname(resolved_name, agent)
     session_id = f"{resolved_name}-{next(_nickname_counters.setdefault('__session__', itertools.count(1))):04d}"
 
-    tool_registry = load_tools(agent.tools) if agent.tools else load_tools([])
+    tool_categories = agent.tools
+    if parent_read_only:
+        tool_categories = _restrict_to_read_only_categories(tool_categories)
+    tool_registry = load_tools(tool_categories) if tool_categories else load_tools([])
     scheduler = Scheduler(
         registry=registry,
         tool_registry=tool_registry,
         confirm_fn=None,
         hook_runner=hook_runner,
+        read_only=parent_read_only,
         permission_engine=permission_engine,
         max_tool_rounds=config.max_tool_rounds,
         single_role=agent.role,
@@ -369,11 +416,12 @@ def create_delegate_tools(
     hook_runner: object | None = None,
     permission_engine: object | None = None,
     parent_agent_name: str = "main",
+    parent_read_only: bool = False,
 ) -> list[ToolDef]:
     """Create the sub-agent orchestration tool suite bound to the given runtime."""
 
     @tool(
-        description=_delegate_description(config),
+        description=_delegate_description(config, parent_read_only=parent_read_only),
         category="delegate",
     )
     async def delegate(
@@ -397,6 +445,7 @@ def create_delegate_tools(
             hook_runner=hook_runner,
             permission_engine=permission_engine,
             parent_agent_name=parent_agent_name,
+            parent_read_only=parent_read_only,
         )
         if "error" in spawned:
             return json.dumps(spawned)
@@ -408,7 +457,7 @@ def create_delegate_tools(
         return json.dumps(snapshot_run(run, include_output=True))
 
     @tool(
-        description=_spawn_description(config),
+        description=_spawn_description(config, parent_read_only=parent_read_only),
         category="delegate",
     )
     async def spawn_agent(
@@ -433,6 +482,7 @@ def create_delegate_tools(
                 hook_runner=hook_runner,
                 permission_engine=permission_engine,
                 parent_agent_name=parent_agent_name,
+                parent_read_only=parent_read_only,
             )
         )
 

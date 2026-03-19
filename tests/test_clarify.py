@@ -9,7 +9,8 @@ import json
 
 import pytest
 
-from nemocode.tools.clarify import ask_clarify, set_ask_fn
+from nemocode.tools.ask_user import ask_user
+from nemocode.tools.clarify import ask_clarify, request_user_response, set_ask_fn
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +74,27 @@ async def test_ask_clarify_callback_error():
     set_ask_fn(failing_ask)
     result = json.loads(await ask_clarify("question"))
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_request_user_response_uses_callback():
+    async def mock_ask(question: str, options: list[str]) -> str:
+        assert question == "Approve?"
+        assert options == ["yes", "no"]
+        return "yes"
+
+    set_ask_fn(mock_ask)
+    answer, pending = await request_user_response("Approve?", ["yes", "no"])
+    assert answer == "yes"
+    assert pending is False
+
+
+@pytest.mark.asyncio
+async def test_ask_user_uses_callback():
+    async def mock_ask(question: str, options: list[str]) -> str:
+        assert question == "Need approval?"
+        assert options == []
+        return "approve"
+
+    set_ask_fn(mock_ask)
+    assert await ask_user("Need approval?") == "approve"

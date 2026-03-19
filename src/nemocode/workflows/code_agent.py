@@ -18,8 +18,9 @@ from nemocode.core.memory import load_all_memories
 from nemocode.core.permissions import PermissionEngine
 from nemocode.core.registry import Registry
 from nemocode.core.router import get_auto_endpoint, route_to_formation
-from nemocode.core.scheduler import ROLE_PROMPTS, AgentEvent, Scheduler, FormationRole
+from nemocode.core.scheduler import ROLE_PROMPTS, AgentEvent, Scheduler
 from nemocode.core.snapshot import SnapshotManager
+from nemocode.tools.clarify import request_user_response
 from nemocode.tools.delegate import create_delegate_tools
 from nemocode.tools.loader import load_tools
 
@@ -191,6 +192,7 @@ class CodeAgent:
         self._project_dir = project_dir
         self._registry = Registry(self._config)
         self._read_only = read_only
+        self._confirm_fn = confirm_fn
         self._agent_profile = self._resolve_primary_agent(agent_name)
         if self._agent_profile:
             self._tool_registry = load_tools(self._agent_profile.tools)
@@ -238,6 +240,7 @@ class CodeAgent:
                 hook_runner=hook_runner,
                 permission_engine=permission_engine,
                 parent_agent_name=self._agent_profile.name if self._agent_profile else "main",
+                parent_read_only=self._read_only,
             )
             for tool_def in agent_control_defs:
                 self._tool_registry.register(tool_def)
@@ -329,6 +332,12 @@ class CodeAgent:
 
     async def run(self, user_input: str) -> AsyncIterator[AgentEvent]:
         """Run the agent with user input, yielding events."""
+        if self._agent_profile and self._agent_profile.role == FormationRole.PLANNER:
+            endpoint = self._config.default_endpoint
+            async for event in self._run_plan_mode(endpoint, user_input):
+                yield event
+            return
+
         formation = self._config.active_formation
 
         # Auto-routing when enabled and no explicit formation
@@ -348,54 +357,134 @@ class CodeAgent:
                 yield event
         else:
             endpoint = self._config.default_endpoint
-            # Check if we are in plan mode (single planner agent)
-            if not formation and self._agent_profile and self._agent_profile.role == FormationRole.PLANNER:
-                # Plan interaction loop
-                max_iterations = 5  # avoid infinite loop
-                for i in range(max_iterations):
-                    # Run the planner to get a plan
-                    plan_text = ""
-                    async for event in self._scheduler.run_single(endpoint, user_input):
-                        if event.kind == "text":
-                            plan_text += event.text
-                        yield event
-                    # Now we have the plan in plan_text
-                    # Ask the user for approval
-                    yield AgentEvent(kind="text", text="\n---\nPlan generated. Asking for approval...\n")
-                    # Use the ask_user tool
-                    ask_tool = self._tool_registry.get("ask_user")
-                    if ask_tool is None:
-                        # Fallback: just break and let the user decide
-                        yield AgentEvent(kind="text", text="ask_user tool not available. Please approve the plan manually.")
-                        break
-                    # We need to call the tool. We are in an async method, so we can await.
-                    result = await ask_tool.fn(question=f"Do you approve the following plan?\n\n{plan_text}\n\nApprove? (y/n)")
-                    # The ask_user tool returns a string. We expect "y" or "yes" for approval.
-                    if result.strip().lower() in ("y", "yes"):
-                        # User approved, now run the plan with an executor agent
-                        # Create a new CodeAgent in executor mode
-                        executor_agent = CodeAgent(
-                            config=self._config,
-                            confirm_fn=self._confirm_fn,
-                            agent_name="build",  # or whatever the executor is
-                            read_only=False,
-                        )
-                        # The input for the executor is the original user input plus the plan
-                        executor_input = f"{user_input}\n\nPlan:\n{plan_text}"
-                        async for event in executor_agent.run(executor_input):
-                            yield event
-                        return  # we are done
-                    else:
-                        # User did not approve, ask for feedback and replan
-                        feedback = await ask_tool.fn(question="Please provide feedback on the plan to revise:")
-                        user_input = f"{user_input}\n\nFeedback on previous plan:\n{feedback}\n\nPlease revise the plan."
-                        # Loop again to replan
-                # If we exit the loop, we have maxed out iterations
-                yield AgentEvent(kind="text", text="Max plan iterations reached. Please try again with a clearer request.")
-            else:
-                # Normal execution
-                async for event in self._scheduler.run_single(endpoint, user_input):
+            async for event in self._scheduler.run_single(endpoint, user_input):
+                yield event
+
+    async def _run_plan_mode(
+        self,
+        endpoint: str,
+        user_input: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Generate a plan, iterate on feedback, then hand off to execution."""
+        replan_input = user_input
+        max_iterations = 5
+
+        for _ in range(max_iterations):
+            plan_text = ""
+            async for event in self._scheduler.run_single(endpoint, replan_input):
+                if event.kind == "text":
+                    plan_text += event.text
+                yield event
+
+            plan_text = plan_text.strip()
+            if not plan_text:
+                yield AgentEvent(
+                    kind="error",
+                    text="Planner produced no plan to approve.",
+                    is_error=True,
+                    role=FormationRole.PLANNER,
+                )
+                return
+
+            decision, feedback = await self._request_plan_decision(plan_text)
+            if decision == "approve":
+                async for event in self._run_approved_plan(user_input, plan_text):
                     yield event
+                return
+            if decision == "cancel":
+                yield AgentEvent(
+                    kind="text",
+                    text="\nPlan cancelled.\n",
+                    role=FormationRole.PLANNER,
+                )
+                return
+            if decision == "pending":
+                yield AgentEvent(
+                    kind="text",
+                    text=(
+                        "\nPlan is waiting for your approval. Reply with approve, revise, or"
+                        " cancel in your next message.\n"
+                    ),
+                    role=FormationRole.PLANNER,
+                )
+                return
+
+            feedback_text = feedback.strip() or "Make the plan more concrete and actionable."
+            yield AgentEvent(
+                kind="status",
+                text="Revising plan from user feedback.",
+                role=FormationRole.PLANNER,
+                phase="planning",
+            )
+            replan_input = (
+                f"## Original Request\n{user_input}\n\n"
+                f"## Previous Plan\n{plan_text}\n\n"
+                f"## User Feedback\n{feedback_text}\n\n"
+                "Revise the plan to address the feedback. Present only the updated plan."
+            )
+
+        yield AgentEvent(
+            kind="error",
+            text="Max plan revisions reached without approval.",
+            is_error=True,
+            role=FormationRole.PLANNER,
+        )
+
+    async def _request_plan_decision(self, plan_text: str) -> tuple[str, str]:
+        """Ask the user to approve, revise, or cancel the current plan."""
+        answer, pending = await request_user_response(
+            (
+                "Review this plan:\n\n"
+                f"{plan_text}\n\n"
+                "Reply with approve, revise, or cancel. If you want changes, include the"
+                " feedback in your reply."
+            ),
+            ["approve", "revise", "cancel"],
+        )
+        if pending:
+            return "pending", ""
+
+        normalized = answer.strip()
+        lowered = normalized.lower()
+        if lowered in {"approve", "approved", "yes", "y"}:
+            return "approve", ""
+        if lowered in {"cancel", "cancelled", "decline", "declined", "no", "n"}:
+            return "cancel", ""
+        if lowered.startswith("revise"):
+            _, _, remainder = normalized.partition(":")
+            feedback = remainder.strip() or normalized[len("revise") :].strip()
+            return "revise", feedback
+        if not normalized:
+            return "cancel", ""
+        return "revise", normalized
+
+    async def _run_approved_plan(
+        self,
+        user_input: str,
+        plan_text: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Execute an approved plan with the normal build agent in auto-routing mode."""
+        yield AgentEvent(
+            kind="phase",
+            phase="executing",
+            role=FormationRole.EXECUTOR,
+            text="Executing approved plan...",
+        )
+        executor_agent = CodeAgent(
+            config=self._config,
+            confirm_fn=self._confirm_fn,
+            project_dir=self._project_dir,
+            auto_route=True,
+            read_only=False,
+            agent_name="build",
+        )
+        executor_input = (
+            f"{user_input}\n\n"
+            f"## Approved Plan\n{plan_text}\n\n"
+            "Execute the approved plan. Do not ask for plan approval again."
+        )
+        async for event in executor_agent.run(executor_input):
+            yield event
 
     async def run_with_endpoint(
         self, endpoint_name: str, user_input: str

@@ -17,7 +17,8 @@ _MAX_RESULTS = 200
 
 @tool(name="search_files", description="Search file contents using regex patterns.", category="rg")
 async def search_files(
-    pattern: str,
+    pattern: str = "",
+    text: str = "",
     path: str = ".",
     glob: str = "",
     max_results: int = 50,
@@ -25,11 +26,16 @@ async def search_files(
 ) -> str:
     """Search files for a regex pattern.
     pattern: Regex pattern to search for.
+    text: Alias for pattern used by some model-generated tool calls.
     path: Directory to search in.
     glob: File glob filter (e.g. '*.py').
     max_results: Maximum number of matches to return.
     context: Number of context lines around each match.
     """
+    pattern = pattern or text
+    if not pattern:
+        return json.dumps({"error": "pattern is required"})
+
     work_dir = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
     max_results = min(max_results, _MAX_RESULTS)
 

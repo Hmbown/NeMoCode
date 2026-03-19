@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,8 +15,10 @@ from nemocode.cli.tui import (
     NeMoCodeTUI,
     StatusBar,
     ToolPanel,
+    _endpoint_summary,
     _fmt_tokens,
     _get_git_branch,
+    _short_model_ref,
     _TUIState,
 )
 from nemocode.config.schema import (
@@ -211,6 +214,19 @@ class TestTUIState:
         assert state.current_primary_agent_display() == "default"
         assert state.build_agent() is not None
 
+    def test_short_model_ref_compacts_local_path(self):
+        assert _short_model_ref("/models/NVIDIA-Nemotron") == "NVIDIA-Nemotron"
+
+    def test_endpoint_summary_compacts_local_model_path(self):
+        endpoint = Endpoint(
+            name="local-sglang-super",
+            tier=EndpointTier.LOCAL_SGLANG,
+            base_url="http://localhost:8000/v1",
+            model_id="/models/NVIDIA-Nemotron-3-Super-120B",
+            capabilities=[Capability.CHAT],
+        )
+        assert _endpoint_summary(endpoint) == "local-sglang-super · NVIDIA-Nemotron-3-Super-120B"
+
 
 # ---------------------------------------------------------------------------
 # Slash command dispatch tests
@@ -280,6 +296,20 @@ class TestSlashCommands:
             app = pilot.app
             app._dispatch_slash("/endpoint other-ep")
             assert app._state.config.default_endpoint == "other-ep"
+
+    @pytest.mark.asyncio
+    async def test_submit_resolves_pending_user_question(self, sample_config):
+        async with NeMoCodeTUI(config=sample_config).run_test() as pilot:
+            app = pilot.app
+            app.streaming = True
+            app._pending_user_future = asyncio.get_running_loop().create_future()
+            text_area = app.query_one("#chat-input")
+            text_area.text = "approve"
+
+            app.action_submit()
+
+            assert app._pending_user_future.done()
+            assert app._pending_user_future.result() == "approve"
 
     @pytest.mark.asyncio
     async def test_endpoint_unknown(self, sample_config):

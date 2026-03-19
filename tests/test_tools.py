@@ -95,6 +95,16 @@ class TestToolRegistry:
         registry = load_tools([])
         assert registry.list_tools() == []
 
+    @pytest.mark.asyncio
+    async def test_search_files_accepts_text_alias(self, tmp_path: Path):
+        from nemocode.tools.rg import search_files
+
+        target = tmp_path / "sample.py"
+        target.write_text("needle = 1\n")
+
+        result = await search_files(text="needle", path=str(tmp_path))
+        assert "sample.py:1:needle = 1" in result
+
 
 class TestFSTools:
     @pytest.mark.asyncio

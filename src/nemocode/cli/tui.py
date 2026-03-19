@@ -278,6 +278,15 @@ class SlashCommandResult(TextualMessage):
         self.should_quit = should_quit
 
 
+class UserQuestionRequest(TextualMessage):
+    """Prompt the user for an answer while an agent turn is running."""
+
+    def __init__(self, question: str, options: list[str] | None = None) -> None:
+        super().__init__()
+        self.question = question
+        self.options = options or []
+
+
 # ---------------------------------------------------------------------------
 # Helper: git branch detection (cached)
 # ---------------------------------------------------------------------------
@@ -306,6 +315,21 @@ def _get_git_branch() -> str:
     return _cached_git_branch
 
 
+def _short_model_ref(model_id: str) -> str:
+    """Compact long local model paths for display surfaces."""
+    if not model_id:
+        return "-"
+    return Path(model_id).name if model_id.startswith("/") else model_id
+
+
+def _endpoint_summary(endpoint: object) -> str:
+    name = getattr(endpoint, "name", "") or ""
+    model_id = _short_model_ref(getattr(endpoint, "model_id", "") or "")
+    if name and model_id and name != model_id:
+        return f"{name} · {model_id}"
+    return name or model_id or "-"
+
+
 # ---------------------------------------------------------------------------
 # Slash command dispatcher (TUI variant)
 # ---------------------------------------------------------------------------
@@ -325,6 +349,11 @@ _HELP_TEXT = """\
   /endpoint      List endpoints  |  /endpoint <name>  Switch
   /formation     List formations |  /formation <name>  Activate
   /agent         List primary agents | /agent <name> Switch
+
+[bold]Modes:[/bold]
+  code           Ask before tools
+  plan           Read-only planning + approval
+  auto           Auto-approve everything
 
 [bold]Keyboard:[/bold]
   Enter          Send message (Shift+Enter for newline)
@@ -778,6 +807,7 @@ class NeMoCodeTUI(App):
 
         # Track the async task for cancellation
         self._current_task: asyncio.Task | None = None
+        self._pending_user_future: asyncio.Future[str] | None = None
 
     # ── Compose ──────────────────────────────────────────────
 
@@ -795,12 +825,28 @@ class NeMoCodeTUI(App):
 
     def on_mount(self) -> None:
         """Initialize the UI after mounting."""
+        from nemocode.tools.clarify import set_ask_fn
+
+        async def _ask_user_interactive(question: str, options: list[str]) -> str:
+            if self._pending_user_future is not None and not self._pending_user_future.done():
+                self._pending_user_future.set_result("")
+            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            self._pending_user_future = future
+            self.post_message(UserQuestionRequest(question, options))
+            try:
+                return (await future).strip()
+            finally:
+                if self._pending_user_future is future:
+                    self._pending_user_future = None
+
+        set_ask_fn(_ask_user_interactive)
+
         chat = self.query_one("#chat-scroll", ChatScroll)
         ep_name = self._state.config.default_endpoint
         ep = self._state.config.endpoints.get(ep_name)
         model_id = ep.model_id if ep else "unknown"
         manifest = self._state.config.manifests.get(model_id) if ep else None
-        model_display = manifest.display_name if manifest else model_id
+        model_display = manifest.display_name if manifest else _short_model_ref(model_id)
         formation = self._state.config.active_formation or ""
         formation_str = f" · {formation}" if formation else ""
         agent_label = self._state.current_primary_agent_display()
@@ -825,6 +871,15 @@ class NeMoCodeTUI(App):
         text_area.focus()
 
         self._update_status_bar()
+
+    def on_unmount(self) -> None:
+        """Tear down interactive callbacks on exit."""
+        from nemocode.tools.clarify import set_ask_fn
+
+        if self._pending_user_future is not None and not self._pending_user_future.done():
+            self._pending_user_future.set_result("")
+        self._pending_user_future = None
+        set_ask_fn(None)
 
     # ── Reactive watchers ────────────────────────────────────
 
@@ -853,7 +908,11 @@ class NeMoCodeTUI(App):
         self._state.agent = self._state.build_agent()
         self.mode = new_mode
         chat = self.query_one("#chat-scroll", ChatScroll)
-        mode_desc = {"code": "ask before tools", "plan": "text only", "auto": "auto-approve"}
+        mode_desc = {
+            "code": "ask before tools",
+            "plan": "read-only planning + approval",
+            "auto": "auto-approve",
+        }
         chat.add_system(f"Mode: {new_mode} ({mode_desc.get(new_mode, '')})")
         self._update_status_bar()
 
@@ -861,6 +920,8 @@ class NeMoCodeTUI(App):
         """Cancel the current streaming turn."""
         if self.streaming:
             self._state.cancel()
+            if self._pending_user_future is not None and not self._pending_user_future.done():
+                self._pending_user_future.set_result("")
             chat = self.query_one("#chat-scroll", ChatScroll)
             chat.remove_streaming_indicator()
             chat.add_system("Turn cancelled.")
@@ -873,11 +934,18 @@ class NeMoCodeTUI(App):
         text = text_area.text.strip()
         if not text:
             return
-        if self.streaming:
-            return  # Ignore while streaming
 
         text_area.clear()
         text_area.focus()
+
+        if self._pending_user_future is not None and not self._pending_user_future.done():
+            chat = self.query_one("#chat-scroll", ChatScroll)
+            chat.add_user_message(text)
+            self._pending_user_future.set_result(text)
+            return
+
+        if self.streaming:
+            return  # Ignore while streaming unless answering a pending question
 
         # Handle slash commands
         if text.startswith("/"):
@@ -1003,7 +1071,7 @@ class NeMoCodeTUI(App):
                 for ep_name in endpoints:
                     marker = " (active)" if ep_name == current else ""
                     ep = self._state.config.endpoints[ep_name]
-                    lines.append(f"  {ep_name}{marker}  {ep.model_id}")
+                    lines.append(f"  {_endpoint_summary(ep)}{marker}")
                 chat.add_system("\n".join(lines))
             elif arg in self._state.config.endpoints:
                 self._state.config.default_endpoint = arg
@@ -1014,7 +1082,7 @@ class NeMoCodeTUI(App):
                 self._state.agent = self._state.build_agent()
                 self._state.turn_count = 0
                 ep = self._state.config.endpoints[arg]
-                chat.add_system(f"Switched to endpoint: {arg} ({ep.model_id})")
+                chat.add_system(f"Switched to endpoint: {_endpoint_summary(ep)}")
                 self._update_status_bar()
             else:
                 available = ", ".join(self._state.config.endpoints.keys())
@@ -1191,6 +1259,19 @@ class NeMoCodeTUI(App):
                 self._state.current_model_id = ep.model_id
             self._update_status_bar()
 
+    @on(UserQuestionRequest)
+    def _on_user_question_request(self, msg: UserQuestionRequest) -> None:
+        """Render a blocking agent question inside the chat UI."""
+        chat = self.query_one("#chat-scroll", ChatScroll)
+        chat.add_system(f"Agent question:\n{msg.question}")
+        if msg.options:
+            chat.add_system(f"Options: {', '.join(msg.options)}")
+        chat.add_status("Waiting for your answer in the input box.")
+        try:
+            self.query_one("#chat-input", TextArea).focus()
+        except NoMatches:
+            pass
+
     @on(TurnComplete)
     def _on_turn_complete(self, msg: TurnComplete) -> None:
         """Clean up after an agent turn finishes."""
@@ -1265,7 +1346,8 @@ class NeMoCodeTUI(App):
         ep = self._state.config.endpoints.get(ep_name)
         if ep:
             manifest = self._state.config.manifests.get(ep.model_id)
-            bar.model_name = manifest.display_name if manifest else ep.model_id
+            bar.model_name = manifest.display_name if manifest else _short_model_ref(ep.model_id)
+            bar.endpoint = _endpoint_summary(ep)
         else:
             bar.model_name = ""
 

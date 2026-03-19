@@ -11,10 +11,12 @@ import pytest
 
 from nemocode.config import _parse_config
 from nemocode.cli.commands.repl import (
+    _endpoint_summary,
     _fmt_tokens,
     _InputReader,
     _render_status_bar,
     _ReplState,
+    _short_model_ref,
     _SlashDispatcher,
     _TurnRenderer,
 )
@@ -139,6 +141,19 @@ class TestInputReader:
             pytest.skip("prompt_toolkit not available")
         result = await reader.read()
         assert result == "short text"
+
+    def test_short_model_ref_compacts_local_path(self):
+        assert _short_model_ref("/models/NVIDIA-Nemotron") == "NVIDIA-Nemotron"
+
+    def test_endpoint_summary_compacts_local_model_path(self):
+        endpoint = Endpoint(
+            name="local-sglang-super",
+            tier=EndpointTier.LOCAL_SGLANG,
+            base_url="http://localhost:8000/v1",
+            model_id="/models/NVIDIA-Nemotron-3-Super-120B",
+            capabilities=[Capability.CHAT],
+        )
+        assert _endpoint_summary(endpoint) == "local-sglang-super · NVIDIA-Nemotron-3-Super-120B"
 
 
 class TestSlashDispatcher:

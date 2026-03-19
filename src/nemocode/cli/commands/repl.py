@@ -46,6 +46,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 console = Console()
 
+
+def _short_model_ref(model_id: str) -> str:
+    """Compact long local model paths for endpoint displays."""
+    if not model_id:
+        return "-"
+    return Path(model_id).name if model_id.startswith("/") else model_id
+
+
+def _endpoint_summary(endpoint: object) -> str:
+    name = getattr(endpoint, "name", "") or ""
+    model_id = _short_model_ref(getattr(endpoint, "model_id", "") or "")
+    if name and model_id and name != model_id:
+        return f"{name} · {model_id}"
+    return name or model_id or "-"
+
+
 # ---------------------------------------------------------------------------
 # prompt_toolkit: optional dependency
 # ---------------------------------------------------------------------------
@@ -263,7 +279,7 @@ class _InputReader:
         ep = s.config.endpoints.get(ep_name)
         if ep:
             manifest = s.config.manifests.get(ep.model_id)
-            display = manifest.display_name if manifest else ep.model_id
+            display = manifest.display_name if manifest else _short_model_ref(ep.model_id)
             parts.append(f" <ansicyan>{display}</ansicyan>")
         else:
             parts.append(f" <ansicyan>{ep_name}</ansicyan>")
@@ -445,7 +461,7 @@ _HELP_TEXT = """\
 
 [bold]Modes:[/bold]
   [green]code[/green]    Ask before tool calls (default)
-  [yellow]plan[/yellow]    Text-only, no tools — just discuss
+  [yellow]plan[/yellow]    Read-only planning, research subagents, approval gate
   [red]auto[/red]    Auto-approve everything — fast but risky
 
 [bold]Configuration:[/bold]
@@ -624,7 +640,7 @@ class _SlashDispatcher:
             for ep_name in endpoints:
                 marker = " [green](active)[/green]" if ep_name == current else ""
                 ep = self._state.config.endpoints[ep_name]
-                console.print(f"  [cyan]{ep_name}[/cyan]{marker}  {ep.model_id}")
+                console.print(f"  [cyan]{_endpoint_summary(ep)}[/cyan]{marker}")
             return True
 
         if arg not in self._state.config.endpoints:
@@ -640,7 +656,7 @@ class _SlashDispatcher:
         # the scheduler caches providers per-session and we want a clean switch
         self._state.rebuild_agent()
         ep = self._state.config.endpoints[arg]
-        console.print(f"[dim]Switched to endpoint: {arg} ({ep.model_id})[/dim]")
+        console.print(f"[dim]Switched to endpoint: {_endpoint_summary(ep)}[/dim]")
         return True
 
     def _cmd_formation(self, arg: str) -> bool:
@@ -713,7 +729,11 @@ class _SlashDispatcher:
     def _cmd_mode(self, _arg: str) -> bool:
         new_mode = self._state.cycle_mode()
         self._state.agent = self._state._build_agent()
-        mode_desc = {"code": "ask before tools", "plan": "text only", "auto": "auto-approve"}
+        mode_desc = {
+            "code": "ask before tools",
+            "plan": "read-only planning + approval",
+            "auto": "auto-approve",
+        }
         console.print(f"[dim]Mode: {new_mode} ({mode_desc.get(new_mode, '')})[/dim]")
         return True
 
@@ -1007,7 +1027,7 @@ class _ReplState:
         self.context_mgr = ContextManager(
             context_window=self._resolve_context_window(),
         )
-        # Mode: "code" (default), "plan" (no tools), "auto" (auto-approve all)
+        # Mode: "code" (default), "plan" (read-only planning), "auto" (auto-approve all)
         self._modes = ["code", "plan", "auto"]
         self._mode_idx = 0
         self.agent = self._build_agent()
@@ -1272,7 +1292,7 @@ def _render_status_bar(state: _ReplState) -> None:
     ep = state.config.endpoints.get(ep_name)
     if ep:
         manifest = state.config.manifests.get(ep.model_id)
-        display = manifest.display_name if manifest else ep.model_id
+        display = manifest.display_name if manifest else _short_model_ref(ep.model_id)
         parts.append(f"[cyan]{display}[/cyan]")
     else:
         parts.append(f"[cyan]{ep_name}[/cyan]")
@@ -1414,7 +1434,7 @@ def _print_banner(state: _ReplState) -> None:
     formation = state.config.active_formation
 
     manifest = state.config.manifests.get(model_id) if ep else None
-    model_display = manifest.display_name if manifest else model_id
+    model_display = manifest.display_name if manifest else _short_model_ref(model_id)
     if manifest:
         cw = manifest.context_window
         ctx_k = f"{cw // 1_000_000}M" if cw >= 1_000_000 else f"{cw // 1000}K"

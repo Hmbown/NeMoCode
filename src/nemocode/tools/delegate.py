@@ -146,9 +146,13 @@ def _endpoint_rank(
     prefer_local: bool,
 ) -> tuple[int, int, int, int, str]:
     if prefer_local:
-        locality_rank = 0 if name.startswith("spark-") else 1 if endpoint.tier in _LOCAL_TIERS else 2
+        locality_rank = (
+            0 if name.startswith("spark-") else 1 if endpoint.tier in _LOCAL_TIERS else 2
+        )
     else:
-        locality_rank = 0 if endpoint.tier not in _LOCAL_TIERS else 1 if name.startswith("spark-") else 2
+        locality_rank = (
+            0 if endpoint.tier not in _LOCAL_TIERS else 1 if name.startswith("spark-") else 2
+        )
 
     transport_rank = {
         EndpointTier.LOCAL_SGLANG: 0,
@@ -510,7 +514,9 @@ def create_delegate_tools(
             return json.dumps({"error": f"Unknown sub-agent run: {agent_id}"})
 
         include_output = not timed_out and is_final_status(run.status)
-        return json.dumps(_result_payload(agent_id, include_output=include_output, timed_out=timed_out))
+        return json.dumps(
+            _result_payload(agent_id, include_output=include_output, timed_out=timed_out)
+        )
 
     @tool(
         description=(

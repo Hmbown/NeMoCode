@@ -10,13 +10,13 @@ detects hardware, and provides actionable setup guidance.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
+import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-import typer
 
 from nemocode import __version__
 from nemocode.config import ensure_config_dir

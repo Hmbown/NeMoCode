@@ -13,12 +13,12 @@ and none require user confirmation.
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import hashlib
 import json
 import logging
 import os
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -515,7 +515,8 @@ class Scheduler:
                         tool_calls.extend(chunk.tool_calls)
                     if chunk.usage:
                         session.usage.add(
-                            chunk.usage.get("prompt_tokens", 0), chunk.usage.get("completion_tokens", 0)
+                            chunk.usage.get("prompt_tokens", 0),
+                            chunk.usage.get("completion_tokens", 0),
                         )
                         yield AgentEvent(kind="usage", usage=chunk.usage, role=role)
             finally:

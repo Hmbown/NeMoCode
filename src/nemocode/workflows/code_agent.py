@@ -10,8 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from nemocode.config.agents import resolve_agent_reference
 from nemocode.config import load_config
+from nemocode.config.agents import resolve_agent_reference
 from nemocode.config.schema import AgentConfig, AgentMode, FormationRole, NeMoCodeConfig
 from nemocode.core.hooks import HookRunner
 from nemocode.core.memory import load_all_memories
@@ -193,6 +193,8 @@ class CodeAgent:
         self._registry = Registry(self._config)
         self._read_only = read_only
         self._confirm_fn = confirm_fn
+        self._pending_plan_text: str | None = None
+        self._pending_plan_user_input: str | None = None
         self._agent_profile = self._resolve_primary_agent(agent_name)
         if self._agent_profile:
             self._tool_registry = load_tools(self._agent_profile.tools)
@@ -231,8 +233,16 @@ class CodeAgent:
         self._inject_project_context()
 
         # Register sub-agent orchestration tools if the agent profile includes any of them
-        agent_control_tool_names = {"delegate", "spawn_agent", "wait_agent", "close_agent", "resume_agent"}
-        if self._agent_profile and any(tool in self._agent_profile.tools for tool in agent_control_tool_names):
+        agent_control_tool_names = {
+            "delegate",
+            "spawn_agent",
+            "wait_agent",
+            "close_agent",
+            "resume_agent",
+        }
+        if self._agent_profile and any(
+            tool in self._agent_profile.tools for tool in agent_control_tool_names
+        ):
             agent_control_defs = create_delegate_tools(
                 self._registry,
                 self._config,
@@ -250,7 +260,9 @@ class CodeAgent:
         if resolved_name is None:
             resolved_name = "plan" if self._read_only else "build"
         else:
-            resolved_name = resolve_agent_reference(self._config.agents, resolved_name) or resolved_name
+            resolved_name = (
+                resolve_agent_reference(self._config.agents, resolved_name) or resolved_name
+            )
 
         agent = self._config.agents.get(resolved_name)
         if agent is None:
@@ -399,6 +411,8 @@ class CodeAgent:
                 )
                 return
             if decision == "pending":
+                self._pending_plan_text = plan_text
+                self._pending_plan_user_input = user_input
                 yield AgentEvent(
                     kind="text",
                     text=(
@@ -526,3 +540,137 @@ class CodeAgent:
         """Create a git snapshot for safe rollback."""
         snap = await self._snapshot_mgr.create_snapshot(label)
         return {"id": snap.id, "kind": snap.kind, "files": snap.files_changed} if snap else None
+
+    @property
+    def has_pending_plan(self) -> bool:
+        """Whether a plan approval is waiting for user response."""
+        return self._pending_plan_text is not None
+
+    @property
+    def pending_plan_text(self) -> str | None:
+        """The plan text awaiting approval, or None."""
+        return self._pending_plan_text
+
+    @staticmethod
+    def parse_plan_decision(user_input: str) -> tuple[str, str]:
+        """Parse user input as a plan decision without prompting.
+
+        Returns (decision, feedback) where decision is one of:
+        approve, cancel, revise, or pending (not a recognized decision).
+        """
+        normalized = user_input.strip()
+        lowered = normalized.lower()
+        if lowered in {"approve", "approved", "yes", "y"}:
+            return "approve", ""
+        if lowered in {"cancel", "cancelled", "decline", "declined", "no", "n"}:
+            return "cancel", ""
+        if lowered.startswith("revise"):
+            _, _, remainder = normalized.partition(":")
+            feedback = remainder.strip() or normalized[len("revise") :].strip()
+            return "revise", feedback
+        return "pending", ""
+
+    async def try_handle_plan_response(self, user_input: str) -> AsyncIterator[AgentEvent] | None:
+        """If a plan approval is pending, interpret user_input as a decision.
+
+        Returns an async iterator of events if the input was a decision,
+        or None if the input was not a recognized plan decision.
+        """
+        if not self._pending_plan_text:
+            return None
+
+        decision, feedback = self.parse_plan_decision(user_input)
+        if decision == "pending":
+            return None  # Not a recognized decision — caller should treat as new input
+
+        plan_text = self._pending_plan_text
+        original_input = self._pending_plan_user_input or ""
+        self._pending_plan_text = None
+        self._pending_plan_user_input = None
+
+        return self._execute_plan_decision(decision, feedback, original_input, plan_text)
+
+    async def _execute_plan_decision(
+        self,
+        decision: str,
+        feedback: str,
+        original_input: str,
+        plan_text: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Execute a plan decision (approve, cancel, or revise)."""
+        if decision == "approve":
+            async for event in self._run_approved_plan(original_input, plan_text):
+                yield event
+            return
+
+        if decision == "cancel":
+            yield AgentEvent(
+                kind="text",
+                text="\nPlan cancelled.\n",
+                role=FormationRole.PLANNER,
+            )
+            return
+
+        # Revise — run the planner again with feedback
+        feedback_text = feedback.strip() or "Make the plan more concrete and actionable."
+        yield AgentEvent(
+            kind="status",
+            text="Revising plan from user feedback.",
+            role=FormationRole.PLANNER,
+            phase="planning",
+        )
+        replan_input = (
+            f"## Original Request\n{original_input}\n\n"
+            f"## Previous Plan\n{plan_text}\n\n"
+            f"## User Feedback\n{feedback_text}\n\n"
+            "Revise the plan to address the feedback. Present only the updated plan."
+        )
+        endpoint = self._config.default_endpoint
+        plan_text = ""
+        async for event in self._scheduler.run_single(endpoint, replan_input):
+            if event.kind == "text":
+                plan_text += event.text
+            yield event
+
+        plan_text = plan_text.strip()
+        if not plan_text:
+            yield AgentEvent(
+                kind="error",
+                text="Planner produced no plan to approve.",
+                is_error=True,
+                role=FormationRole.PLANNER,
+            )
+            return
+
+        decision, feedback = await self._request_plan_decision(plan_text)
+        if decision == "approve":
+            async for event in self._run_approved_plan(original_input, plan_text):
+                yield event
+        elif decision == "cancel":
+            yield AgentEvent(
+                kind="text",
+                text="\nPlan cancelled.\n",
+                role=FormationRole.PLANNER,
+            )
+        elif decision == "pending":
+            self._pending_plan_text = plan_text
+            self._pending_plan_user_input = original_input
+            yield AgentEvent(
+                kind="text",
+                text=(
+                    "\nPlan is waiting for your approval. Reply with approve, revise, or"
+                    " cancel in your next message.\n"
+                ),
+                role=FormationRole.PLANNER,
+            )
+        else:
+            self._pending_plan_text = plan_text
+            self._pending_plan_user_input = original_input
+            yield AgentEvent(
+                kind="text",
+                text=(
+                    "\nPlan is waiting for your approval. Reply with approve, revise, or"
+                    " cancel in your next message.\n"
+                ),
+                role=FormationRole.PLANNER,
+            )

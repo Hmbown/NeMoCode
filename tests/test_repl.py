@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nemocode.config import _parse_config
 from nemocode.cli.commands.repl import (
     _endpoint_summary,
     _fmt_tokens,
@@ -20,6 +19,7 @@ from nemocode.cli.commands.repl import (
     _SlashDispatcher,
     _TurnRenderer,
 )
+from nemocode.config import _parse_config
 from nemocode.config.schema import (
     Capability,
     Endpoint,

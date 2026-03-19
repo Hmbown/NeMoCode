@@ -833,9 +833,7 @@ def summarize_delegate_result(parsed: dict) -> tuple[str, str | None] | None:
         preview = str(parsed.get("output") or "").strip()
     else:
         preview = str(
-            parsed.get("last_output_preview")
-            or parsed.get("output_preview")
-            or ""
+            parsed.get("last_output_preview") or parsed.get("output_preview") or ""
         ).strip()
     if preview:
         preview = preview.splitlines()[0].strip()

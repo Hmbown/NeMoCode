@@ -302,7 +302,9 @@ class TestEventRenderer:
     def test_status_event_renders_worklog_line(self):
         con, buf = _capture_console()
         renderer = EventRenderer(con, show_thinking=False)
-        renderer.render(AgentEvent(kind="status", text="Still working after 24s: reviewing tool output."))
+        renderer.render(
+            AgentEvent(kind="status", text="Still working after 24s: reviewing tool output.")
+        )
         output = buf.getvalue()
         assert "Still working after 24s" in output
         assert "Reasoning trace hidden" in output

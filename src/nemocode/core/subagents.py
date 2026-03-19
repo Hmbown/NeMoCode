@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 _FINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})

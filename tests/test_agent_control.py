@@ -12,7 +12,13 @@ import pytest
 
 import nemocode.tools.delegate as delegate_mod
 from nemocode.config import _parse_config
-from nemocode.config.schema import Capability, Endpoint, EndpointTier, NeMoCodeConfig, ToolPermissions
+from nemocode.config.schema import (
+    Capability,
+    Endpoint,
+    EndpointTier,
+    NeMoCodeConfig,
+    ToolPermissions,
+)
 from nemocode.core.registry import Registry
 from nemocode.core.subagents import append_output, complete_run, reset_runs
 from nemocode.tools.delegate import create_delegate_tools
@@ -38,7 +44,9 @@ def orchestration_config() -> NeMoCodeConfig:
 
 def _tool_fns(config: NeMoCodeConfig) -> dict[str, object]:
     registry = Registry(config)
-    return {td.name: td.fn for td in create_delegate_tools(registry, config, parent_agent_name="build")}
+    return {
+        td.name: td.fn for td in create_delegate_tools(registry, config, parent_agent_name="build")
+    }
 
 
 class TestAgentControlTools:
@@ -162,7 +170,9 @@ class TestAgentControlTools:
             )
         }
 
-        spawned = json.loads(await tools["spawn_agent"](task="Run the test suite", agent_type="test"))
+        spawned = json.loads(
+            await tools["spawn_agent"](task="Run the test suite", agent_type="test")
+        )
         final = json.loads(await tools["wait_agent"](agent_id=spawned["run_id"], timeout_s=1.0))
 
         assert final["status"] == "completed"

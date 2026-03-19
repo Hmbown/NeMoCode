@@ -717,7 +717,9 @@ class _SlashDispatcher:
         agent = primary_agents.get(resolved)
         if agent is None:
             available = ", ".join(sorted(primary_agents.keys()))
-            console.print(f"[red]Unknown primary agent: {arg}[/red]\n[dim]Available: {available}[/dim]")
+            console.print(
+                f"[red]Unknown primary agent: {arg}[/red]\n[dim]Available: {available}[/dim]"
+            )
             return True
 
         self._state.agent_name = resolved
@@ -1665,6 +1667,14 @@ async def run_repl(
                 renderer.finalize()
                 _render_status_bar(state)
 
+            # Check if plan approval is pending after the turn
+            if state.agent.has_pending_plan:
+                console.print(
+                    "\n[yellow]Plan awaiting your approval."
+                    " Reply with [bold]approve[/bold], [bold]revise[/bold],"
+                    " or [bold]cancel[/bold].[/yellow]"
+                )
+
             # Auto-save session after each turn
             _auto_save_session(state)
     finally:
@@ -1686,7 +1696,31 @@ async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer)
 
     Handles Ctrl+C gracefully: sets the cancelled flag and drains remaining events
     rather than raising, so the session stays in a consistent state.
+    Also handles resume of pending plan approvals.
     """
+    # Check if we're resuming a pending plan approval
+    if state.agent.has_pending_plan:
+        result = await state.agent.try_handle_plan_response(user_input)
+        if result is not None:
+            # User input was a recognized plan decision — handle it
+            renderer.start_thinking("Processing plan decision")
+            try:
+                async for event in result:
+                    if state.cancelled:
+                        continue
+                    try:
+                        renderer.render_event(event)
+                    except KeyboardInterrupt:
+                        state.cancel()
+                        console.print("\n[dim]Cancelling...[/dim]")
+                        continue
+            finally:
+                pass
+            return
+        # Not a plan decision — clear pending state and proceed as normal input
+        state.agent._pending_plan_text = None
+        state.agent._pending_plan_user_input = None
+
     # Start a unified thinking spinner via the renderer.
     # It persists through read-only tool execution, updating with progress,
     # and stops automatically when the text response begins.

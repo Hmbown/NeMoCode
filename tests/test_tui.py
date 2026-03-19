@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nemocode.config import _parse_config
 from nemocode.cli.tui import (
     NeMoCodeTUI,
     StatusBar,
@@ -21,6 +20,7 @@ from nemocode.cli.tui import (
     _short_model_ref,
     _TUIState,
 )
+from nemocode.config import _parse_config
 from nemocode.config.schema import (
     Capability,
     Endpoint,

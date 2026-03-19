@@ -9,8 +9,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from nemocode.config.agents import resolve_agent_reference
 from nemocode.config import load_config
+from nemocode.config.agents import resolve_agent_reference
 from nemocode.config.schema import AgentMode
 from nemocode.core.subagents import list_runs
 from nemocode.tools.delegate import _pick_endpoint

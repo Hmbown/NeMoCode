@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-import yaml
 from unittest.mock import patch
 
+import yaml
 from typer.testing import CliRunner
 
 from nemocode.cli.main import app

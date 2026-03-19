@@ -6,17 +6,17 @@ Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, 
 
 ## Install
 
-From source (editable):
-```bash
-pip install -e .
-```
-
-Or from PyPI:
+From PyPI:
 ```bash
 pip install nemocode
 ```
 
-## Setup
+Or from source (editable):
+```bash
+pip install -e .
+```
+
+## Quick Start
 
 Run the guided setup wizard:
 
@@ -24,36 +24,37 @@ Run the guided setup wizard:
 nemo setup
 ```
 
-It defaults to hosted NVIDIA NIM, prompts for `NVIDIA_API_KEY`, and can also configure a local `vllm` or `sglang` endpoint and model for you.
+The wizard defaults to **hosted NVIDIA NIM**, prompts for `NVIDIA_API_KEY`, and can also configure a local `vllm` or `sglang` backend for you.
 
-If you just want hosted NIM manually, get a free API key from [build.nvidia.com](https://build.nvidia.com):
+### Hosted NVIDIA NIM (default)
+
+Get a free API key from [build.nvidia.com](https://build.nvidia.com):
 
 ```bash
 export NVIDIA_API_KEY="nvapi-..."
 nemo code
 ```
 
-Hosted Nemotron/NIM endpoints in NeMoCode use `NVIDIA_API_KEY` by default.
+Hosted Nemotron endpoints use `NVIDIA_API_KEY` by default. The setup wizard can store it in your system keyring.
 
-Or serve a model locally with [vLLM](https://docs.vllm.ai/) or [SGLang](https://sgl-project.github.io/) on any NVIDIA GPU:
+### Local vLLM or SGLang
+
+Serve a model locally on any NVIDIA GPU:
 
 ```bash
 # vLLM
 vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \
-  --trust-remote-code --mamba_ssm_cache_dtype float32 \
-  --enable-auto-tool-choice \
-  --tool-parser-plugin nemotron_toolcall_parser.py \
-  --tool-call-parser nemotron_json
+  --host 0.0.0.0 --port 8000
 nemo code -e local-vllm-nano9b
 
 # SGLang (best for Nemotron 3 Super long context on DGX Spark)
 python -m sglang.launch_server \
   --model nvidia/nemotron-3-super-120b-a12b \
-  --quantization nvfp4 --trust-remote-code
-nemo code -e spark-sglang-super
+  --host 0.0.0.0 --port 8000
+nemo code -e local-sglang-super
 ```
 
-No GPU? Rent one via [Brev](https://console.brev.dev) — L40S from $1.03/hr:
+No GPU? Rent one via [Brev](https://console.brev.dev):
 
 ```bash
 nemo setup brev
@@ -67,7 +68,31 @@ nemo code "fix the bug in auth.py" -y  # one-shot, auto-approve tools
 nemo chat "explain this error"         # chat, no tools
 cat log.txt | nemo code "diagnose"     # pipe input
 nemo code -f super-nano "refactor"     # multi-model formation
+nemo code --tui                        # full-screen TUI
 ```
+
+## Plan Mode
+
+Plan mode is a read-only planning phase with an approval gate before execution.
+
+- **Read-only**: Plan mode only reads files, searches code, and explores — no writes, shell commands, or commits.
+- **Approval gate**: The planner proposes a concrete plan. You review and approve, revise with feedback, or cancel.
+- **Execution**: Once approved, a build agent executes the plan with full tool access.
+
+Switch modes in the REPL with Tab or `/mode`:
+
+| Mode | Behavior |
+|------|----------|
+| `code` | Ask before tool calls (default) |
+| `plan` | Read-only planning + approval gate |
+| `auto` | Auto-approve everything |
+
+Launch directly in plan mode:
+```bash
+nemo code --agent plan "implement user auth"
+```
+
+The plan agent can also spawn read-only research subagents to help with exploration.
 
 ## Endpoints
 
@@ -78,7 +103,7 @@ Works with any OpenAI-compatible API. Pre-configured:
 | `nim-super` | Nemotron 3 Super (12B/120B MoE, 1M ctx) | NIM API key |
 | `nim-nano` | Nemotron 3 Nano (3B/30B MoE, 1M ctx) | NIM API key |
 | `nim-nano-9b` | Nemotron Nano 9B v2 | NIM API key |
-| `nim-nano-4b` | Nemotron Nano 4B v1.1 (new!) | NIM API key |
+| `nim-nano-4b` | Nemotron Nano 4B v1.1 | NIM API key |
 | `nim-vlm` | Nemotron Nano 12B VL (vision) | NIM API key |
 | `nim-embed` | Nemotron Embed 1B v2 | NIM API key |
 | `nim-rerank` | Nemotron Rerank 1B v2 | NIM API key |
@@ -105,18 +130,32 @@ nemo code -f super-nano "implement caching"
 | `vision` | VLM reads screenshots, Super writes code |
 | `local` | Nano on local GPU, no internet needed |
 
-## Agents
+## Agents & Sub-agent Orchestration
 
-NeMoCode now supports named agent profiles for top-level sessions and delegated sub-agents.
+NeMoCode supports named agent profiles for top-level sessions and delegated sub-agents.
 
-- Built-in primary agents: `build`, `plan`
-- Built-in sub-agents: `general`, `explore`, `review`, `debug`, `test`, `doc`, `code-search`, `fast`
+- **Primary agents**: `build` (default full-access), `plan` (read-only planning)
+- **Sub-agents**: `general`, `explore`, `review`, `debug`, `test`, `doc`, `code-search`, `fast`
 - Inspect them with `nemo agent ls` and `nemo agent show <name>`
 - Switch primary agents with `nemo code --agent <name>` or `/agent <name>` in the REPL/TUI
-- Sub-agent orchestration tools are now available in coding sessions: `delegate`, `spawn_agent`, `wait_agent`, `close_agent`, and `resume_agent`
-- Define custom agents in `.nemocode.yaml` under `agents:` or in markdown files under `.nemocode/agents/*.md`
 
-Example markdown agent:
+### Sub-agent tools
+
+In coding sessions, these orchestration tools are available:
+
+| Tool | Purpose |
+|------|---------|
+| `delegate` | Spawn a sub-agent and wait for the result |
+| `spawn_agent` | Spawn a background sub-agent for parallel work |
+| `wait_agent` | Wait for a spawned sub-agent to finish |
+| `close_agent` | Close or cancel a sub-agent handle |
+| `resume_agent` | Reopen a previously closed sub-agent handle |
+
+Sub-agents inherit read-only mode when delegated from plan mode.
+
+### Custom agents
+
+Define custom agents in `.nemocode.yaml` under `agents:` or as markdown files under `.nemocode/agents/*.md`:
 
 ```markdown
 ---
@@ -134,7 +173,7 @@ tools:
 Review the requested changes. Focus on correctness, regressions, and missing tests.
 ```
 
-## Local GPU setup
+## Setup Commands
 
 ```bash
 nemo setup          # guided wizard
@@ -146,7 +185,7 @@ nemo setup nim      # NIM container guide
 nemo setup brev     # rent a cloud GPU
 ```
 
-## More commands
+## More Commands
 
 ```bash
 nemo endpoint ls / test     # manage endpoints
@@ -157,7 +196,7 @@ nemo hardware recommend     # GPU-based recommendations
 nemo doctor                 # run diagnostics to check setup
 nemo session ls             # past conversations
 nemo obs pricing            # token pricing
-nemo init                   # create .nemocode.yaml without overriding your user default endpoint
+nemo init                   # create .nemocode.yaml without overriding user defaults
 ```
 
 ## Contributing

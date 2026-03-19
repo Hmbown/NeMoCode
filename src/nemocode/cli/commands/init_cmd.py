@@ -34,9 +34,7 @@ def init_cmd(
     name: str = typer.Option(None, "--name", help="Project name"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing config"),
     endpoint: str = typer.Option(None, "--endpoint", help="Project-specific default endpoint"),
-    formation: str = typer.Option(
-        None, "--formation", help="Project-specific active formation"
-    ),
+    formation: str = typer.Option(None, "--formation", help="Project-specific active formation"),
 ) -> None:
     """Create a .nemocode.yaml project config in the current directory."""
     config_path = Path.cwd() / ".nemocode.yaml"

@@ -71,8 +71,7 @@ _LOCAL_PRESETS: dict[str, list[PresetChoice]] = {
             "local-vllm-nano9b",
             "Nemotron Nano 9B v2",
             startup_command=(
-                "vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \\\n"
-                "  --host 0.0.0.0 --port 8000"
+                "vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \\\n  --host 0.0.0.0 --port 8000"
             ),
         ),
         PresetChoice("__custom__", "Custom OpenAI-compatible vLLM model"),
@@ -210,8 +209,7 @@ def _prompt_custom_local_preset(backend: str) -> PresetChoice:
     )
     tier = "local-vllm" if backend == "vllm" else "local-sglang"
     startup = (
-        "# Start your server separately, then verify it with:\n"
-        f"nemo endpoint test {endpoint_name}"
+        f"# Start your server separately, then verify it with:\nnemo endpoint test {endpoint_name}"
     )
     return PresetChoice(
         endpoint_name=endpoint_name,
@@ -268,9 +266,7 @@ def _print_hosted_summary(preset: PresetChoice) -> None:
     console.print(
         "[dim]Hosted Nemotron calls will use NVIDIA NIM via NVIDIA_API_KEY by default.[/dim]"
     )
-    console.print(
-        f"[dim]Next: nemo endpoint test {preset.endpoint_name}  or  nemo code[/dim]"
-    )
+    console.print(f"[dim]Next: nemo endpoint test {preset.endpoint_name}  or  nemo code[/dim]")
 
 
 def _print_local_summary(backend: str, preset: PresetChoice) -> None:

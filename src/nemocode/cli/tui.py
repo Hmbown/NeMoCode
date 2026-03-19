@@ -42,8 +42,8 @@ from nemocode.cli.render import (
     summarize_delegate_result,
     tool_result_has_embedded_error,
 )
-from nemocode.config.agents import resolve_agent_reference
 from nemocode.config import load_config
+from nemocode.config.agents import resolve_agent_reference
 from nemocode.config.schema import AgentMode, NeMoCodeConfig
 from nemocode.core.context import ContextManager
 from nemocode.core.metrics import MetricsCollector, RequestMetrics
@@ -1188,6 +1188,28 @@ class NeMoCodeTUI(App):
             self.post_message(TurnComplete(error="No agent configured"))
             return
 
+        # Check if we're resuming a pending plan approval
+        if agent.has_pending_plan:
+            result = await agent.try_handle_plan_response(user_input)
+            if result is not None:
+                try:
+                    async for event in result:
+                        if self._state.cancelled:
+                            continue
+                        self.post_message(AgentEventMessage(event))
+                except asyncio.CancelledError:
+                    self.post_message(TurnComplete(error=None))
+                    return
+                except Exception as exc:
+                    logger.exception("Plan approval handling failed")
+                    self.post_message(TurnComplete(error=str(exc)))
+                    return
+                self.post_message(TurnComplete())
+                return
+            # Not a plan decision — clear pending and proceed normally
+            agent._pending_plan_text = None
+            agent._pending_plan_user_input = None
+
         try:
             async for event in agent.run(user_input):
                 if self._state.cancelled:
@@ -1298,6 +1320,10 @@ class NeMoCodeTUI(App):
             self.query_one("#chat-input", TextArea).focus()
         except NoMatches:
             pass
+
+        # Check if plan approval is pending
+        if self._state.agent and self._state.agent.has_pending_plan:
+            chat.add_system("Plan awaiting your approval. Reply with approve, revise, or cancel.")
 
     def _show_turn_summary(self, chat: ChatScroll) -> None:
         """Show a compact performance summary after a turn completes."""

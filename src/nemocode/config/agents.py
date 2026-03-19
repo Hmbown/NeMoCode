@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,17 +47,26 @@ _BUILTIN_AGENTS_RAW: dict[str, dict[str, Any]] = {
         "mode": "primary",
         "role": "planner",
         "tools": [
-            "fs_read", "git_read", "rg", "glob", "clarify",
-            "delegate", "spawn_agent", "wait_agent", "close_agent", "resume_agent"
+            "fs_read",
+            "git_read",
+            "rg",
+            "glob",
+            "clarify",
+            "delegate",
+            "spawn_agent",
+            "wait_agent",
+            "close_agent",
+            "resume_agent",
         ],
         "prompt": (
             "You are NeMoCode in plan mode. Read the codebase, analyze the task, "
             "and propose concrete next steps without modifying files or running "
-            "destructive commands. Use ask_user / ask_clarify only when you are blocked on missing requirements. "
-            "You can also spawn read-only research subagents to help with exploration. "
-            "When you have a plan, present it clearly for approval. The controller will handle approval, revision, "
-            "or cancellation after you respond. If the plan is revised, incorporate the user's feedback and return "
-            "only the updated plan."
+            "destructive commands. Use ask_clarify only when blocked on requirements. "
+            "You can also spawn read-only research subagents for exploration. "
+            "When you have a plan, present it clearly for approval. "
+            "The controller handles approval, revision, or cancellation after you "
+            "respond. If revised, incorporate the feedback and return only the "
+            "updated plan."
         ),
     },
     "general": {

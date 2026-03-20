@@ -18,11 +18,16 @@ runner = CliRunner()
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences for reliable string matching."""
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
 class TestCLIHelp:
     def test_main_help(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "NeMoCode" in result.stdout
+        assert "NeMoCode" in _strip_ansi(result.stdout)
 
     def test_chat_help(self):
         result = runner.invoke(app, ["chat", "--help"])
@@ -31,7 +36,7 @@ class TestCLIHelp:
     def test_code_help(self):
         result = runner.invoke(app, ["code", "--help"])
         assert result.exit_code == 0
-        assert "--agent" in _ANSI_ESCAPE_RE.sub("", result.stdout)
+        assert "--agent" in _strip_ansi(result.stdout)
 
     def test_agent_help(self):
         result = runner.invoke(app, ["agent", "--help"])
@@ -104,8 +109,8 @@ class TestAgentCommand:
         try:
             result = runner.invoke(app, ["agent", "runs"])
             assert result.exit_code == 0
-            assert run.id in result.stdout
-            assert "Orbit Joe" in result.stdout
+            assert run.id in _strip_ansi(result.stdout)
+            assert "Orbit Joe" in _strip_ansi(result.stdout)
         finally:
             reset_runs()
 
@@ -115,7 +120,7 @@ class TestAuthCommand:
         with patch("nemocode.core.credentials._keyring_available", return_value=False):
             result = runner.invoke(app, ["auth", "show"])
             assert result.exit_code == 0
-            assert "Credentials" in result.stdout
+            assert "Credentials" in _strip_ansi(result.stdout)
 
 
 class TestInitCommand:
@@ -154,7 +159,7 @@ class TestObsCommand:
     def test_obs_pricing(self):
         result = runner.invoke(app, ["obs", "pricing"])
         assert result.exit_code == 0
-        assert "Pricing" in result.stdout
+        assert "Pricing" in _strip_ansi(result.stdout)
 
 
 class TestDoctorCommand:
@@ -198,6 +203,6 @@ class TestDoctorCommand:
         ):
             result = runner.invoke(app, ["doctor", "show"])
             assert result.exit_code == 0
-            assert "Diagnostic Report" in result.stdout
-            assert "test_check" in result.stdout
-            assert "ok" in result.stdout
+            assert "Diagnostic Report" in _strip_ansi(result.stdout)
+            assert "test_check" in _strip_ansi(result.stdout)
+            assert "ok" in _strip_ansi(result.stdout)

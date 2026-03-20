@@ -80,12 +80,11 @@ class TestHookTimeout:
     @pytest.mark.asyncio
     async def test_hook_timeout_handled_gracefully(self):
         runner = HookRunner({"pre_bash_exec": ["sleep 60"]})
-        # Patch the timeout to be very short for testing
-        import asyncio as _asyncio
+        import subprocess
 
         with patch(
-            "nemocode.core.hooks.asyncio.wait_for",
-            side_effect=_asyncio.TimeoutError,
+            "nemocode.core.hooks.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="sleep 60", timeout=30),
         ):
             outputs = await runner.run_pre("bash_exec", {})
         assert len(outputs) == 1

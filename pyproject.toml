@@ -1,6 +1,6 @@
 [project]
 name = "nemocode"
-version = "0.1.21"
+version = "0.1.22"
 description = "Terminal-first control plane for NVIDIA Nemotron 3 — agentic coding, RAG, doc-ops, and multi-model formations."
 readme = "README.md"
 requires-python = ">=3.11"

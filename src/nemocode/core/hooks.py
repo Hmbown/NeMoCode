@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -54,20 +55,25 @@ class HookRunner:
         for cmd_template in commands:
             cmd = _safe_template(cmd_template, template_vars)
             try:
-                proc = await asyncio.create_subprocess_shell(
+                # Use a worker thread instead of asyncio subprocess transports.
+                # This avoids event-loop cleanup warnings across Python versions.
+                proc = await asyncio.to_thread(
+                    subprocess.run,
                     cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                output = stdout.decode().strip()
+                output = proc.stdout.strip()
                 if proc.returncode != 0:
-                    err = stderr.decode().strip()
+                    err = proc.stderr.strip()
                     logger.warning("Hook failed (%s): %s", key, err)
                     outputs.append(f"[hook error] {err}")
                 elif output:
                     outputs.append(output)
-            except asyncio.TimeoutError:
+            except subprocess.TimeoutExpired:
                 logger.warning("Hook timed out: %s", cmd)
                 outputs.append("[hook timeout]")
             except Exception as e:

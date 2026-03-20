@@ -1,6 +1,6 @@
 # NeMoCode
 
-Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, makes edits, runs commands — powered by any model on the NIM API or your own GPU via [vLLM](https://docs.vllm.ai/) or [SGLang](https://sgl-project.github.io/).
+Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, makes edits, runs commands — powered by any model on the NIM API or your own GPU via [vLLM](https://docs.vllm.ai/), [SGLang](https://sgl-project.github.io/), or [TensorRT-LLM](https://nvidia.github.io/TensorRT-LLM/).
 
 > **Community project** — not affiliated with or endorsed by NVIDIA.
 
@@ -24,7 +24,7 @@ Run the guided setup wizard:
 nemo setup
 ```
 
-The wizard defaults to **hosted NVIDIA NIM**, prompts for `NVIDIA_API_KEY`, and can also configure a local `vllm` or `sglang` backend for you.
+The wizard defaults to **hosted NVIDIA NIM**, prompts for `NVIDIA_API_KEY`, and can also configure a local `vllm`, `sglang`, or `trt-llm` backend for you.
 
 ### Hosted NVIDIA NIM (default)
 
@@ -37,7 +37,7 @@ nemo code
 
 Hosted Nemotron endpoints use `NVIDIA_API_KEY` by default. The setup wizard can store it in your system keyring.
 
-### Local vLLM or SGLang
+### Local vLLM, SGLang, or TensorRT-LLM
 
 Serve a model locally on any NVIDIA GPU:
 
@@ -52,7 +52,20 @@ python -m sglang.launch_server \
   --model nvidia/nemotron-3-super-120b-a12b \
   --host 0.0.0.0 --port 8000
 nemo code -e local-sglang-super
+
+# TensorRT-LLM
+docker run --rm -it --gpus all --ipc host --network host \
+  -e HF_TOKEN=$HF_TOKEN \
+  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \
+  nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6 \
+  trtllm-serve nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8 \
+  --trust_remote_code --port 8000
+nemo code -e local-trt-llm-nano4b
 ```
+
+TensorRT-LLM launch flags can vary by image release and whether a model needs a prebuilt
+engine. The bundled NeMoCode presets assume the OpenAI-compatible `trtllm-serve` path with
+`nvidia/nemotron-3-super-120b-a12b` and `nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8`.
 
 No GPU? Rent one via [Brev](https://console.brev.dev):
 
@@ -109,6 +122,8 @@ Works with any OpenAI-compatible API. Pre-configured:
 | `nim-rerank` | Nemotron Rerank 1B v2 | NIM API key |
 | `openrouter-super` | Super via OpenRouter | OpenRouter key |
 | `together-super` | Super via Together AI | Together key |
+| `local-trt-llm-super` | Nemotron 3 Super 120B via TensorRT-LLM | GPU + Docker + TensorRT-LLM |
+| `local-trt-llm-nano4b` | Nemotron 3 Nano 4B FP8 via TensorRT-LLM | GPU + Docker + TensorRT-LLM |
 | `local-vllm-*` | Any model on local vLLM | GPU + vLLM |
 | `local-sglang-*` | Any model on local SGLang | GPU + SGLang |
 | `local-nim-*` | Local NIM container | GPU + Docker |
@@ -127,6 +142,7 @@ nemo code -f super-nano "implement caching"
 | `super-nano` | Super plans + reviews, Nano executes |
 | `spark` | All-local on DGX Spark (Super + Nano 9B) |
 | `spark-sglang` | Super via SGLang on Spark (best long context) |
+| `spark-trt-llm` | Super 120B + Nano 4B via TensorRT-LLM on Spark |
 | `vision` | VLM reads screenshots, Super writes code |
 | `local` | Nano on local GPU, no internet needed |
 
@@ -179,6 +195,7 @@ Review the requested changes. Focus on correctness, regressions, and missing tes
 nemo setup          # guided wizard
 nemo setup --list   # show all setup topics
 nemo setup wizard   # force the interactive wizard
+nemo setup trt-llm  # TensorRT-LLM serving guide
 nemo setup vllm     # vLLM serving guide
 nemo setup sglang   # SGLang serving guide
 nemo setup nim      # NIM container guide

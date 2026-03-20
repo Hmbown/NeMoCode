@@ -60,6 +60,7 @@ _LOCAL_TIERS = {
     EndpointTier.LOCAL_NIM,
     EndpointTier.LOCAL_OLLAMA,
     EndpointTier.LOCAL_SGLANG,
+    EndpointTier.LOCAL_TRT_LLM,
     EndpointTier.LOCAL_VLLM,
 }
 
@@ -139,12 +140,30 @@ def _prefer_local_endpoints(config: NeMoCodeConfig) -> bool:
     return False
 
 
+def _preferred_local_tier(config: NeMoCodeConfig) -> EndpointTier | None:
+    """Prefer the currently selected local backend family when multiple are available."""
+    default_endpoint = config.endpoints.get(config.default_endpoint)
+    if default_endpoint and default_endpoint.tier in _LOCAL_TIERS:
+        return default_endpoint.tier
+
+    if config.active_formation:
+        formation = config.formations.get(config.active_formation)
+        if formation:
+            for slot in formation.slots:
+                endpoint = config.endpoints.get(slot.endpoint)
+                if endpoint and endpoint.tier in _LOCAL_TIERS:
+                    return endpoint.tier
+
+    return None
+
+
 def _endpoint_rank(
     name: str,
     endpoint: Endpoint,
     *,
     prefer_local: bool,
-) -> tuple[int, int, int, int, str]:
+    preferred_local_tier: EndpointTier | None,
+) -> tuple[int, int, int, int, int, str]:
     if prefer_local:
         locality_rank = (
             0 if name.startswith("spark-") else 1 if endpoint.tier in _LOCAL_TIERS else 2
@@ -154,15 +173,20 @@ def _endpoint_rank(
             0 if endpoint.tier not in _LOCAL_TIERS else 1 if name.startswith("spark-") else 2
         )
 
+    preferred_family_rank = (
+        0 if preferred_local_tier and endpoint.tier == preferred_local_tier else 1
+    )
+
     transport_rank = {
         EndpointTier.LOCAL_SGLANG: 0,
-        EndpointTier.LOCAL_NIM: 1,
-        EndpointTier.LOCAL_VLLM: 2,
-        EndpointTier.LOCAL_OLLAMA: 3,
-        EndpointTier.DEV_HOSTED: 4,
-        EndpointTier.PROD_HOSTED: 4,
-        EndpointTier.INFERENCE_PARTNER: 5,
-        EndpointTier.OPENROUTER: 6,
+        EndpointTier.LOCAL_TRT_LLM: 1,
+        EndpointTier.LOCAL_NIM: 2,
+        EndpointTier.LOCAL_VLLM: 3,
+        EndpointTier.LOCAL_OLLAMA: 4,
+        EndpointTier.DEV_HOSTED: 5,
+        EndpointTier.PROD_HOSTED: 5,
+        EndpointTier.INFERENCE_PARTNER: 6,
+        EndpointTier.OPENROUTER: 7,
     }.get(endpoint.tier, 99)
 
     nvidia_hosted_rank = (
@@ -172,7 +196,14 @@ def _endpoint_rank(
         else 1
     )
 
-    return (locality_rank, transport_rank, nvidia_hosted_rank, len(endpoint.model_id), name)
+    return (
+        locality_rank,
+        preferred_family_rank,
+        transport_rank,
+        nvidia_hosted_rank,
+        len(endpoint.model_id),
+        name,
+    )
 
 
 def _pick_endpoint(
@@ -201,8 +232,14 @@ def _pick_endpoint(
         ]
         if matches:
             prefer_local = _prefer_local_endpoints(config)
+            preferred_local_tier = _preferred_local_tier(config)
             matches.sort(
-                key=lambda item: _endpoint_rank(item[0], item[1], prefer_local=prefer_local)
+                key=lambda item: _endpoint_rank(
+                    item[0],
+                    item[1],
+                    prefer_local=prefer_local,
+                    preferred_local_tier=preferred_local_tier,
+                )
             )
             return matches[0][0]
 
@@ -238,7 +275,8 @@ def _available_subagents_text(
     lines = ["Available sub-agents:"]
     if parent_read_only:
         lines.append(
-            "All delegated sub-agents inherit read-only mode here: no file writes, shell commands, or commits."
+            "All delegated sub-agents inherit read-only mode here: "
+            "no file writes, shell commands, or commits."
         )
     for name, agent in visible:
         title = _display_name(name, agent)
@@ -266,8 +304,10 @@ def _spawn_description(
 ) -> str:
     lines = [
         "Spawn a background sub-agent for a bounded parallel task.",
-        "Use this only when the user has explicitly asked for delegation, sub-agents, or parallel agent work.",
-        "Continue with non-overlapping local work after spawning. Only call wait_agent when blocked on the child result.",
+        "Use this only when the user has explicitly asked for delegation, "
+        "sub-agents, or parallel agent work.",
+        "Continue with non-overlapping local work after spawning. "
+        "Only call wait_agent when blocked on the child result.",
     ]
     lines.extend(_available_subagents_text(config, parent_read_only=parent_read_only))
     return "\n".join(lines)
@@ -368,7 +408,8 @@ def _spawn_subagent_run(
         explicit_endpoint=agent.endpoint,
     )
     nickname = _pick_nickname(resolved_name, agent)
-    session_id = f"{resolved_name}-{next(_nickname_counters.setdefault('__session__', itertools.count(1))):04d}"
+    session_counter = _nickname_counters.setdefault("__session__", itertools.count(1))
+    session_id = f"{resolved_name}-{next(session_counter):04d}"
 
     tool_categories = agent.tools
     if parent_read_only:
@@ -544,7 +585,10 @@ def create_delegate_tools(
         return json.dumps(payload)
 
     @tool(
-        description="Resume a previously closed sub-agent handle so it can be waited on or inspected again.",
+        description=(
+            "Resume a previously closed sub-agent handle so it can be "
+            "waited on or inspected again."
+        ),
         category="delegate",
     )
     async def resume_agent(

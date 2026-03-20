@@ -97,9 +97,56 @@ def _has_spark_endpoints(config: NeMoCodeConfig) -> bool:
     return any(
         name.startswith("spark-nim-")
         or name.startswith("spark-sglang-")
+        or name.startswith("spark-trt-llm-")
         or name.startswith("spark-vllm-")
         for name in config.endpoints
     )
+
+
+def _preferred_spark_formations(config: NeMoCodeConfig) -> list[str]:
+    order = ["spark", "spark-sglang", "spark-trt-llm", "spark-vllm"]
+    preferred: list[str] = []
+
+    if config.active_formation in order:
+        preferred.append(config.active_formation)
+
+    default_endpoint = config.default_endpoint
+    if default_endpoint.startswith("spark-sglang-"):
+        preferred.append("spark-sglang")
+    elif default_endpoint.startswith("spark-trt-llm-"):
+        preferred.append("spark-trt-llm")
+    elif default_endpoint.startswith("spark-vllm-"):
+        preferred.append("spark-vllm")
+    elif default_endpoint.startswith("spark-nim-"):
+        preferred.append("spark")
+
+    return preferred + [name for name in order if name not in preferred]
+
+
+def _preferred_spark_endpoints(config: NeMoCodeConfig, kind: str) -> list[str]:
+    endpoints_by_kind = {
+        "fast": {
+            "spark": "spark-nim-nano9b",
+            "spark-sglang": "spark-sglang-nano9b",
+            "spark-trt-llm": "spark-trt-llm-nano4b",
+            "spark-vllm": "spark-vllm-nano9b",
+        },
+        "super": {
+            "spark": "spark-nim-super",
+            "spark-sglang": "spark-sglang-super",
+            "spark-trt-llm": "spark-trt-llm-super",
+            "spark-vllm": "spark-vllm-super",
+        },
+    }
+
+    endpoint_names = endpoints_by_kind[kind]
+    preferred: list[str] = []
+    for formation_name in _preferred_spark_formations(config):
+        endpoint_name = endpoint_names[formation_name]
+        if endpoint_name in config.endpoints:
+            preferred.append(endpoint_name)
+
+    return preferred
 
 
 def route_to_formation(user_input: str, config: NeMoCodeConfig) -> str | None:
@@ -123,7 +170,7 @@ def route_to_formation(user_input: str, config: NeMoCodeConfig) -> str | None:
     if complexity == TaskComplexity.COMPLEX:
         # On Spark, prefer local formations.
         if has_spark:
-            for fname in ("spark", "spark-sglang", "spark-vllm"):
+            for fname in _preferred_spark_formations(config):
                 if fname in config.formations:
                     return fname
         if "super-nano" in config.formations:
@@ -143,9 +190,9 @@ def get_auto_endpoint(user_input: str, config: NeMoCodeConfig) -> str | None:
     has_spark = _has_spark_endpoints(config)
 
     if complexity == TaskComplexity.SIMPLE:
-        # On Spark, use local Nano 9B for simple tasks (fastest, free)
+        # On Spark, prefer the local fast endpoint for the active backend family.
         if has_spark:
-            for name in ("spark-nim-nano9b", "spark-sglang-nano9b", "spark-vllm-nano9b"):
+            for name in _preferred_spark_endpoints(config, "fast"):
                 if name in config.endpoints:
                     return name
         # Otherwise, hosted Nano
@@ -155,7 +202,7 @@ def get_auto_endpoint(user_input: str, config: NeMoCodeConfig) -> str | None:
 
     if has_spark:
         # On Spark, all tasks can use local Super.
-        for name in ("spark-nim-super", "spark-sglang-super", "spark-vllm-super"):
+        for name in _preferred_spark_endpoints(config, "super"):
             if name in config.endpoints:
                 return name
 

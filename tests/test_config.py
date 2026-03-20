@@ -61,6 +61,20 @@ class TestParseConfig:
         assert ep.tier == EndpointTier.DEV_HOSTED
         assert Capability.CODE in ep.capabilities
 
+    def test_local_trt_llm_endpoint_parsing(self):
+        raw = {
+            "endpoints": {
+                "trt": {
+                    "name": "TensorRT-LLM",
+                    "tier": "local-trt-llm",
+                    "base_url": "http://localhost:8000/v1",
+                    "model_id": "nvidia/nemotron-3-super-120b-a12b",
+                }
+            }
+        }
+        cfg = _parse_config(raw)
+        assert cfg.endpoints["trt"].tier == EndpointTier.LOCAL_TRT_LLM
+
     def test_manifest_parsing(self):
         raw = {
             "manifests": {

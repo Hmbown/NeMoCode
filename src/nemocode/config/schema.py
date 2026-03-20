@@ -45,6 +45,7 @@ class EndpointTier(str, Enum):
     LOCAL_NIM = "local-nim"
     LOCAL_OLLAMA = "local-ollama"
     LOCAL_SGLANG = "local-sglang"
+    LOCAL_TRT_LLM = "local-trt-llm"
     LOCAL_VLLM = "local-vllm"
     OPENROUTER = "openrouter"
     INFERENCE_PARTNER = "inference-partner"

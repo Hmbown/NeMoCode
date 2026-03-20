@@ -233,3 +233,66 @@ class TestPickEndpointSGLang:
             permissions=ToolPermissions(),
         )
         assert _pick_endpoint(config, ["nano-4b", "super"]) == "local-sglang-nano4b"
+
+
+class TestPickEndpointTrtLlm:
+    def test_trt_llm_spark_endpoints(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-trt-llm-super",
+            endpoints={
+                "spark-trt-llm-super": Endpoint(
+                    name="Spark TensorRT-LLM Super 120B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+                "spark-trt-llm-nano4b": Endpoint(
+                    name="Spark TensorRT-LLM Nano 4B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8001/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8",
+                    capabilities=[Capability.CHAT],
+                ),
+                "nim-super": Endpoint(
+                    name="Hosted Super",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert _pick_endpoint(config, "super") == "spark-trt-llm-super"
+        assert _pick_endpoint(config, ["nano-4b", "super"]) == "spark-trt-llm-nano4b"
+
+    def test_default_local_family_prefers_trt_llm_over_other_local_backends(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-trt-llm-super",
+            endpoints={
+                "spark-sglang-super": Endpoint(
+                    name="Spark SGLang Super",
+                    tier=EndpointTier.LOCAL_SGLANG,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+                "spark-trt-llm-super": Endpoint(
+                    name="Spark TensorRT-LLM Super 120B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8100/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+                "spark-vllm-super": Endpoint(
+                    name="Spark vLLM Super",
+                    tier=EndpointTier.LOCAL_VLLM,
+                    base_url="http://localhost:8200/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert _pick_endpoint(config, "super") == "spark-trt-llm-super"

@@ -71,6 +71,11 @@ def setup_default(
             "Best local path for Nemotron 3 Super long context on Spark",
         )
         table.add_row(
+            "TensorRT-LLM",
+            "nemo setup trt-llm",
+            "Spark-tuned TensorRT serving with OpenAI-compatible APIs",
+        )
+        table.add_row(
             "Brev (Cloud GPU)",
             "nemo setup brev",
             "Rent an NVIDIA GPU (L40S/A100/H100) in minutes",
@@ -234,8 +239,9 @@ def setup_spark() -> None:
     console.print(table)
 
     console.print(
-        "\n[dim]Prefer Docker-free local serving? Run"
-        " [bold]nemo setup sglang[/bold] or [bold]nemo setup vllm[/bold].[/dim]"
+        "\n[dim]Prefer an alternate local backend? Run"
+        " [bold]nemo setup sglang[/bold], [bold]nemo setup trt-llm[/bold],"
+        " or [bold]nemo setup vllm[/bold].[/dim]"
     )
     console.print("\n[dim]Docs: https://docs.nvidia.com/dgx/dgx-spark/[/dim]")
     console.print("[dim]NIM on Spark: https://build.nvidia.com/spark/nim-llm[/dim]")
@@ -529,6 +535,106 @@ def setup_sglang() -> None:
         "[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4[/dim]"
     )
     console.print("[dim]Docs: https://docs.sglang.io/[/dim]")
+
+
+@setup_app.command("trt-llm")
+def setup_trt_llm() -> None:
+    """Set up TensorRT-LLM for local model serving."""
+    console.print("[bold]TensorRT-LLM Setup for NeMoCode[/bold]\n")
+
+    _check_docker()
+
+    console.print(
+        "[bold bright_green]DGX Spark — TensorRT-LLM[/bold bright_green]\n"
+    )
+    console.print(
+        "TensorRT-LLM is a strong Spark fit when you want NVIDIA's native optimized serving\n"
+        "stack with an OpenAI-compatible API. The current Spark playbook uses Docker + HF cache\n"
+        "mounts. NeMoCode now defaults this backend to Nemotron 3 Super 120B + Nano 4B.\n"
+    )
+    console.print(
+        Panel(
+            "# Prereqs\n"
+            "export HF_TOKEN=<your-huggingface-token>\n"
+            "export DOCKER_IMAGE=nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6\n"
+            "mkdir -p $HOME/.cache/huggingface/\n"
+            "\n"
+            "# Terminal 1: Nemotron 3 Super 120B (planner/reviewer, port 8000)\n"
+            "docker run --rm -it --gpus all --ipc host --network host \\\n"
+            "  -e HF_TOKEN=$HF_TOKEN \\\n"
+            "  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \\\n"
+            "  $DOCKER_IMAGE \\\n"
+            "  trtllm-serve nvidia/nemotron-3-super-120b-a12b \\\n"
+            "  --trust_remote_code --port 8000\n"
+            "\n"
+            "# Terminal 2: Nemotron 3 Nano 4B FP8 (fast worker, port 8001)\n"
+            "docker run --rm -it --gpus all --ipc host --network host \\\n"
+            "  -e HF_TOKEN=$HF_TOKEN \\\n"
+            "  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \\\n"
+            "  $DOCKER_IMAGE \\\n"
+            "  trtllm-serve nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8 \\\n"
+            "  --trust_remote_code --port 8001\n"
+            "\n"
+            "# If Super 120B OOMs or stalls during weight load on Spark:\n"
+            "export TRT_LLM_DISABLE_LOAD_WEIGHTS_IN_PARALLEL=1",
+            title="[bold]DGX Spark — Shell Commands[/bold]",
+            border_style="bright_green",
+        )
+    )
+
+    console.print("[bold]Use with NeMoCode:[/bold]")
+    console.print(
+        Panel(
+            "# Use the TensorRT-LLM-backed Spark formation:\n"
+            "nemo code -f spark-trt-llm\n"
+            "\n"
+            "# Or target endpoints directly:\n"
+            "nemo chat -e spark-trt-llm-super\n"
+            "nemo code -e spark-trt-llm-nano4b\n"
+            "\n"
+            "# Verify the servers:\n"
+            "curl -s localhost:8000/v1/models | python3 -m json.tool\n"
+            "curl -s localhost:8001/v1/models | python3 -m json.tool\n"
+            "nemo endpoint test spark-trt-llm-super\n"
+            "nemo endpoint test spark-trt-llm-nano4b",
+            title="[bold]Use with NeMoCode[/bold]",
+            border_style="bright_green",
+        )
+    )
+
+    console.print("\n[bold]Other Workstations[/bold]\n")
+    console.print(
+        Panel(
+            "# Single-model Nemotron 3 Nano 4B FP8 on port 8000\n"
+            "export HF_TOKEN=<your-huggingface-token>\n"
+            "export DOCKER_IMAGE=nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6\n"
+            "mkdir -p $HOME/.cache/huggingface/\n"
+            "\n"
+            "docker run --rm -it --gpus all --ipc host --network host \\\n"
+            "  -e HF_TOKEN=$HF_TOKEN \\\n"
+            "  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \\\n"
+            "  $DOCKER_IMAGE \\\n"
+            "  trtllm-serve nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8 \\\n"
+            "  --trust_remote_code --port 8000\n"
+            "\n"
+            "nemo code -e local-trt-llm-nano4b",
+            title="[bold]Shell Commands[/bold]",
+            border_style="green",
+        )
+    )
+
+    console.print(
+        "\n[dim]TensorRT-LLM serves OpenAI-compatible chat/completions endpoints at"
+        " /v1 via trtllm-serve.[/dim]"
+    )
+    console.print(
+        "[dim]Exact TensorRT-LLM launch flags may vary by container release and whether"
+        " the model needs a prebuilt engine. NVIDIA's official March 16, 2026"
+        " Nemotron 3 Nano 4B model cards show TRT-LLM examples for both BF16 and FP8;"
+        " these repo examples now track the FP8 path for the fast Nano endpoint.[/dim]"
+    )
+    console.print("[dim]Spark playbook: https://build.nvidia.com/spark/trt-llm/instructions[/dim]")
+    console.print("[dim]CLI docs: https://nvidia.github.io/TensorRT-LLM/commands/trtllm-serve.html[/dim]")
 
 
 @setup_app.command("brev")

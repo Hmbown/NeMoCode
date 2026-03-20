@@ -157,6 +157,22 @@ class TestHasSparkEndpoints:
         )
         assert _has_spark_endpoints(config) is True
 
+    def test_trt_llm_spark_config(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-trt-llm-super",
+            endpoints={
+                "spark-trt-llm-super": Endpoint(
+                    name="Spark TensorRT-LLM Super 120B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert _has_spark_endpoints(config) is True
+
 
 class TestRouteToFormation:
     def test_complex_prefers_spark(self, spark_config):
@@ -245,3 +261,110 @@ class TestGetAutoEndpoint:
             route_to_formation("refactor the authentication module across all services", config)
             == "spark-sglang"
         )
+
+    def test_prefers_trt_llm_when_only_trt_llm_is_available(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-trt-llm-super",
+            endpoints={
+                "spark-trt-llm-super": Endpoint(
+                    name="Spark TensorRT-LLM Super 120B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+                "spark-trt-llm-nano4b": Endpoint(
+                    name="Spark TensorRT-LLM Nano 4B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8001/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+            },
+            formations={
+                "spark-trt-llm": Formation(
+                    name="DGX Spark (TensorRT-LLM)",
+                    description="TensorRT-LLM local",
+                    slots=[
+                        FormationSlot(
+                            endpoint="spark-trt-llm-super",
+                            role=FormationRole.EXECUTOR,
+                        ),
+                    ],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert get_auto_endpoint("what is this?", config) == "spark-trt-llm-nano4b"
+        assert (
+            get_auto_endpoint(
+                "refactor the authentication module across all services",
+                config,
+            )
+            == "spark-trt-llm-super"
+        )
+        assert (
+            route_to_formation("refactor the authentication module across all services", config)
+            == "spark-trt-llm"
+        )
+
+    def test_prefers_default_spark_family_when_multiple_backends_exist(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-trt-llm-super",
+            endpoints={
+                "spark-nim-super": Endpoint(
+                    name="Spark NIM Super",
+                    tier=EndpointTier.LOCAL_NIM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+                "spark-nim-nano9b": Endpoint(
+                    name="Spark NIM Nano 9B",
+                    tier=EndpointTier.LOCAL_NIM,
+                    base_url="http://localhost:8002/v1",
+                    model_id="nvidia/nemotron-nano-9b-v2",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+                "spark-trt-llm-super": Endpoint(
+                    name="Spark TensorRT-LLM Super 120B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8100/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+                "spark-trt-llm-nano4b": Endpoint(
+                    name="Spark TensorRT-LLM Nano 4B",
+                    tier=EndpointTier.LOCAL_TRT_LLM,
+                    base_url="http://localhost:8101/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+            },
+            formations={
+                "spark": Formation(
+                    name="DGX Spark (NIM)",
+                    description="NIM local",
+                    slots=[
+                        FormationSlot(
+                            endpoint="spark-nim-super",
+                            role=FormationRole.EXECUTOR,
+                        ),
+                    ],
+                ),
+                "spark-trt-llm": Formation(
+                    name="DGX Spark (TensorRT-LLM)",
+                    description="TensorRT-LLM local",
+                    slots=[
+                        FormationSlot(
+                            endpoint="spark-trt-llm-super",
+                            role=FormationRole.EXECUTOR,
+                        ),
+                    ],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert get_auto_endpoint("what is this?", config) == "spark-trt-llm-nano4b"
+        assert get_auto_endpoint("implement auth and tests", config) == "spark-trt-llm-super"
+        assert route_to_formation("implement auth and tests", config) == "spark-trt-llm"

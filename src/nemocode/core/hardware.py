@@ -122,16 +122,15 @@ class HardwareProfile:
             models.append("nvidia/nemotron-3-ultra")
         if available >= 80:
             models.append("nvidia/nemotron-3-super-120b-a12b")
-        if available >= 48:
-            models.append("nvidia/llama-nemotron-reasoning-super-49b")
         if available >= 24:
             models.append("nvidia/nemotron-3-nano-30b-a3b")
         if available >= 16:
             models.append("nvidia/nemotron-nano-12b-v2-vl")
         if available >= 10:
             models.append("nvidia/nemotron-nano-9b-v2")
-            models.append("nvidia/llama-nemotron-reasoning-8b")
             models.append("nvidia/llama-3.1-nemotron-nano-vl-8b-v1")
+        if available >= 2:
+            models.append("nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8")
         if available >= 4:
             models.append("nvidia/llama-nemotron-embed-1b-v2")
             models.append("nvidia/llama-nemotron-rerank-1b-v2")

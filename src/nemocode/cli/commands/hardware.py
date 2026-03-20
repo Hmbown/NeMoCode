@@ -109,6 +109,7 @@ def hardware_recommend() -> None:
         spark_formations = [
             "spark",
             "spark-sglang",
+            "spark-trt-llm",
             "spark-vllm",
             "spark-swarm",
             "spark-vision",

@@ -40,7 +40,15 @@ _BACKEND_OPTIONS = [
     ("nim", "Hosted NVIDIA NIM (recommended)"),
     ("vllm", "Local vLLM server"),
     ("sglang", "Local SGLang server"),
+    ("trt-llm", "Local TensorRT-LLM server"),
 ]
+
+_BACKEND_LABELS = {
+    "nim": "NVIDIA NIM",
+    "vllm": "vLLM",
+    "sglang": "SGLang",
+    "trt-llm": "TensorRT-LLM",
+}
 
 _HOSTED_PRESETS = [
     PresetChoice("nim-super", "Nemotron 3 Super"),
@@ -106,6 +114,33 @@ _LOCAL_PRESETS: dict[str, list[PresetChoice]] = {
         ),
         PresetChoice("__custom__", "Custom OpenAI-compatible SGLang model"),
     ],
+    "trt-llm": [
+        PresetChoice(
+            "local-trt-llm-super",
+            "Nemotron 3 Super 120B",
+            startup_command=(
+                "docker run --rm -it --gpus all --ipc host --network host \\\n"
+                "  -e HF_TOKEN=$HF_TOKEN \\\n"
+                "  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \\\n"
+                "  nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6 \\\n"
+                "  trtllm-serve nvidia/nemotron-3-super-120b-a12b \\\n"
+                "  --trust_remote_code --port 8000"
+            ),
+        ),
+        PresetChoice(
+            "local-trt-llm-nano4b",
+            "Nemotron 3 Nano 4B",
+            startup_command=(
+                "docker run --rm -it --gpus all --ipc host --network host \\\n"
+                "  -e HF_TOKEN=$HF_TOKEN \\\n"
+                "  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \\\n"
+                "  nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6 \\\n"
+                "  trtllm-serve nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8 \\\n"
+                "  --trust_remote_code --port 8000"
+            ),
+        ),
+        PresetChoice("__custom__", "Custom OpenAI-compatible TensorRT-LLM model"),
+    ],
 }
 
 
@@ -131,7 +166,7 @@ def run_setup_wizard() -> dict[str, str]:
         return {"backend": backend, "endpoint": preset.endpoint_name}
 
     preset = _choose_preset(
-        f"Choose your default {backend} model",
+        f"Choose your default {_BACKEND_LABELS.get(backend, backend)} model",
         _LOCAL_PRESETS[backend],
         default=1,
     )
@@ -207,13 +242,17 @@ def _prompt_custom_local_preset(backend: str) -> PresetChoice:
         "Endpoint name",
         default=f"local-{backend}-{slug}"[:48],
     )
-    tier = "local-vllm" if backend == "vllm" else "local-sglang"
+    tier = {
+        "vllm": "local-vllm",
+        "sglang": "local-sglang",
+        "trt-llm": "local-trt-llm",
+    }[backend]
     startup = (
         f"# Start your server separately, then verify it with:\nnemo endpoint test {endpoint_name}"
     )
     return PresetChoice(
         endpoint_name=endpoint_name,
-        label=f"Custom {backend} model",
+        label=f"Custom {_BACKEND_LABELS.get(backend, backend)} model",
         model_id=model_id,
         tier=tier,
         base_url=base_url,
@@ -270,16 +309,17 @@ def _print_hosted_summary(preset: PresetChoice) -> None:
 
 
 def _print_local_summary(backend: str, preset: PresetChoice) -> None:
+    backend_label = _BACKEND_LABELS.get(backend, backend)
     console.print(f"[green]Default endpoint set to {preset.endpoint_name}.[/green]")
     console.print(
-        f"[dim]NeMoCode will now prefer your local {backend} endpoint unless a project"
+        f"[dim]NeMoCode will now prefer your local {backend_label} endpoint unless a project"
         " overrides it.[/dim]"
     )
     if preset.startup_command:
         console.print(
             Panel(
                 preset.startup_command,
-                title=f"[bold]{backend} launch command[/bold]",
+                title=f"[bold]{backend_label} launch command[/bold]",
                 border_style="green",
             )
         )

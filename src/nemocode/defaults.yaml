@@ -309,6 +309,29 @@ endpoints:
     max_tokens: 8192
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # DGX SPARK TENSORRT-LLM DEPLOYMENT
+  # Native NVIDIA TensorRT serving with OpenAI-compatible APIs.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Super via TensorRT-LLM on Spark (port 8000) ────────────────
+  spark-trt-llm-super:
+    name: "Local TensorRT-LLM Super 120B (DGX Spark)"
+    tier: local-trt-llm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Nano 4B via TensorRT-LLM on Spark (port 8001) ──────────────
+  spark-trt-llm-nano4b:
+    name: "Local TensorRT-LLM Nano 4B (DGX Spark)"
+    tier: local-trt-llm
+    base_url: "http://localhost:8001/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # GENERIC LOCAL DEPLOYMENT (non-Spark workstations)
   # ═══════════════════════════════════════════════════════════════════════════
 
@@ -373,6 +396,22 @@ endpoints:
     tier: local-sglang
     base_url: "http://localhost:8000/v1"
     model_id: "nvidia/llama-3.1-nemotron-nano-4b-v1.1"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  local-trt-llm-super:
+    name: "Local TensorRT-LLM (Super 120B)"
+    tier: local-trt-llm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  local-trt-llm-nano4b:
+    name: "Local TensorRT-LLM (Nano 4B)"
+    tier: local-trt-llm
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8"
     capabilities: [chat, code]
     max_tokens: 8192
 
@@ -471,9 +510,31 @@ manifests:
     min_gpu_memory_gb: 10
     min_gpus: 1
 
+  nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8:
+    display_name: "Nemotron 3 Nano 4B FP8"
+    arch: nemotron-3
+    tier_in_family: nano-4b
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 4
+      active_params_b: 4
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+    supports_tools: true
+    recommended_gpu: "DGX Spark / GeForce RTX / Jetson Thor"
+    min_gpu_memory_gb: 4
+    min_gpus: 1
+
   nvidia/llama-3.1-nemotron-nano-4b-v1.1:
     display_name: "Nemotron Nano 4B v1.1"
-    arch: llama-nemotron
+    arch: other
     tier_in_family: nano-4b
     capabilities: [chat, code]
     context_window: 131072
@@ -552,29 +613,6 @@ manifests:
   # ═══════════════════════════════════════════════════════════════════════════
   # REASONING / SPECIALIZED
   # ═══════════════════════════════════════════════════════════════════════════
-
-  nvidia/llama-3.1-nemotron-nano-4b-v1.1:
-    display_name: "Nemotron Nano 4B v1.1"
-    arch: other
-    tier_in_family: nano-4b
-    capabilities: [chat, code]
-    context_window: 131072
-    max_output_tokens: 8192
-    moe:
-      total_params_b: 4
-      active_params_b: 4
-      precision: "fp8"
-    reasoning:
-      supports_thinking: true
-      thinking_param: "enable_thinking"
-      supports_budget_control: false
-    structured:
-      json_schema: true
-    supports_tools: true
-    supports_lora: true
-    recommended_gpu: "Any (2GB+ VRAM)"
-    min_gpu_memory_gb: 2
-    min_gpus: 1
 
   nvidia/nemotron-content-safety-reasoning-4b:
     display_name: "Nemotron Content Safety 4B"
@@ -841,6 +879,23 @@ formations:
         endpoint: spark-sglang-super
       - role: reviewer
         endpoint: spark-sglang-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Spark TensorRT-LLM: native TensorRT serving with Super 120B + Nano 4B.
+  spark-trt-llm:
+    name: "DGX Spark (TensorRT-LLM)"
+    description: "Super 120B + Nano 4B via TensorRT-LLM on Spark."
+    slots:
+      - role: planner
+        endpoint: spark-trt-llm-super
+      - role: fast
+        endpoint: spark-trt-llm-nano4b
+      - role: executor
+        endpoint: spark-trt-llm-super
+      - role: reviewer
+        endpoint: spark-trt-llm-super
         reasoning_mode: "low_effort"
     tools: [fs, git, bash, rg]
     verification_rounds: 1

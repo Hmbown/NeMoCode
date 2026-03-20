@@ -98,10 +98,13 @@ class TestSparkRecommendations:
         assert can is False
         assert "unified memory" in reason
 
-    def test_spark_local_models_include_nano9b(self, spark_profile):
+    def test_spark_local_models_include_nano4b(self, spark_profile):
         models = spark_profile.recommend_local_models()
         assert "nvidia/nemotron-3-super-120b-a12b" in models
+        assert "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8" in models
         assert "nvidia/nemotron-nano-9b-v2" in models
+        assert "nvidia/llama-nemotron-reasoning-super-49b" not in models
+        assert "nvidia/llama-nemotron-reasoning-8b" not in models
         assert "nvidia/llama-nemotron-embed-1b-v2" in models
 
     def test_rtx4090_local_models(self, rtx4090_profile):

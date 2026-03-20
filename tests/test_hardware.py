@@ -117,6 +117,8 @@ class TestRecommendations:
         models = workstation_profile.recommend_local_models()
         assert "nvidia/nemotron-3-super-120b-a12b" in models
         assert "nvidia/nemotron-3-nano-30b-a3b" in models
+        assert "nvidia/llama-nemotron-reasoning-super-49b" not in models
+        assert "nvidia/llama-nemotron-reasoning-8b" not in models
 
     def test_8xh100_recommends_ultra(self):
         profile = HardwareProfile(

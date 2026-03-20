@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import patch
 
 import yaml
@@ -14,6 +15,7 @@ from nemocode.cli.main import app
 from nemocode.core.subagents import complete_run, reset_runs, start_run
 
 runner = CliRunner()
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class TestCLIHelp:
@@ -29,7 +31,7 @@ class TestCLIHelp:
     def test_code_help(self):
         result = runner.invoke(app, ["code", "--help"])
         assert result.exit_code == 0
-        assert "--agent" in result.stdout
+        assert "--agent" in _ANSI_ESCAPE_RE.sub("", result.stdout)
 
     def test_agent_help(self):
         result = runner.invoke(app, ["agent", "--help"])

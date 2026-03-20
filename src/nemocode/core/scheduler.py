@@ -46,6 +46,10 @@ class _StreamFailure:
     error: BaseException
 
 
+class _ProviderRequestError(RuntimeError):
+    """Backend request failed in a way that should stop the current formation."""
+
+
 # ---------------------------------------------------------------------------
 # Stagnation detection
 # ---------------------------------------------------------------------------
@@ -234,8 +238,10 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "- Read a file before editing it.\n"
         "- Keep text responses SHORT. The code speaks for itself.\n"
         "- Do not ask for permission — just do the work.\n"
-        "- Only use sub-agent tools when the user has explicitly asked for delegation, sub-agents, or parallel agent work.\n"
-        "- Spawn sidecar tasks that can run in parallel with your immediate next local step. Do not block on wait_agent unless necessary.\n"
+        "- Only use sub-agent tools when the user has explicitly asked for "
+        "delegation, sub-agents, or parallel agent work.\n"
+        "- Spawn sidecar tasks that can run in parallel with your immediate next "
+        "local step. Do not block on wait_agent unless necessary.\n"
         "- If something is unclear, use ask_user to get clarification.\n"
         "- Batch operations efficiently — use multi_edit for multiple changes in one file.\n"
     ),
@@ -352,7 +358,17 @@ class Scheduler:
             yield AgentEvent(
                 kind="phase", phase="planning", role=FormationRole.PLANNER, text="Planning..."
             )
-            plan = await self._run_text_only(slot, user_input)
+            try:
+                plan = await self._run_text_only(slot, user_input)
+            except _ProviderRequestError as exc:
+                yield AgentEvent(
+                    kind="error",
+                    text=str(exc),
+                    is_error=True,
+                    role=FormationRole.PLANNER,
+                    phase="planning",
+                )
+                return
             yield AgentEvent(kind="text", text=plan, role=FormationRole.PLANNER, phase="planning")
 
         # Phase 2: Execute
@@ -368,8 +384,13 @@ class Scheduler:
             if plan:
                 inp = f"## User Request\n{user_input}\n\n## Plan\n{plan}\n\nFollow the plan."
             session.add_user(inp)
+            exec_failed = False
             async for ev in self._agent_loop(provider, session, exec_role):
+                if ev.kind == "error":
+                    exec_failed = True
                 yield ev
+            if exec_failed:
+                return
 
         # Phase 3: Review
         if FormationRole.REVIEWER in by_role:
@@ -398,12 +419,17 @@ class Scheduler:
                 rev_session.add_user(review_input)
 
                 review_text = ""
+                review_failed = False
                 async for ev in self._agent_loop(
                     provider, rev_session, FormationRole.REVIEWER, use_tools=False
                 ):
                     if ev.kind == "text":
                         review_text += ev.text
+                    if ev.kind == "error":
+                        review_failed = True
                     yield ev
+                if review_failed:
+                    return
 
                 if "APPROVE" in review_text.upper():
                     yield AgentEvent(
@@ -423,8 +449,13 @@ class Scheduler:
                     session = self._sessions[exec_role]
                     session.add_user(f"## Review Feedback\n{review_text}\n\nAddress these issues.")
                     exec_provider = self._reg.get_chat_provider(by_role[exec_role].endpoint)
+                    exec_failed = False
                     async for ev in self._agent_loop(exec_provider, session, exec_role):
+                        if ev.kind == "error":
+                            exec_failed = True
                         yield ev
+                    if exec_failed:
+                        return
 
     # ------------------------------------------------------------------
     # Agent loop — ReAct tool cycle
@@ -500,9 +531,17 @@ class Scheduler:
                     if item is _STREAM_DONE:
                         break
                     if isinstance(item, _StreamFailure):
-                        raise item.error
+                        err_text = str(item.error)
+                        self._stagnation.record_error(err_text)
+                        yield AgentEvent(kind="error", text=err_text, is_error=True, role=role)
+                        return
 
                     chunk = item
+                    if chunk.finish_reason == "error":
+                        err_text = chunk.text or "Backend request failed."
+                        self._stagnation.record_error(err_text)
+                        yield AgentEvent(kind="error", text=err_text, is_error=True, role=role)
+                        return
                     if chunk.text:
                         visible_progress = True
                         text_buf += chunk.text
@@ -714,6 +753,8 @@ class Scheduler:
                 budget_param = manifest.reasoning.thinking_budget_param or "reasoning_budget"
                 extra = {"chat_template_kwargs": {budget_param: 1024}}
         r = await provider.complete(msgs, extra_body=extra or None)
+        if r.finish_reason == "error":
+            raise _ProviderRequestError(r.content)
         return r.content
 
     def _get_session(self, role: FormationRole, slot: FormationSlot) -> Session:

@@ -549,6 +549,8 @@ class EventRenderer:
 def _error_hint(text: str) -> str:
     """Suggest recovery actions based on error content."""
     lower = text.lower()
+    if "check it with:" in lower or "setup/help:" in lower:
+        return ""
     if "rate limit" in lower or "429" in lower:
         return "Rate limited. Wait a few seconds, or switch endpoints with /endpoint."
     if "auth" in lower or "401" in lower or "api key" in lower:

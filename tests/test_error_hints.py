@@ -121,6 +121,11 @@ class TestErrorHintNoMatch:
             "",
             "TypeError: cannot add int and str",
             "ValueError: invalid literal",
+            (
+                "SGLang endpoint spark-sglang-super at http://localhost:8000/v1 is not reachable.\n"
+                "Check it with: nemo endpoint test spark-sglang-super\n"
+                "Setup/help: nemo setup sglang"
+            ),
         ],
         ids=[
             "generic_unexpected",
@@ -129,6 +134,7 @@ class TestErrorHintNoMatch:
             "empty_string",
             "type_error",
             "value_error",
+            "actionable_endpoint_error",
         ],
     )
     def test_no_hint_for_unrecognized_error(self, error_text: str):

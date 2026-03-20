@@ -286,3 +286,61 @@ class TestFormationPhaseEvents:
         assert all(e.role == FormationRole.PLANNER for e in planning)
         assert all(e.role == FormationRole.EXECUTOR for e in executing)
         assert all(e.role == FormationRole.REVIEWER for e in reviewing)
+
+
+class TestFormationBackendFailures:
+    @pytest.mark.asyncio
+    async def test_planner_backend_error_aborts_later_phases(self, formation_config):
+        registry = Registry(formation_config)
+        tools = load_tools(["fs"])
+
+        provider = AsyncMock()
+        provider.complete = AsyncMock(
+            return_value=CompletionResult(
+                content="SGLang endpoint spark-sglang-super is not reachable.",
+                finish_reason="error",
+            )
+        )
+        provider.stream = AsyncMock()
+
+        with patch.object(registry, "get_chat_provider", return_value=provider):
+            scheduler = Scheduler(registry, tools)
+            events = []
+            async for ev in scheduler.run_formation("full", "Fix it"):
+                events.append(ev)
+
+        phases = [e.phase for e in events if e.kind == "phase"]
+        error_events = [e for e in events if e.kind == "error"]
+        assert phases == ["planning"]
+        assert error_events
+        assert "not reachable" in error_events[0].text
+        provider.stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_executor_backend_error_skips_review(self, formation_config):
+        registry = Registry(formation_config)
+        tools = load_tools(["fs"])
+
+        provider = AsyncMock()
+        provider.complete = AsyncMock(
+            return_value=CompletionResult(content="Plan here", finish_reason="stop")
+        )
+
+        async def failing_stream(messages, tools=None, extra_body=None):
+            yield StreamChunk(
+                text="Local SGLang endpoint test-ep is not reachable.",
+                finish_reason="error",
+            )
+
+        provider.stream = failing_stream
+
+        with patch.object(registry, "get_chat_provider", return_value=provider):
+            scheduler = Scheduler(registry, tools)
+            events = []
+            async for ev in scheduler.run_formation("full", "Fix it"):
+                events.append(ev)
+
+        phases = [e.phase for e in events if e.kind == "phase"]
+        error_events = [e for e in events if e.kind == "error"]
+        assert phases == ["planning", "executing"]
+        assert error_events

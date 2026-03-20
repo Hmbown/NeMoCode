@@ -544,9 +544,7 @@ def setup_trt_llm() -> None:
 
     _check_docker()
 
-    console.print(
-        "[bold bright_green]DGX Spark — TensorRT-LLM[/bold bright_green]\n"
-    )
+    console.print("[bold bright_green]DGX Spark — TensorRT-LLM[/bold bright_green]\n")
     console.print(
         "TensorRT-LLM is a strong Spark fit when you want NVIDIA's native optimized serving\n"
         "stack with an OpenAI-compatible API. The current Spark playbook uses Docker + HF cache\n"
@@ -634,7 +632,9 @@ def setup_trt_llm() -> None:
         " these repo examples now track the FP8 path for the fast Nano endpoint.[/dim]"
     )
     console.print("[dim]Spark playbook: https://build.nvidia.com/spark/trt-llm/instructions[/dim]")
-    console.print("[dim]CLI docs: https://nvidia.github.io/TensorRT-LLM/commands/trtllm-serve.html[/dim]")
+    console.print(
+        "[dim]CLI docs: https://nvidia.github.io/TensorRT-LLM/commands/trtllm-serve.html[/dim]"
+    )
 
 
 @setup_app.command("brev")

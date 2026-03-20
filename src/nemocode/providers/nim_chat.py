@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from nemocode.config.schema import Manifest
+from nemocode.config.schema import EndpointTier, Manifest
 from nemocode.core.streaming import (
     CompletionResult,
     Message,
@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_LOCAL_BACKEND_LABELS = {
+    EndpointTier.LOCAL_NIM: "Local NIM",
+    EndpointTier.LOCAL_OLLAMA: "Ollama",
+    EndpointTier.LOCAL_SGLANG: "SGLang",
+    EndpointTier.LOCAL_TRT_LLM: "TensorRT-LLM",
+    EndpointTier.LOCAL_VLLM: "vLLM",
+}
+_LOCAL_SETUP_COMMANDS = {
+    EndpointTier.LOCAL_NIM: "nemo setup nim",
+    EndpointTier.LOCAL_SGLANG: "nemo setup sglang",
+    EndpointTier.LOCAL_TRT_LLM: "nemo setup trt-llm",
+    EndpointTier.LOCAL_VLLM: "nemo setup vllm",
+}
 
 
 async def _retry_delay(
@@ -91,10 +104,79 @@ class NIMChatProvider(NIMProviderBase):
     """OpenAI-compatible chat completions provider for NVIDIA NIM endpoints."""
 
     def __init__(
-        self, endpoint, manifest: Manifest | None = None, api_key: str | None = None
+        self,
+        endpoint,
+        manifest: Manifest | None = None,
+        api_key: str | None = None,
+        endpoint_name: str | None = None,
     ) -> None:
         super().__init__(endpoint, api_key)
         self.manifest = manifest
+        self.endpoint_name = endpoint_name
+
+    def _endpoint_label(self) -> str:
+        return self.endpoint_name or self.endpoint.name or self.endpoint.model_id
+
+    def _is_local_backend(self) -> bool:
+        return self.endpoint.tier in _LOCAL_BACKEND_LABELS
+
+    def _format_retry_message(
+        self,
+        detail: str,
+        *,
+        delay: float,
+        status_code: int | None = None,
+    ) -> str:
+        label = self._endpoint_label()
+        if self._is_local_backend():
+            backend = _LOCAL_BACKEND_LABELS[self.endpoint.tier]
+            readiness_note = (
+                "The backend may still be loading the model."
+                if status_code in {502, 503, 504}
+                else "The server may not be running yet, or the model may still be loading."
+            )
+            return (
+                f"\n[{backend} endpoint {label} at {self._base_url} is not reachable yet. "
+                f"{readiness_note} Retrying in {delay:.0f}s...]\n"
+            )
+        return (
+            f"\n[Connection error on {label} ({self._base_url}): {detail}. "
+            f"Retrying in {delay:.0f}s...]\n"
+        )
+
+    def _format_final_connection_error(
+        self,
+        detail: str,
+        *,
+        status_code: int | None = None,
+    ) -> str:
+        label = self._endpoint_label()
+        if self._is_local_backend():
+            backend = _LOCAL_BACKEND_LABELS[self.endpoint.tier]
+            setup_cmd = _LOCAL_SETUP_COMMANDS.get(self.endpoint.tier)
+            lines = [
+                f"{backend} endpoint {label} at {self._base_url} is not reachable.",
+                (
+                    "The backend is up but not ready yet, or the model is still loading."
+                    if status_code in {502, 503, 504}
+                    else (
+                        "The server may not be running yet, the model may still be loading, "
+                        "or the port may be wrong."
+                    )
+                ),
+            ]
+            if self.endpoint_name:
+                lines.append(f"Check it with: nemo endpoint test {self.endpoint_name}")
+            if setup_cmd:
+                lines.append(f"Setup/help: {setup_cmd}")
+            if detail:
+                lines.append(f"Last error: {detail}")
+            return "\n".join(lines)
+        if status_code is not None:
+            return f"API error on {label} ({self._base_url}): HTTP {status_code}. {detail}"
+        return (
+            f"Connection error after {_MAX_RETRIES} retries on {label} ({self._base_url}): {detail}"
+        )
 
     def _build_body(
         self,
@@ -169,20 +251,26 @@ class NIMChatProvider(NIMProviderBase):
                             ):
                                 retry_after = resp.headers.get("retry-after")
                                 delay = await _retry_delay(attempt, resp.status_code, retry_after)
-                                status_label = {
-                                    429: "Rate limited",
-                                    500: "Server error",
-                                    502: "Bad gateway",
-                                    503: "Service unavailable",
-                                    504: "Gateway timeout",
-                                }.get(resp.status_code, f"HTTP {resp.status_code}")
-                                yield StreamChunk(
-                                    text=f"\n[{status_label}. Retrying in {delay:.0f}s...]\n"
-                                )
+                                if resp.status_code == 429:
+                                    yield StreamChunk(
+                                        text=f"\n[Rate limited. Retrying in {delay:.0f}s...]\n"
+                                    )
+                                else:
+                                    yield StreamChunk(
+                                        text=self._format_retry_message(
+                                            error_text,
+                                            delay=delay,
+                                            status_code=resp.status_code,
+                                        )
+                                    )
                                 continue
 
                             yield StreamChunk(
-                                text=f"\n[API Error {resp.status_code}]: {error_text}"
+                                text=self._format_final_connection_error(
+                                    error_text,
+                                    status_code=resp.status_code,
+                                ),
+                                finish_reason="error",
                             )
                             return
 
@@ -194,7 +282,10 @@ class NIMChatProvider(NIMProviderBase):
                             # Server dropped mid-stream (e.g. OOM, crash).
                             # Cannot retry safely — partial data already yielded.
                             logger.warning("Server disconnected mid-stream: %s", exc)
-                            yield StreamChunk(text=f"\n[Server disconnected mid-stream: {exc}]\n")
+                            yield StreamChunk(
+                                text=f"\n[Server disconnected mid-stream: {exc}]\n",
+                                finish_reason="error",
+                            )
                         return  # Completed (possibly with mid-stream error)
 
             except (
@@ -208,19 +299,20 @@ class NIMChatProvider(NIMProviderBase):
                 last_error = str(exc)
                 if attempt < _MAX_RETRIES:
                     delay = await _retry_delay(attempt)
-                    yield StreamChunk(
-                        text=f"\n[Connection error: {last_error}. Retrying in {delay:.0f}s...]\n"
-                    )
+                    yield StreamChunk(text=self._format_retry_message(last_error, delay=delay))
                     continue
             except httpx.ReadTimeout:
                 last_error = "Request timed out"
                 if attempt < _MAX_RETRIES:
                     delay = await _retry_delay(attempt)
-                    yield StreamChunk(text=f"\n[Request timed out. Retrying in {delay:.0f}s...]\n")
+                    yield StreamChunk(text=self._format_retry_message(last_error, delay=delay))
                     continue
 
         # All retries exhausted
-        yield StreamChunk(text=f"\n[Error after {_MAX_RETRIES} retries: {last_error}]")
+        yield StreamChunk(
+            text=self._format_final_connection_error(last_error),
+            finish_reason="error",
+        )
 
     async def _process_stream(self, resp: httpx.Response) -> AsyncIterator[StreamChunk]:
         """Process SSE lines from a successful streaming response."""
@@ -318,7 +410,10 @@ class NIMChatProvider(NIMProviderBase):
                             await _retry_delay(attempt, resp.status_code, retry_after)
                             continue
                         return CompletionResult(
-                            content=f"[API Error {resp.status_code}]: {resp.text}",
+                            content=self._format_final_connection_error(
+                                resp.text,
+                                status_code=resp.status_code,
+                            ),
                             finish_reason="error",
                         )
                     data = resp.json()
@@ -337,12 +432,12 @@ class NIMChatProvider(NIMProviderBase):
                     await _retry_delay(attempt)
                     continue
                 return CompletionResult(
-                    content=f"[Connection error after {_MAX_RETRIES} retries: {last_error}]",
+                    content=self._format_final_connection_error(last_error),
                     finish_reason="error",
                 )
         else:
             return CompletionResult(
-                content=f"[Error after {_MAX_RETRIES} retries: {last_error}]",
+                content=self._format_final_connection_error(last_error),
                 finish_reason="error",
             )
 

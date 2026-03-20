@@ -458,6 +458,14 @@ class TestErrorHints:
     def test_network_hint(self):
         assert "connection" in _error_hint("Connection refused").lower()
 
+    def test_actionable_endpoint_error_skips_generic_hint(self):
+        text = (
+            "SGLang endpoint spark-sglang-super at http://localhost:8000/v1 is not reachable.\n"
+            "Check it with: nemo endpoint test spark-sglang-super\n"
+            "Setup/help: nemo setup sglang"
+        )
+        assert _error_hint(text) == ""
+
     def test_no_hint_for_generic(self):
         assert _error_hint("Something unexpected happened") == ""
 
@@ -501,6 +509,25 @@ class TestErrorRendering:
         renderer.render(AgentEvent(kind="error", text="something broke"))
         output = buf.getvalue()
         assert "something broke" in output
+
+    def test_error_with_actionable_endpoint_message_does_not_add_generic_hint(self):
+        con, buf = _capture_console()
+        renderer = EventRenderer(con)
+        renderer.render(
+            AgentEvent(
+                kind="error",
+                text=(
+                    "SGLang endpoint spark-sglang-super at "
+                    "http://localhost:8000/v1 is not reachable.\n"
+                    "Check it with: nemo endpoint test spark-sglang-super\n"
+                    "Setup/help: nemo setup sglang"
+                ),
+            )
+        )
+        output = buf.getvalue()
+        assert "Check it with: nemo endpoint test spark-sglang-super" in output
+        assert "Setup/help: nemo setup sglang" in output
+        assert "Network error. Check your connection and endpoint URL." not in output
 
 
 class TestToolBufferSummary:

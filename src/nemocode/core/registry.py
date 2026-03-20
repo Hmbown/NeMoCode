@@ -62,7 +62,12 @@ class Registry:
         ep = self.get_endpoint(endpoint_name)
         manifest = self.get_manifest(ep.model_id)
         api_key = get_api_key(ep)
-        provider = NIMChatProvider(endpoint=ep, manifest=manifest, api_key=api_key)
+        provider = NIMChatProvider(
+            endpoint=ep,
+            manifest=manifest,
+            api_key=api_key,
+            endpoint_name=endpoint_name,
+        )
         self._chat_cache[endpoint_name] = provider
         return provider
 

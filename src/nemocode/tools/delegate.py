@@ -586,8 +586,7 @@ def create_delegate_tools(
 
     @tool(
         description=(
-            "Resume a previously closed sub-agent handle so it can be "
-            "waited on or inspected again."
+            "Resume a previously closed sub-agent handle so it can be waited on or inspected again."
         ),
         category="delegate",
     )

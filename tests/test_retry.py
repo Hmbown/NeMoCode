@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from nemocode.config.schema import Capability, Endpoint, EndpointTier
@@ -137,3 +138,32 @@ class TestCompleteRetry:
         assert result.thinking == "short trace"
         assert result.tool_calls == []
         assert result.finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_complete_local_backend_connection_error_is_actionable(self, messages):
+        ep = Endpoint(
+            name="Spark SGLang Super",
+            tier=EndpointTier.LOCAL_SGLANG,
+            base_url="http://localhost:8000/v1",
+            model_id="nvidia/nemotron-3-super-120b-a12b",
+            capabilities=[Capability.CHAT],
+        )
+        provider = NIMChatProvider(endpoint=ep, endpoint_name="spark-sglang-super")
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(
+            side_effect=httpx.ConnectError("All connection attempts failed")
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("nemocode.providers.nim_chat.httpx.AsyncClient", return_value=mock_client),
+            patch("nemocode.providers.nim_chat._retry_delay", new=AsyncMock(return_value=0.0)),
+        ):
+            result = await provider.complete(messages)
+
+        assert result.finish_reason == "error"
+        assert "spark-sglang-super" in result.content
+        assert "nemo endpoint test spark-sglang-super" in result.content
+        assert "nemo setup sglang" in result.content

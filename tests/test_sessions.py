@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
-from nemocode.core.persistence import delete_session, list_sessions, load_session, save_session
+from nemocode.core.persistence import (
+    delete_session,
+    list_sessions,
+    load_session,
+    revert_to_point,
+    save_session,
+)
 from nemocode.core.sessions import Session, TokenUsage
 from nemocode.core.streaming import Message, Role
 
@@ -86,6 +92,22 @@ class TestSession:
         assert d["endpoint_name"] == "nim-super"
         assert d["usage"]["total_tokens"] == 150
 
+    def test_checkpoint_restore(self):
+        session = Session(id="checkpoint-test")
+        session.add_system("System prompt")
+        session.add_user("Original request")
+        checkpoint = session.checkpoint()
+
+        session.add_assistant(Message(role=Role.ASSISTANT, content="Changed"))
+        session.usage.add(120, 30)
+
+        session.restore(checkpoint)
+
+        assert session.message_count() == 2
+        assert session.last_assistant_text() == ""
+        assert session.last_user_text() == "Original request"
+        assert session.usage.total_tokens == 0
+
 
 class TestSessionPersistence:
     def test_save_and_load_session(self, tmp_path):
@@ -142,3 +164,23 @@ class TestSessionPersistence:
         # Verify gone
         loaded = load_session("delete-test")
         assert loaded is None
+
+
+class TestTurnRevert:
+    def test_revert_to_point_restores_multiple_file_changes(self, tmp_path):
+        from nemocode.tools.fs import _UNDO_STACK
+
+        _UNDO_STACK.clear()
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("new first")
+        second.write_text("new second")
+        _UNDO_STACK.append((str(first), "old first"))
+        _UNDO_STACK.append((str(second), "old second"))
+
+        results = revert_to_point(0)
+
+        assert len(results) == 2
+        assert first.read_text() == "old first"
+        assert second.read_text() == "old second"
+        assert _UNDO_STACK == []

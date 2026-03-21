@@ -31,7 +31,10 @@ from nemocode.config.schema import (
     NeMoCodeConfig,
     ToolPermissions,
 )
+from nemocode.core.metrics import RequestMetrics
 from nemocode.core.scheduler import AgentEvent
+from nemocode.core.sessions import Session
+from nemocode.core.streaming import Message, Role
 
 
 @pytest.fixture
@@ -157,6 +160,12 @@ class TestInputReader:
 
 
 class TestSlashDispatcher:
+    @staticmethod
+    def _record_last_turn(state, user_input: str, session: Session) -> None:
+        state.agent.sessions[FormationRole.EXECUTOR] = session
+        state.begin_turn(user_input)
+        state.turn_count += 1
+
     def test_help_returns_true(self, repl_state):
         dispatcher = _SlashDispatcher(repl_state)
         assert dispatcher.dispatch("/help") is True
@@ -227,6 +236,62 @@ class TestSlashDispatcher:
         assert test_file.read_text() == "original content"
 
         # Clean up
+        _UNDO_STACK.clear()
+
+    def test_revert_last_rewinds_whole_turn(self, repl_state, tmp_path):
+        from nemocode.tools.fs import _UNDO_STACK
+
+        _UNDO_STACK.clear()
+        session = Session(id="executor")
+        session.add_system("System prompt")
+        session.add_user("Before")
+        self._record_last_turn(repl_state, "Retry this", session)
+
+        test_file = tmp_path / "turn.txt"
+        test_file.write_text("after turn")
+        _UNDO_STACK.append((str(test_file), "before turn"))
+        session.add_user("Retry this")
+        session.add_assistant(Message(role=Role.ASSISTANT, content="Done"))
+        repl_state.metrics.record(RequestMetrics(prompt_tokens=10, completion_tokens=5))
+        repl_state.finish_turn()
+
+        dispatcher = _SlashDispatcher(repl_state)
+        assert dispatcher.dispatch("/revert last") is True
+
+        assert repl_state.turn_count == 0
+        assert test_file.read_text() == "before turn"
+        assert session.message_count() == 2
+        assert session.last_user_text() == "Before"
+        assert repl_state.metrics.request_count == 0
+        assert repl_state._queued_input is None
+        _UNDO_STACK.clear()
+
+    def test_retry_rewinds_last_turn_and_queues_input(self, repl_state, tmp_path):
+        from nemocode.tools.fs import _UNDO_STACK
+
+        _UNDO_STACK.clear()
+        session = Session(id="executor")
+        session.add_system("System prompt")
+        session.add_user("Before")
+        self._record_last_turn(repl_state, "Retry this", session)
+
+        test_file = tmp_path / "retry.txt"
+        test_file.write_text("after turn")
+        _UNDO_STACK.append((str(test_file), "before turn"))
+        session.add_user("Retry this")
+        session.add_assistant(Message(role=Role.ASSISTANT, content="Done"))
+        repl_state.metrics.record(RequestMetrics(prompt_tokens=10, completion_tokens=5))
+        repl_state.finish_turn()
+
+        dispatcher = _SlashDispatcher(repl_state)
+        assert dispatcher.dispatch("/retry") is True
+
+        assert repl_state._queued_input == "Retry this"
+        assert repl_state.turn_count == 0
+        assert test_file.read_text() == "before turn"
+        assert session.message_count() == 2
+        assert session.last_user_text() == "Before"
+        assert repl_state.metrics.request_count == 0
         _UNDO_STACK.clear()
 
     def test_agent_switch_by_alias(self, repl_state):

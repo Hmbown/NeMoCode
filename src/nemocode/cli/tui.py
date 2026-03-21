@@ -42,210 +42,21 @@ from nemocode.cli.render import (
     summarize_delegate_result,
     tool_result_has_embedded_error,
 )
+from nemocode.cli.theme import build_tui_stylesheet, canonical_key_spec, format_key_label, get_theme
 from nemocode.config import load_config
 from nemocode.config.agents import resolve_agent_reference
 from nemocode.config.schema import AgentMode, NeMoCodeConfig
 from nemocode.core.context import ContextManager
 from nemocode.core.metrics import MetricsCollector, RequestMetrics
 from nemocode.core.scheduler import AgentEvent
+from nemocode.core.sessions import TurnBoundary
 from nemocode.workflows.code_agent import CodeAgent
 
 logger = logging.getLogger(__name__)
 
-# NVIDIA green (#76B900) used throughout the TUI
-NV_GREEN = "#76B900"
-
 # Modes the TUI cycles through
 _MODES = ("code", "plan", "auto")
-
-# ---------------------------------------------------------------------------
-# Inline CSS — Textual's CSS DSL
-# ---------------------------------------------------------------------------
-
-_STYLESHEET = (
-    """\
-/* ── Global ────────────────────────────────────────────────── */
-
-Screen {
-    layout: vertical;
-    background: #0b0f0c;
-    color: $text;
-}
-
-/* ── Chat history ──────────────────────────────────────────── */
-
-#chat-scroll {
-    height: 1fr;
-    border: solid """
-    + NV_GREEN
-    + """;
-    border-title-color: """
-    + NV_GREEN
-    + """;
-    background: #0d110d;
-    padding: 0 1;
-}
-
-.chat-user {
-    margin: 1 0 0 0;
-    padding: 0 1;
-    color: $text;
-    background: $surface-darken-1;
-}
-
-.chat-user .label {
-    color: """
-    + NV_GREEN
-    + """;
-    text-style: bold;
-}
-
-.chat-assistant {
-    margin: 0 0 0 0;
-    padding: 0 1;
-    color: $text;
-}
-
-.chat-thinking {
-    color: $text-muted;
-    text-style: italic;
-    padding: 0 1;
-    margin: 0 0 0 2;
-}
-
-.chat-phase {
-    color: """
-    + NV_GREEN
-    + """;
-    text-style: bold;
-    padding: 0 1;
-    margin: 1 0 0 0;
-}
-
-.chat-error {
-    color: $error;
-    text-style: bold;
-    padding: 0 1;
-    margin: 0 0 0 0;
-}
-
-.chat-system {
-    color: $text-muted;
-    text-style: italic;
-    padding: 0 1;
-    margin: 0 0 0 0;
-}
-
-/* ── Tool panel ────────────────────────────────────────────── */
-
-#tool-panel {
-    height: auto;
-    max-height: 12;
-    border: solid $accent-darken-2;
-    border-title-color: """
-    + NV_GREEN
-    + """;
-    background: #11170f;
-    padding: 0 1;
-    display: none;
-}
-
-#tool-panel.visible {
-    display: block;
-}
-
-.tool-call {
-    color: $text-muted;
-    padding: 0 0 0 1;
-}
-
-.tool-result-ok {
-    color: """
-    + NV_GREEN
-    + """;
-    padding: 0 0 0 2;
-}
-
-.tool-result-error {
-    color: $error;
-    padding: 0 0 0 2;
-}
-
-/* ── Input area ────────────────────────────────────────────── */
-
-#input-row {
-    height: auto;
-    max-height: 8;
-    min-height: 3;
-    dock: bottom;
-}
-
-#mode-label {
-    width: 10;
-    height: 3;
-    content-align: center middle;
-    text-style: bold;
-    padding: 0 1;
-}
-
-#mode-label.mode-code {
-    color: """
-    + NV_GREEN
-    + """;
-    background: $surface-darken-2;
-}
-
-#mode-label.mode-plan {
-    color: $warning;
-    background: $surface-darken-2;
-}
-
-#mode-label.mode-auto {
-    color: $error;
-    background: $surface-darken-2;
-}
-
-#chat-input {
-    height: auto;
-    min-height: 3;
-    max-height: 8;
-    border: tall """
-    + NV_GREEN
-    + """;
-    background: #0c100c;
-}
-
-#chat-input:focus {
-    border: tall """
-    + NV_GREEN
-    + """;
-}
-
-/* ── Status bar ────────────────────────────────────────────── */
-
-#status-bar {
-    dock: bottom;
-    height: 1;
-    background: #11170d;
-    color: #d6dfc4;
-    padding: 0 1;
-}
-
-#status-bar .status-mode {
-    text-style: bold;
-}
-
-/* ── Streaming indicator ───────────────────────────────────── */
-
-.streaming-indicator {
-    color: """
-    + NV_GREEN
-    + """;
-    text-style: bold italic;
-    padding: 0 1;
-}
-"""
-)
+_STYLESHEET = build_tui_stylesheet(get_theme("nvidia-dark"))
 
 
 # ---------------------------------------------------------------------------
@@ -330,20 +141,45 @@ def _endpoint_summary(endpoint: object) -> str:
     return name or model_id or "-"
 
 
+def _tui_theme(config: NeMoCodeConfig):
+    return get_theme(config.theme)
+
+
+def _theme_hex_for_widget(widget: Static) -> str:
+    app = getattr(widget, "app", None)
+    theme = getattr(app, "_theme", None)
+    return theme.accent_hex if theme is not None else get_theme("nvidia-dark").accent_hex
+
+
+def _turn_preview(text: str, limit: int = 60) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1].rstrip()}…"
+
+
 # ---------------------------------------------------------------------------
 # Slash command dispatcher (TUI variant)
 # ---------------------------------------------------------------------------
 
-_HELP_TEXT = """\
+def _help_text(state: "_TUIState") -> str:
+    keys = state.config.keybindings.tui
+    return f"""\
 [bold]Session:[/bold]
   /help          Show this help message
   /think         Toggle thinking trace display
   /compact       Compact conversation (free context window)
   /reset         Reset conversation
-  /undo          Revert the last file change
+  /undo          Undo the last file change
+  /retry         Revert and replay the last user turn
   /cost          Session cost and token usage
   /mode          Cycle mode: code -> plan -> auto
   /quit          Exit
+
+[bold]Snapshots:[/bold]
+  /snapshot      Create a git safety checkpoint
+  /snapshots     List available snapshots
+  /revert        Revert to a snapshot or rewind the last turn
 
 [bold]Configuration:[/bold]
   /endpoint      List endpoints  |  /endpoint <name>  Switch
@@ -356,10 +192,11 @@ _HELP_TEXT = """\
   auto           Auto-approve everything
 
 [bold]Keyboard:[/bold]
-  Enter          Send message (Shift+Enter for newline)
-  Tab            Cycle mode
-  Ctrl+C         Cancel current response
-  Ctrl+Q         Exit
+  {format_key_label(keys.submit):<18}Send message
+  {format_key_label(keys.cycle_mode):<18}Cycle mode
+  {format_key_label(keys.cancel_turn):<18}Cancel current response
+  {format_key_label(keys.toggle_tools):<18}Toggle tool trace
+  {format_key_label(keys.exit):<18}Exit
 """
 
 
@@ -368,7 +205,7 @@ class _TUIState:
     """Mutable session state for the TUI, analogous to _ReplState."""
 
     config: NeMoCodeConfig
-    show_thinking: bool = False
+    show_thinking: bool = True
     auto_yes: bool = False
     turn_count: int = 0
     metrics: MetricsCollector = field(default_factory=MetricsCollector)
@@ -388,6 +225,8 @@ class _TUIState:
     first_token_time: float | None = None
     current_model_id: str = ""
     reasoning_hint_shown: bool = False
+    active_turn: TurnBoundary | None = None
+    last_turn: TurnBoundary | None = None
 
     @property
     def mode(self) -> str:
@@ -402,6 +241,101 @@ class _TUIState:
 
     def clear_cancel(self) -> None:
         self.cancelled = False
+
+    def clear_turn_history(self) -> None:
+        self.active_turn = None
+        self.last_turn = None
+
+    def begin_turn(self, user_input: str) -> None:
+        try:
+            from nemocode.tools.fs import undo_stack_depth
+
+            undo_depth = undo_stack_depth()
+        except Exception:
+            undo_depth = 0
+
+        agent = self.agent
+        self.active_turn = TurnBoundary(
+            user_input=user_input,
+            turn_count_before=self.turn_count,
+            metrics_request_count=self.metrics.request_count,
+            undo_depth_before=undo_depth,
+            session_checkpoints=(
+                {role: session.checkpoint() for role, session in agent.sessions.items()}
+                if agent
+                else {}
+            ),
+            pending_plan_text=agent.pending_plan_text if agent else None,
+            pending_plan_user_input=getattr(agent, "_pending_plan_user_input", None),
+        )
+
+    def finish_turn(self) -> None:
+        if self.active_turn is not None:
+            self.last_turn = self.active_turn
+            self.active_turn = None
+
+    def _restore_turn_sessions(self, turn: TurnBoundary) -> None:
+        if self.agent is None:
+            return
+        sessions = self.agent.sessions
+        for role in list(sessions):
+            if role not in turn.session_checkpoints:
+                del sessions[role]
+        for role, checkpoint in turn.session_checkpoints.items():
+            session = sessions.get(role)
+            if session is not None:
+                session.restore(checkpoint)
+
+    def revert_last_turn(self) -> tuple[bool, str]:
+        turn = self.last_turn
+        if turn is None:
+            return False, "Nothing to revert. Run a turn first."
+        if self.agent is None:
+            self.clear_turn_history()
+            return False, "No active agent session is available to rewind."
+
+        try:
+            from nemocode.core.persistence import revert_to_point
+            from nemocode.tools.fs import undo_stack_depth
+
+            current_depth = undo_stack_depth()
+            if current_depth < turn.undo_depth_before:
+                self.clear_turn_history()
+                return (
+                    False,
+                    "Last turn can no longer be rewound cleanly because the undo stack changed.",
+                )
+            results = revert_to_point(turn.undo_depth_before)
+        except Exception as exc:
+            return False, f"Failed to rewind last turn: {exc}"
+
+        self._restore_turn_sessions(turn)
+        del self.metrics._requests[turn.metrics_request_count:]
+        self.turn_count = turn.turn_count_before
+        self.agent._pending_plan_text = turn.pending_plan_text
+        self.agent._pending_plan_user_input = turn.pending_plan_user_input
+        self.clear_cancel()
+        self.last_turn = None
+
+        reverted_files = len([result for result in results if "error" not in result])
+        if reverted_files > 0:
+            return (
+                True,
+                f"Reverted last turn and restored {reverted_files} file change"
+                f"{'s' if reverted_files != 1 else ''}.",
+            )
+        return True, "Reverted last turn. No file changes needed to be restored."
+
+    def prepare_retry(self) -> tuple[bool, str, str | None]:
+        turn = self.last_turn
+        if turn is None:
+            return False, "Nothing to retry. Run a turn first.", None
+
+        preview = _turn_preview(turn.user_input)
+        ok, message = self.revert_last_turn()
+        if not ok:
+            return False, message, None
+        return True, f"Retrying: {preview}", turn.user_input
 
     def reset_turn(self) -> None:
         """Reset per-turn accumulators."""
@@ -464,6 +398,10 @@ class _TUIState:
             return current
         return agent.display_name or agent.name
 
+    def resolve_model_id(self) -> str:
+        ep = self.config.endpoints.get(self.config.default_endpoint)
+        return ep.model_id if ep else ""
+
     def resolve_context_window(self) -> int:
         ep_name = self.config.default_endpoint
         ep = self.config.endpoints.get(ep_name)
@@ -522,6 +460,7 @@ class ModeLabel(Static):
 class StatusBar(Static):
     """Bottom status bar showing context %, mode, model name, git branch, tokens, tok/s."""
 
+    theme_name: reactive[str] = reactive("nvidia-dark")
     context_pct: reactive[float] = reactive(0.0)
     mode: reactive[str] = reactive("code")
     endpoint: reactive[str] = reactive("")
@@ -536,12 +475,13 @@ class StatusBar(Static):
 
     def render(self) -> str:
         parts: list[str] = []
+        theme = get_theme(self.theme_name)
 
-        parts.append(f"[bold {NV_GREEN}]NVIDIA[/bold {NV_GREEN}]")
+        parts.append(f"[bold {theme.accent_hex}]NVIDIA[/bold {theme.accent_hex}]")
 
         # Streaming indicator
         if self.is_streaming:
-            parts.append(f"[bold {NV_GREEN}]LIVE[/bold {NV_GREEN}]")
+            parts.append(f"[bold {theme.accent_hex}]LIVE[/bold {theme.accent_hex}]")
 
         # Context %
         if self.context_pct > 0:
@@ -554,12 +494,12 @@ class StatusBar(Static):
                 parts.append(f"ctx:{pct:.0f}%")
 
         # Mode
-        mode_colors = {"code": NV_GREEN, "plan": "yellow", "auto": "red"}
-        c = mode_colors.get(self.mode, NV_GREEN)
+        mode_colors = {"code": theme.accent_hex, "plan": "yellow", "auto": "red"}
+        c = mode_colors.get(self.mode, theme.accent_hex)
         parts.append(f"[{c}]{self.mode}[/{c}]")
 
         if self.formation:
-            parts.append(f"[{NV_GREEN}]{self.formation}[/{NV_GREEN}]")
+            parts.append(f"[{theme.accent_hex}]{self.formation}[/{theme.accent_hex}]")
         if self.agent_name:
             parts.append(f"[blue]{self.agent_name}[/blue]")
 
@@ -594,7 +534,8 @@ class ToolPanel(VerticalScroll):
 
     def add_tool_call(self, name: str, args: dict) -> None:
         line = format_tool_call(name, args)
-        w = Static(f"[{NV_GREEN}]> [/{NV_GREEN}][dim]{line}[/dim]", classes="tool-call")
+        accent = _theme_hex_for_widget(self)
+        w = Static(f"[{accent}]> [/{accent}][dim]{line}[/dim]", classes="tool-call")
         self.mount(w)
         self._show()
         w.scroll_visible()
@@ -665,7 +606,8 @@ class ChatScroll(VerticalScroll):
     """Scrollable chat history."""
 
     def add_user_message(self, text: str) -> None:
-        content = f"[{NV_GREEN} bold]You:[/{NV_GREEN} bold] {text}"
+        accent = _theme_hex_for_widget(self)
+        content = f"[{accent} bold]You:[/{accent} bold] {text}"
         w = Static(content, classes="chat-user")
         self.mount(w)
         w.scroll_visible()
@@ -685,7 +627,10 @@ class ChatScroll(VerticalScroll):
         """Freeze the current streaming response so the next turn starts fresh."""
         try:
             existing = self.query_one("#assistant-stream", Static)
-            existing.id = None  # detach the live id
+            frozen = Static(existing.content, classes=" ".join(existing.classes))
+            existing.remove()
+            self.mount(frozen)
+            frozen.scroll_visible()
         except NoMatches:
             pass
 
@@ -705,12 +650,16 @@ class ChatScroll(VerticalScroll):
     def finalize_thinking(self) -> None:
         try:
             existing = self.query_one("#thinking-stream", Static)
-            existing.id = None
+            frozen = Static(existing.content, classes=" ".join(existing.classes))
+            existing.remove()
+            self.mount(frozen)
+            frozen.scroll_visible()
         except NoMatches:
             pass
 
     def add_phase(self, role: str, text: str) -> None:
-        content = f"[{NV_GREEN} bold]--- {role}: {text} ---[/{NV_GREEN} bold]"
+        accent = _theme_hex_for_widget(self)
+        content = f"[{accent} bold]--- {role}: {text} ---[/{accent} bold]"
         w = Static(content, classes="chat-phase")
         self.mount(w)
         w.scroll_visible()
@@ -735,7 +684,8 @@ class ChatScroll(VerticalScroll):
             self.query_one("#streaming-dot")
         except NoMatches:
             w = Static(
-                f"[{NV_GREEN} bold italic]Thinking...[/{NV_GREEN} bold italic]",
+                f"[{_theme_hex_for_widget(self)} bold italic]"
+                f"Thinking...[/{_theme_hex_for_widget(self)} bold italic]",
                 id="streaming-dot",
                 classes="streaming-indicator",
             )
@@ -762,11 +712,11 @@ class NeMoCodeTUI(App):
     CSS = _STYLESHEET
 
     BINDINGS = [
-        Binding("ctrl+q", "quit_app", "Quit", show=True, priority=True),
-        Binding("tab", "cycle_mode", "Mode", show=True),
-        Binding("ctrl+c", "cancel_turn", "Cancel", show=True, priority=True),
-        Binding("enter", "submit", "Send", show=True),
-        Binding("ctrl+t", "toggle_tools", "Tools", show=True),
+        Binding("ctrl+q", "quit_app", "Quit", show=True, priority=True, id="tui.exit"),
+        Binding("tab", "cycle_mode", "Mode", show=True, id="tui.cycle_mode"),
+        Binding("ctrl+c", "cancel_turn", "Cancel", show=True, priority=True, id="tui.cancel_turn"),
+        Binding("enter", "submit", "Send", show=True, id="tui.submit"),
+        Binding("ctrl+t", "toggle_tools", "Tools", show=True, id="tui.toggle_tools"),
     ]
 
     # Reactive properties
@@ -779,11 +729,13 @@ class NeMoCodeTUI(App):
         endpoint: str | None = None,
         formation: str | None = None,
         agent_name: str | None = None,
-        show_thinking: bool = False,
+        show_thinking: bool = True,
         auto_yes: bool = False,
     ) -> None:
-        super().__init__()
         cfg = config or load_config()
+        self._theme = _tui_theme(cfg)
+        self.CSS = build_tui_stylesheet(self._theme)
+        super().__init__()
         if endpoint:
             cfg.default_endpoint = endpoint
         if formation:
@@ -802,12 +754,26 @@ class NeMoCodeTUI(App):
             self._state.agent_name = "build"
         self._state.context_mgr = ContextManager(
             context_window=self._state.resolve_context_window(),
+            model_id=self._state.resolve_model_id(),
         )
         self._state.agent = self._state.build_agent()
 
         # Track the async task for cancellation
         self._current_task: asyncio.Task | None = None
         self._pending_user_future: asyncio.Future[str] | None = None
+        self._apply_keybindings()
+
+    def _apply_keybindings(self) -> None:
+        keymap = {
+            "tui.exit": self._state.config.keybindings.tui.exit,
+            "tui.cycle_mode": self._state.config.keybindings.tui.cycle_mode,
+            "tui.cancel_turn": self._state.config.keybindings.tui.cancel_turn,
+            "tui.submit": self._state.config.keybindings.tui.submit,
+            "tui.toggle_tools": self._state.config.keybindings.tui.toggle_tools,
+        }
+        self._bindings.apply_keymap(keymap)
+        self._chat_children_before_turn = 0
+        self._tool_children_before_turn = 0
 
     # ── Compose ──────────────────────────────────────────────
 
@@ -850,13 +816,15 @@ class NeMoCodeTUI(App):
         formation = self._state.config.active_formation or ""
         formation_str = f" · {formation}" if formation else ""
         agent_label = self._state.current_primary_agent_display()
+        tui_keys = self._state.config.keybindings.tui
 
         chat.border_title = "NeMoCode // NVIDIA NIM"
         chat.add_system(
             f"NeMoCode // NVIDIA NIM\n"
             f"{model_display} · {ep_name}{formation_str} · {agent_label}\n"
             f"{Path.cwd()}\n"
-            f"/help · Tab mode · Ctrl+T trace"
+            f"/help · {format_key_label(tui_keys.cycle_mode)} mode · "
+            f"{format_key_label(tui_keys.toggle_tools)} trace"
         )
 
         tool_panel = self.query_one("#tool-panel", ToolPanel)
@@ -871,6 +839,7 @@ class NeMoCodeTUI(App):
         text_area.focus()
 
         self._update_status_bar()
+        self.refresh_bindings()
 
     def on_unmount(self) -> None:
         """Tear down interactive callbacks on exit."""
@@ -906,6 +875,7 @@ class NeMoCodeTUI(App):
             return  # Don't switch modes mid-stream
         new_mode = self._state.cycle_mode()
         self._state.agent = self._state.build_agent()
+        self._state.clear_turn_history()
         self.mode = new_mode
         chat = self.query_one("#chat-scroll", ChatScroll)
         mode_desc = {
@@ -960,6 +930,82 @@ class NeMoCodeTUI(App):
         panel = self.query_one("#tool-panel", ToolPanel)
         panel.toggle_class("visible")
 
+    def _rewind_visible_turn(self) -> None:
+        chat = self.query_one("#chat-scroll", ChatScroll)
+        for child in list(chat.children)[self._chat_children_before_turn :]:
+            child.remove()
+
+        panel = self.query_one("#tool-panel", ToolPanel)
+        for child in list(panel.children)[self._tool_children_before_turn :]:
+            child.remove()
+        if not panel.children:
+            panel.remove_class("visible")
+        self._chat_children_before_turn = len(chat.children)
+        self._tool_children_before_turn = len(panel.children)
+
+    def _schedule_snapshot(self, label: str) -> None:
+        asyncio.create_task(self._run_snapshot_command(label))
+
+    async def _run_snapshot_command(self, label: str) -> None:
+        chat = self.query_one("#chat-scroll", ChatScroll)
+        try:
+            if not self._state.agent:
+                chat.add_error("No agent configured.")
+                return
+            snap = await self._state.agent.snapshot_mgr.create_snapshot(label or "manual")
+            if snap:
+                chat.add_system(
+                    f"Snapshot created: {snap.id} "
+                    f"({snap.files_changed} file{'s' if snap.files_changed != 1 else ''})"
+                )
+            else:
+                chat.add_system("No changes to snapshot.")
+        except Exception as exc:
+            chat.add_error(f"Snapshot failed: {exc}")
+
+    def _schedule_snapshots(self) -> None:
+        asyncio.create_task(self._run_snapshots_command())
+
+    async def _run_snapshots_command(self) -> None:
+        chat = self.query_one("#chat-scroll", ChatScroll)
+        try:
+            if not self._state.agent:
+                chat.add_error("No agent configured.")
+                return
+            snaps = await self._state.agent.snapshot_mgr.list_snapshots()
+            if not snaps:
+                chat.add_system("No snapshots available.")
+                return
+            lines = ["Snapshots:"]
+            for snap in snaps:
+                ts = time.strftime("%H:%M:%S", time.localtime(snap["timestamp"]))
+                lines.append(
+                    f"  {snap['id']}  {snap['kind']}  {snap['files_changed']} files  {ts}"
+                )
+            lines.append("Use /revert <id> to restore.")
+            chat.add_system("\n".join(lines))
+        except Exception as exc:
+            chat.add_error(f"Failed to list snapshots: {exc}")
+
+    def _schedule_snapshot_revert(self, snapshot_id: str) -> None:
+        asyncio.create_task(self._run_snapshot_revert(snapshot_id))
+
+    async def _run_snapshot_revert(self, snapshot_id: str) -> None:
+        chat = self.query_one("#chat-scroll", ChatScroll)
+        try:
+            if not self._state.agent:
+                chat.add_error("No agent configured.")
+                return
+            result = await self._state.agent.snapshot_mgr.restore_snapshot(snapshot_id)
+            if "error" in result:
+                chat.add_error(result["error"])
+            else:
+                self._state.clear_turn_history()
+                chat.add_system(f"Reverted to snapshot {result['restored']} ({result['kind']})")
+                self._update_status_bar()
+        except Exception as exc:
+            chat.add_error(f"Revert failed: {exc}")
+
     # ── Input handling ───────────────────────────────────────
 
     @on(TextArea.Changed, "#chat-input")
@@ -969,16 +1015,14 @@ class NeMoCodeTUI(App):
 
     def on_key(self, event) -> None:
         """Intercept Enter in the input area to submit instead of newline."""
-        if event.key == "enter":
-            text_area = self.query_one("#chat-input", TextArea)
-            if text_area.has_focus:
-                # Check if shift is held — if so, allow newline
-                # Textual sends "enter" without shift distinction by default,
-                # so we use a simple heuristic: if the text ends with \n and
-                # the user just pressed enter, submit the text before the newline.
-                event.prevent_default()
-                event.stop()
-                self.action_submit()
+        submit_key = canonical_key_spec(self._state.config.keybindings.tui.submit)
+        if canonical_key_spec(event.key) != submit_key:
+            return
+        text_area = self.query_one("#chat-input", TextArea)
+        if text_area.has_focus:
+            event.prevent_default()
+            event.stop()
+            self.action_submit()
 
     # ── Slash commands ───────────────────────────────────────
 
@@ -994,7 +1038,7 @@ class NeMoCodeTUI(App):
             return
 
         if cmd == "/help":
-            chat.add_system(_HELP_TEXT)
+            chat.add_system(_help_text(self._state))
             return
 
         if cmd == "/think":
@@ -1007,6 +1051,7 @@ class NeMoCodeTUI(App):
             try:
                 if self._state.agent:
                     self._state.agent.compact()
+                self._state.clear_turn_history()
                 chat.add_system("Conversation compacted. Older messages trimmed.")
             except Exception as exc:
                 chat.add_error(f"Compact failed: {exc}")
@@ -1017,6 +1062,7 @@ class NeMoCodeTUI(App):
             if self._state.agent:
                 self._state.agent.reset()
             self._state.turn_count = 0
+            self._state.clear_turn_history()
             chat.add_system("Conversation reset.")
             self._update_status_bar()
             return
@@ -1033,6 +1079,7 @@ class NeMoCodeTUI(App):
                 if "error" in result:
                     chat.add_error(f"Undo failed: {result['error']}")
                 else:
+                    self._state.clear_turn_history()
                     action = result.get("action", "reverted")
                     path = result.get("path", "?")
                     remaining = undo_stack_depth()
@@ -1042,6 +1089,17 @@ class NeMoCodeTUI(App):
                     chat.add_system(msg)
             except Exception as exc:
                 chat.add_error(f"Undo error: {exc}")
+            return
+
+        if cmd == "/retry":
+            ok, message, retry_input = self._state.prepare_retry()
+            if ok and retry_input is not None:
+                self._rewind_visible_turn()
+                chat.add_system(message)
+                self._update_status_bar()
+                self._send_message(retry_input)
+            else:
+                chat.add_system(message) if ok else chat.add_error(message)
             return
 
         if cmd == "/cost":
@@ -1063,6 +1121,32 @@ class NeMoCodeTUI(App):
             chat.add_system("\n".join(lines))
             return
 
+        if cmd == "/snapshot":
+            self._schedule_snapshot(arg)
+            return
+
+        if cmd == "/snapshots":
+            self._schedule_snapshots()
+            return
+
+        if cmd == "/revert":
+            if not arg:
+                chat.add_system("Usage: /revert <snapshot-id> or /revert last")
+                return
+
+            if arg == "last":
+                ok, message = self._state.revert_last_turn()
+                if ok:
+                    self._rewind_visible_turn()
+                    chat.add_system(message)
+                else:
+                    chat.add_error(message)
+                self._update_status_bar()
+                return
+
+            self._schedule_snapshot_revert(arg)
+            return
+
         if cmd == "/endpoint":
             if not arg:
                 endpoints = list(self._state.config.endpoints.keys())
@@ -1077,10 +1161,12 @@ class NeMoCodeTUI(App):
                 self._state.config.default_endpoint = arg
                 self._state.config.active_formation = None
                 self._state.context_mgr = ContextManager(
-                    context_window=self._state.resolve_context_window()
+                    context_window=self._state.resolve_context_window(),
+                    model_id=self._state.resolve_model_id(),
                 )
                 self._state.agent = self._state.build_agent()
                 self._state.turn_count = 0
+                self._state.clear_turn_history()
                 ep = self._state.config.endpoints[arg]
                 chat.add_system(f"Switched to endpoint: {_endpoint_summary(ep)}")
                 self._update_status_bar()
@@ -1106,11 +1192,13 @@ class NeMoCodeTUI(App):
             elif arg in ("off", "none"):
                 self._state.config.active_formation = None
                 self._state.agent = self._state.build_agent()
+                self._state.clear_turn_history()
                 chat.add_system("Formation deactivated. Using single endpoint mode.")
                 self._update_status_bar()
             elif arg in self._state.config.formations:
                 self._state.config.active_formation = arg
                 self._state.agent = self._state.build_agent()
+                self._state.clear_turn_history()
                 f = self._state.config.formations[arg]
                 roles = ", ".join(s.role.value for s in f.slots)
                 chat.add_system(f"Activated formation: {arg} [{roles}]")
@@ -1148,6 +1236,7 @@ class NeMoCodeTUI(App):
 
             self._state.agent_name = resolved
             self._state.agent = self._state.build_agent()
+            self._state.clear_turn_history()
             chat.add_system(
                 f"Switched primary agent: {resolved} ({agent.display_name or resolved})"
             )
@@ -1165,15 +1254,17 @@ class NeMoCodeTUI(App):
     def _send_message(self, text: str) -> None:
         """Start an agent turn for the given user input."""
         chat = self.query_one("#chat-scroll", ChatScroll)
+        self._chat_children_before_turn = len(chat.children)
+        tool_panel = self.query_one("#tool-panel", ToolPanel)
+        self._tool_children_before_turn = 0
         chat.add_user_message(text)
         chat.add_streaming_indicator()
-
-        tool_panel = self.query_one("#tool-panel", ToolPanel)
         tool_panel.clear_panel()
 
         self.streaming = True
         self._state.is_streaming = True
         self._state.clear_cancel()
+        self._state.begin_turn(text)
         self._state.reset_turn()
         self._state.turn_count += 1
         self._update_status_bar()
@@ -1252,7 +1343,7 @@ class NeMoCodeTUI(App):
 
         elif event.kind == "status":
             if not self._state.show_thinking and not self._state.reasoning_hint_shown:
-                chat.add_system("Reasoning trace hidden. Use /think to show it when available.")
+                chat.add_system("Reasoning trace hidden. Use /think to re-enable.")
                 self._state.reasoning_hint_shown = True
             chat.add_status(event.text)
 
@@ -1307,6 +1398,7 @@ class NeMoCodeTUI(App):
 
         # Record metrics
         self._state.record_metrics()
+        self._state.finish_turn()
 
         # Show turn summary in chat
         self._show_turn_summary(chat)
@@ -1323,7 +1415,13 @@ class NeMoCodeTUI(App):
 
         # Check if plan approval is pending
         if self._state.agent and self._state.agent.has_pending_plan:
-            chat.add_system("Plan awaiting your approval. Reply with approve, revise, or cancel.")
+            chat.add_system(
+                "Plan awaiting your decision:\n"
+                "  1. Start implementing\n"
+                "  2. Edit the plan\n"
+                "  3. Ask a question\n"
+                "  4. Cancel"
+            )
 
     def _show_turn_summary(self, chat: ChatScroll) -> None:
         """Show a compact performance summary after a turn completes."""
@@ -1361,6 +1459,7 @@ class NeMoCodeTUI(App):
             return
 
         bar.mode = self._state.mode
+        bar.theme_name = self._state.config.theme
         bar.endpoint = self._state.config.default_endpoint
         bar.formation = self._state.config.active_formation or ""
         bar.agent_name = self._state.current_primary_agent_display()
@@ -1405,7 +1504,7 @@ def run_tui(
     endpoint: str | None = None,
     formation: str | None = None,
     agent_name: str | None = None,
-    show_thinking: bool = False,
+    show_thinking: bool = True,
     auto_yes: bool = False,
 ) -> None:
     """Synchronous entry point to launch the TUI.
@@ -1427,7 +1526,7 @@ def start_tui(
     endpoint: str | None = None,
     formation: str | None = None,
     agent_name: str | None = None,
-    think: bool = False,
+    think: bool = True,
     yes: bool = False,
 ) -> None:
     """Mirror of ``start_repl`` for the TUI path.

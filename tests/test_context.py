@@ -7,7 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nemocode.core.context import ContextManager, estimate_tokens
+from nemocode.core import context as context_mod
+from nemocode.core.context import (
+    ContextManager,
+    configure_token_counting,
+    estimate_tokens,
+    is_accurate,
+    token_count_status,
+)
 from nemocode.core.streaming import Message, Role
 
 
@@ -24,6 +31,57 @@ class TestEstimateTokens:
         tokens = estimate_tokens(text)
         assert tokens > 0  # exact count depends on tiktoken availability
 
+    def test_prefers_configured_model_tokenizer_when_cached_locally(self, monkeypatch):
+        class FakeTokenizer:
+            def __call__(self, text: str, add_special_tokens: bool = False):
+                return {"input_ids": text.split()}
+
+        monkeypatch.setattr(context_mod, "_DEFAULT_MODEL_ID", None)
+        monkeypatch.setattr(
+            context_mod,
+            "_load_cached_transformers_tokenizer",
+            lambda model: FakeTokenizer(),
+        )
+        monkeypatch.setattr(context_mod, "_resolve_exact_tiktoken_encoding", lambda model: None)
+        configure_token_counting("nvidia/test-model")
+
+        status = token_count_status()
+        assert status.exact is True
+        assert status.method == "transformers-local"
+        assert estimate_tokens("one two three") == 3
+        assert is_accurate() is True
+
+    def test_unsupported_model_reports_estimate_status(self, monkeypatch):
+        class FakeEncoding:
+            name = "o200k_base"
+
+            def encode(self, text: str, disallowed_special=()):
+                return [0, 1, 2, 3]
+
+        monkeypatch.setattr(context_mod, "_DEFAULT_MODEL_ID", None)
+        monkeypatch.setattr(context_mod, "_load_cached_transformers_tokenizer", lambda model: None)
+        monkeypatch.setattr(context_mod, "_resolve_exact_tiktoken_encoding", lambda model: None)
+        monkeypatch.setattr(context_mod, "_get_tiktoken_encoding", lambda name: FakeEncoding())
+        configure_token_counting("nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8")
+
+        status = token_count_status()
+        assert status.exact is False
+        assert status.method == "tiktoken:o200k_base"
+        assert "estimate" in status.detail
+        assert estimate_tokens("hello world") == 4
+
+    def test_character_fallback_status_is_explicit(self, monkeypatch):
+        monkeypatch.setattr(context_mod, "_DEFAULT_MODEL_ID", None)
+        monkeypatch.setattr(context_mod, "_HAS_TIKTOKEN", False)
+        monkeypatch.setattr(context_mod, "_load_cached_transformers_tokenizer", lambda model: None)
+        monkeypatch.setattr(context_mod, "_resolve_exact_tiktoken_encoding", lambda model: None)
+        monkeypatch.setattr(context_mod, "_get_tiktoken_encoding", lambda name: None)
+
+        status = token_count_status("nvidia/test-model")
+        assert status.exact is False
+        assert status.method == "chars/4"
+        assert "Install tiktoken" in status.detail
+
 
 class TestContextManager:
     def test_usage(self):
@@ -34,6 +92,19 @@ class TestContextManager:
         ]
         usage = mgr.usage(messages)
         assert usage > 0
+
+    def test_usage_uses_manager_model_id(self, monkeypatch):
+        seen_models: list[str | None] = []
+
+        def fake_estimate_message_tokens(msg: Message, model_id: str | None = None) -> int:
+            seen_models.append(model_id)
+            return 10
+
+        monkeypatch.setattr(context_mod, "estimate_message_tokens", fake_estimate_message_tokens)
+        mgr = ContextManager(context_window=1000, model_id="nvidia/test-model")
+        messages = [Message(role=Role.USER, content="Hello")]
+        assert mgr.usage(messages) == 10
+        assert seen_models == ["nvidia/test-model"]
 
     def test_usage_fraction(self):
         mgr = ContextManager(context_window=1000)

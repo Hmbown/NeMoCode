@@ -22,6 +22,8 @@ import os
 import time
 from pathlib import Path
 
+import yaml
+
 from rich.console import Console
 from rich.table import Table
 
@@ -32,19 +34,71 @@ from nemocode.cli.render import (
     render_confirm_detail,
     tool_result_has_embedded_error,
 )
+from nemocode.cli.theme import format_key_label, get_theme
 from nemocode.config.agents import resolve_agent_reference
 from nemocode.config.schema import AgentMode, NeMoCodeConfig
 from nemocode.core.context import ContextManager
 from nemocode.core.metrics import MetricsCollector, RequestMetrics
 from nemocode.core.scheduler import AgentEvent
+from nemocode.core.sessions import TurnBoundary
 from nemocode.workflows.code_agent import CodeAgent
 
+try:
+    from nemocode.cli.render import set_render_theme
+except ImportError:  # pragma: no cover - compatibility with in-flight theme work
+    def set_render_theme(_theme_name: str) -> None:
+        return None
+
 logger = logging.getLogger(__name__)
+_NVIDIA_GREEN = "bright_green"
+
+
+def _repl_theme(config: NeMoCodeConfig) -> object:
+    return get_theme(config.theme)
+
+
+def _apply_repl_theme(config: NeMoCodeConfig) -> None:
+    global _NVIDIA_GREEN
+    theme = _repl_theme(config)
+    _NVIDIA_GREEN = theme.accent_rich
+    set_render_theme(config.theme)
+
+
+def _ptk_binding_args(spec: str) -> tuple[str, ...]:
+    normalized = spec.strip().lower().replace("control+", "ctrl+")
+    if normalized in {"tab", "escape", "enter"}:
+        return (normalized,)
+    if normalized.startswith("ctrl+") and len(normalized) == 6:
+        return (f"c-{normalized[-1]}",)
+    if normalized.startswith("alt+") and len(normalized) == 5:
+        return ("escape", normalized[-1])
+    raise ValueError(f"Unsupported prompt_toolkit keybinding: {spec}")
 
 # ---------------------------------------------------------------------------
 # Console instance — shared by all rendering functions
 # ---------------------------------------------------------------------------
 console = Console()
+
+
+def _save_project_default_endpoint(endpoint_name: str) -> bool:
+    """Persist the default endpoint to the project's .nemocode.yaml.
+
+    Updates only the ``default_endpoint`` key (and clears ``active_formation``).
+    Returns True on success, False on error.
+    """
+    config_path = Path.cwd() / ".nemocode.yaml"
+    try:
+        try:
+            raw = yaml.safe_load(config_path.read_text()) or {}
+        except FileNotFoundError:
+            raw = {}
+        raw["default_endpoint"] = endpoint_name
+        raw["active_formation"] = None
+        config_path.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
+        return True
+    except Exception as e:
+        logger.warning("Failed to save project config: %s", e)
+        return False
 
 
 def _short_model_ref(model_id: str) -> str:
@@ -60,6 +114,13 @@ def _endpoint_summary(endpoint: object) -> str:
     if name and model_id and name != model_id:
         return f"{name} · {model_id}"
     return name or model_id or "-"
+
+
+def _turn_preview(text: str, limit: int = 60) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1].rstrip()}…"
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +218,7 @@ _SLASH_COMMANDS = [
     "/compact",
     "/reset",
     "/undo",
+    "/retry",
     "/cost",
     "/endpoint",
     "/formation",
@@ -222,8 +284,9 @@ class _InputReader:
 
             if state is not None and _is_tty:
                 kb = KeyBindings()
+                repl_keys = state.config.keybindings.repl
 
-                @kb.add("tab")
+                @kb.add(*_ptk_binding_args(repl_keys.cycle_mode))
                 def _tab_cycle(event):
                     """Cycle mode: code → plan → auto (unless completing a slash cmd)."""
                     buf = event.app.current_buffer
@@ -235,18 +298,24 @@ class _InputReader:
                     state.agent = state._build_agent()
                     event.app.invalidate()
 
-                @kb.add("escape")
+                @kb.add(*_ptk_binding_args(repl_keys.clear_input))
                 def _esc_clear(event):
                     """Clear the current input line."""
                     event.app.current_buffer.text = ""
                     event.app.current_buffer.cursor_position = 0
 
+                @kb.add(*_ptk_binding_args(repl_keys.exit))
+                def _exit_prompt(event):
+                    """Exit the prompt using the configured key."""
+                    event.app.exit(result=None)
+
                 kwargs["key_bindings"] = kb
                 kwargs["bottom_toolbar"] = self._toolbar
                 kwargs["completer"] = _SlashCompleter(state)
+                theme = _repl_theme(state.config)
                 kwargs["style"] = Style.from_dict(
                     {
-                        "bottom-toolbar": "bg:#262626 #888888",
+                        "bottom-toolbar": f"bg:{theme.status_bg} {theme.status_fg}",
                     }
                 )
 
@@ -267,11 +336,12 @@ class _InputReader:
         s = self._state
 
         parts: list[str] = []
+        theme = _repl_theme(s.config)
 
         # Mode indicator (always visible)
         mode = s.mode
-        mode_colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
-        mc = mode_colors.get(mode, "ansigreen")
+        mode_colors = {"code": theme.accent_rich, "plan": "ansiyellow", "auto": "ansired"}
+        mc = mode_colors.get(mode, theme.accent_rich)
         parts.append(f" <{mc}><b>▸ {mode}</b></{mc}>")
 
         # Model display name (instead of raw endpoint key)
@@ -346,11 +416,12 @@ class _InputReader:
             # When state is available, use a callable prompt so Tab updates the
             # mode label in real time without restarting the prompt.
             if self._state is not None:
+                theme = _repl_theme(self._state.config)
 
                 def _dynamic_prompt():
                     m = self._state.mode
-                    colors = {"code": "ansigreen", "plan": "ansiyellow", "auto": "ansired"}
-                    c = colors.get(m, "ansigreen")
+                    colors = {"code": theme.accent_rich, "plan": "ansiyellow", "auto": "ansired"}
+                    c = colors.get(m, theme.accent_rich)
                     return HTML(f"\n<{c}><b>[{m}] ▸ </b></{c}>")
 
                 try:
@@ -432,13 +503,16 @@ def _get_git_branch() -> str:
         return ""
 
 
-_HELP_TEXT = """\
+def _help_text(state: _ReplState) -> str:
+    keys = state.config.keybindings.repl
+    return f"""\
 [bold]Session:[/bold]
   [cyan]/help[/cyan]               Show this help message
   [cyan]/think[/cyan]              Toggle thinking trace display
   [cyan]/compact[/cyan]            Compact conversation (free context window)
   [cyan]/reset[/cyan]              Reset conversation
-  [cyan]/undo[/cyan]               Revert the last file change
+  [cyan]/undo[/cyan]               Undo the last file change
+  [cyan]/retry[/cyan]              Revert and replay the last user turn
   [cyan]/cost[/cyan]               Session cost and token usage
   [cyan]/context[/cyan]            Context window usage details
   [cyan]/diff[/cyan]               Show git diff --stat inline
@@ -457,7 +531,7 @@ _HELP_TEXT = """\
 [bold]Snapshots:[/bold]
   [cyan]/snapshot[/cyan] [label]   Create a git safety checkpoint
   [cyan]/snapshots[/cyan]          List available snapshots
-  [cyan]/revert[/cyan] <id|last>   Revert to a snapshot or last change
+  [cyan]/revert[/cyan] <id|last>   Revert to a snapshot or rewind the last turn
 
 [bold]Modes:[/bold]
   [green]code[/green]    Ask before tool calls (default)
@@ -465,7 +539,7 @@ _HELP_TEXT = """\
   [red]auto[/red]    Auto-approve everything — fast but risky
 
 [bold]Configuration:[/bold]
-  [cyan]/endpoint[/cyan]           List endpoints  |  [cyan]/endpoint <name>[/cyan]  Switch
+  [cyan]/endpoint[/cyan]           List endpoints  |  [cyan]/endpoint <name> [--save][/cyan]  Switch
   [cyan]/formation[/cyan]          List formations  |  [cyan]/formation <name>[/cyan] Activate
   [cyan]/agent[/cyan]              List primary agents  |  [cyan]/agent <name>[/cyan]  Switch
   [cyan]/model[/cyan]              Show current model details
@@ -473,11 +547,11 @@ _HELP_TEXT = """\
 
 [bold]Input:[/bold]
   Enter              Send message
-  Tab                Cycle mode (or complete /commands)
-  Escape             Clear input line
+  {format_key_label(keys.cycle_mode):<18}Cycle mode (or complete /commands)
+  {format_key_label(keys.clear_input):<18}Clear input line
   \"\"\"...\"\"\"            Multi-line input
   Ctrl+C             Cancel current response
-  Ctrl+D             Exit
+  {format_key_label(keys.exit):<18}Exit
 """
 
 
@@ -499,6 +573,7 @@ class _SlashDispatcher:
             "/compact": self._cmd_compact,
             "/reset": self._cmd_reset,
             "/undo": self._cmd_undo,
+            "/retry": self._cmd_retry,
             "/cost": self._cmd_cost,
             "/endpoint": self._cmd_endpoint,
             "/formation": self._cmd_formation,
@@ -529,7 +604,7 @@ class _SlashDispatcher:
         return handler(arg)
 
     def _cmd_help(self, _arg: str) -> bool:
-        console.print(_HELP_TEXT)
+        console.print(_help_text(self._state))
         return True
 
     def _cmd_think(self, _arg: str) -> bool:
@@ -541,6 +616,7 @@ class _SlashDispatcher:
     def _cmd_compact(self, _arg: str) -> bool:
         try:
             self._state.agent.compact()
+            self._state.clear_turn_history()
             console.print("[dim]Conversation compacted. Older messages trimmed.[/dim]")
         except Exception as exc:
             console.print(f"[yellow]Compact failed: {exc}[/yellow]")
@@ -549,6 +625,7 @@ class _SlashDispatcher:
     def _cmd_reset(self, _arg: str) -> bool:
         self._state.agent.reset()
         self._state.turn_count = 0
+        self._state.clear_turn_history()
         console.print("[dim]Conversation reset.[/dim]")
         return True
 
@@ -564,12 +641,21 @@ class _SlashDispatcher:
         if "error" in result:
             console.print(f"[red]Undo failed: {result['error']}[/red]")
         else:
+            self._state.clear_turn_history()
             action = result.get("action", "reverted")
             path = result.get("path", "?")
             remaining = undo_stack_depth()
             console.print(f"[green]Undo: {action} {path}[/green]")
             if remaining > 0:
                 console.print(f"[dim]  {remaining} more undo(s) available[/dim]")
+        return True
+
+    def _cmd_retry(self, _arg: str) -> bool:
+        ok, message, retry_input = self._state.prepare_retry()
+        style = "dim" if ok else "yellow"
+        console.print(f"[{style}]{message}[/{style}]")
+        if ok and retry_input is not None:
+            self._state._queued_input = retry_input
         return True
 
     def _cmd_cost(self, _arg: str) -> bool:
@@ -643,20 +729,33 @@ class _SlashDispatcher:
                 console.print(f"  [cyan]{_endpoint_summary(ep)}[/cyan]{marker}")
             return True
 
-        if arg not in self._state.config.endpoints:
+        # Parse --save flag
+        parts = arg.split()
+        save = "--save" in parts
+        ep_key = next((p for p in parts if p != "--save"), "")
+
+        if ep_key not in self._state.config.endpoints:
             console.print(
-                f"[red]Unknown endpoint: {arg}[/red]\n"
+                f"[red]Unknown endpoint: {ep_key}[/red]\n"
                 f"[dim]Available: {', '.join(self._state.config.endpoints.keys())}[/dim]"
             )
             return True
 
-        self._state.config.default_endpoint = arg
+        self._state.config.default_endpoint = ep_key
         self._state.config.active_formation = None
         # Rebuild the agent with the new endpoint — reset is necessary because
         # the scheduler caches providers per-session and we want a clean switch
         self._state.rebuild_agent()
-        ep = self._state.config.endpoints[arg]
+        ep = self._state.config.endpoints[ep_key]
         console.print(f"[dim]Switched to endpoint: {_endpoint_summary(ep)}[/dim]")
+
+        if save:
+            if _save_project_default_endpoint(ep_key):
+                console.print(f"[dim]Saved as default in .nemocode.yaml[/dim]")
+            else:
+                console.print("[yellow]Could not save to .nemocode.yaml[/yellow]")
+        else:
+            console.print(f"[dim]Use [bold]/endpoint {ep_key} --save[/bold] to make permanent.[/dim]")
         return True
 
     def _cmd_formation(self, arg: str) -> bool:
@@ -730,7 +829,14 @@ class _SlashDispatcher:
 
     def _cmd_mode(self, _arg: str) -> bool:
         new_mode = self._state.cycle_mode()
-        self._state.agent = self._state._build_agent()
+        old_agent = self._state.agent
+        new_agent = self._state._build_agent()
+        self._state._transfer_sessions(old_agent, new_agent)
+        # Preserve pending plan across mode switch
+        new_agent._pending_plan_text = old_agent._pending_plan_text
+        new_agent._pending_plan_user_input = old_agent._pending_plan_user_input
+        self._state.agent = new_agent
+        self._state.clear_turn_history()
         mode_desc = {
             "code": "ask before tools",
             "plan": "read-only planning + approval",
@@ -835,6 +941,7 @@ class _SlashDispatcher:
 
         # Inject the loaded session into the agent's scheduler
         self._state.agent._scheduler._sessions[FormationRole.EXECUTOR] = session
+        self._state.clear_turn_history()
         msg_count = session.message_count()
         console.print(f"[dim]Resumed session {arg} ({msg_count} messages)[/dim]")
         return True
@@ -894,26 +1001,15 @@ class _SlashDispatcher:
         return True
 
     def _cmd_revert(self, arg: str) -> bool:
-        """Revert to a snapshot or undo the last N changes."""
+        """Revert to a snapshot or rewind the last completed user turn."""
         if not arg:
             console.print("[yellow]Usage: /revert <snapshot-id> or /revert last[/yellow]")
             return True
 
         if arg == "last":
-            # Revert the most recent file change
-            from nemocode.tools.fs import undo_last, undo_stack_depth
-
-            if undo_stack_depth() == 0:
-                console.print("[dim]Nothing to revert.[/dim]")
-                return True
-            result = undo_last()
-            if "error" in result:
-                console.print(f"[red]Revert failed: {result['error']}[/red]")
-            else:
-                console.print(
-                    f"[green]Reverted: {result.get('action', 'restored')} "
-                    f"{result.get('path', '?')}[/green]"
-                )
+            ok, message = self._state.revert_last_turn()
+            style = "green" if ok else "yellow"
+            console.print(f"[{style}]{message}[/{style}]")
             return True
 
         # Try as a snapshot ID
@@ -925,6 +1021,7 @@ class _SlashDispatcher:
             if "error" in result:
                 console.print(f"[red]{result['error']}[/red]")
             else:
+                self._state.clear_turn_history()
                 console.print(
                     f"[green]Reverted to snapshot {result['restored']} ({result['kind']})[/green]"
                 )
@@ -1008,8 +1105,8 @@ class _ReplState:
     def __init__(
         self,
         config: NeMoCodeConfig,
-        show_thinking: bool,
-        auto_yes: bool,
+        show_thinking: bool = True,
+        auto_yes: bool = False,
         agent_name: str | None = None,
     ) -> None:
         self.config = config
@@ -1028,6 +1125,7 @@ class _ReplState:
         self.metrics = MetricsCollector()
         self.context_mgr = ContextManager(
             context_window=self._resolve_context_window(),
+            model_id=self._resolve_model_id(),
         )
         # Mode: "code" (default), "plan" (read-only planning), "auto" (auto-approve all)
         self._modes = ["code", "plan", "auto"]
@@ -1038,6 +1136,9 @@ class _ReplState:
         self._auto_approve_remaining = False
         self._turn_active = False
         self._turn_start_time: float = 0.0
+        self._active_turn: TurnBoundary | None = None
+        self._last_turn: TurnBoundary | None = None
+        self._queued_input: str | None = None
 
     def _resolve_context_window(self) -> int:
         """Determine context window size from manifest or default."""
@@ -1049,8 +1150,12 @@ class _ReplState:
                 return manifest.context_window
         return 128_000  # conservative default
 
+    def _resolve_model_id(self) -> str:
+        ep = self.config.endpoints.get(self.config.default_endpoint)
+        return ep.model_id if ep else ""
+
     def _build_agent(self) -> CodeAgent:
-        if self.auto_yes or self.mode == "auto":
+        if self.auto_yes or self.mode in ("auto", "plan"):
             confirm_fn = _auto_confirm
         else:
             confirm_fn = _interactive_confirm
@@ -1061,13 +1166,55 @@ class _ReplState:
             agent_name=self.current_primary_agent_name(),
         )
 
+    def _transfer_sessions(self, old_agent: CodeAgent, new_agent: CodeAgent) -> None:
+        """Copy conversation history from old agent to new agent.
+
+        Preserves context across mode switches (plan → code → auto).
+        Skips the system prompt (each mode has its own) but copies all
+        user/assistant/tool messages.
+        """
+        from nemocode.core.streaming import Role as MsgRole
+
+        old_sessions = old_agent._scheduler._sessions
+        if not old_sessions:
+            return
+        # Get the single session from the old agent (keyed by its role)
+        old_session = next(iter(old_sessions.values()), None)
+        if not old_session or not old_session.messages:
+            return
+        # Extract non-system messages
+        history = [m for m in old_session.messages if m.role != MsgRole.SYSTEM]
+        if not history:
+            return
+        # Force the new agent's session to be created (with its own system prompt)
+        new_role = new_agent._scheduler._single_role
+        if new_role not in new_agent._scheduler._sessions:
+            from nemocode.core.sessions import Session
+
+            s = Session(
+                id=new_agent._scheduler._single_session_id,
+                endpoint_name=old_session.endpoint_name,
+            )
+            prompt = new_agent._scheduler._single_prompt or ""
+            project_ctx = new_agent._scheduler._project_context
+            if project_ctx:
+                prompt = f"{prompt}\n\n## Project Context\n{project_ctx}"
+            if prompt:
+                s.add_system(prompt)
+            new_agent._scheduler._sessions[new_role] = s
+        new_session = new_agent._scheduler._sessions[new_role]
+        new_session.messages.extend(history)
+        new_session.usage = old_session.usage
+
     def rebuild_agent(self) -> None:
         """Rebuild the agent after config changes (endpoint/formation switch)."""
         self.context_mgr = ContextManager(
             context_window=self._resolve_context_window(),
+            model_id=self._resolve_model_id(),
         )
         self.agent = self._build_agent()
         self.turn_count = 0
+        self.clear_turn_history()
 
     def current_primary_agent_name(self) -> str | None:
         if self.mode == "plan":
@@ -1101,6 +1248,94 @@ class _ReplState:
 
     def clear_cancel(self) -> None:
         self._cancelled = False
+
+    def clear_turn_history(self) -> None:
+        self._active_turn = None
+        self._last_turn = None
+        self._queued_input = None
+
+    def begin_turn(self, user_input: str) -> None:
+        try:
+            from nemocode.tools.fs import undo_stack_depth
+
+            undo_depth = undo_stack_depth()
+        except Exception:
+            undo_depth = 0
+
+        self._active_turn = TurnBoundary(
+            user_input=user_input,
+            turn_count_before=self.turn_count,
+            metrics_request_count=self.metrics.request_count,
+            undo_depth_before=undo_depth,
+            session_checkpoints={
+                role: session.checkpoint() for role, session in self.agent.sessions.items()
+            },
+            pending_plan_text=self.agent.pending_plan_text,
+            pending_plan_user_input=getattr(self.agent, "_pending_plan_user_input", None),
+        )
+
+    def finish_turn(self) -> None:
+        if self._active_turn is not None:
+            self._last_turn = self._active_turn
+            self._active_turn = None
+
+    def _restore_turn_sessions(self, turn: TurnBoundary) -> None:
+        sessions = self.agent.sessions
+        for role in list(sessions):
+            if role not in turn.session_checkpoints:
+                del sessions[role]
+        for role, checkpoint in turn.session_checkpoints.items():
+            session = sessions.get(role)
+            if session is not None:
+                session.restore(checkpoint)
+
+    def revert_last_turn(self) -> tuple[bool, str]:
+        turn = self._last_turn
+        if turn is None:
+            return False, "Nothing to revert. Run a turn first."
+
+        try:
+            from nemocode.core.persistence import revert_to_point
+            from nemocode.tools.fs import undo_stack_depth
+
+            current_depth = undo_stack_depth()
+            if current_depth < turn.undo_depth_before:
+                self.clear_turn_history()
+                return (
+                    False,
+                    "Last turn can no longer be rewound cleanly because the undo stack changed.",
+                )
+            results = revert_to_point(turn.undo_depth_before)
+        except Exception as exc:
+            return False, f"Failed to rewind last turn: {exc}"
+
+        self._restore_turn_sessions(turn)
+        del self.metrics._requests[turn.metrics_request_count:]
+        self.turn_count = turn.turn_count_before
+        self.agent._pending_plan_text = turn.pending_plan_text
+        self.agent._pending_plan_user_input = turn.pending_plan_user_input
+        self.clear_cancel()
+        self._last_turn = None
+
+        reverted_files = len([result for result in results if "error" not in result])
+        if reverted_files > 0:
+            return (
+                True,
+                f"Reverted last turn and restored {reverted_files} file change"
+                f"{'s' if reverted_files != 1 else ''}.",
+            )
+        return True, "Reverted last turn. No file changes needed to be restored."
+
+    def prepare_retry(self) -> tuple[bool, str, str | None]:
+        turn = self._last_turn
+        if turn is None:
+            return False, "Nothing to retry. Run a turn first.", None
+
+        preview = _turn_preview(turn.user_input)
+        ok, message = self.revert_last_turn()
+        if not ok:
+            return False, message, None
+        return True, f"Retrying: {preview}", turn.user_input
 
 
 # ===================================================================
@@ -1280,13 +1515,14 @@ def _render_status_bar(state: _ReplState) -> None:
     Kept to a single compact line so it feels like instrumentation, not clutter.
     """
     parts: list[str] = []
+    theme = _repl_theme(state.config)
 
-    parts.append(f"[bold {_NVIDIA_GREEN}]NVIDIA[/bold {_NVIDIA_GREEN}]")
+    parts.append(f"[bold {theme.accent_rich}]NVIDIA[/bold {theme.accent_rich}]")
 
     # Mode
     mode = state.mode
-    mode_colors = {"code": "green", "plan": "yellow", "auto": "red"}
-    mc = mode_colors.get(mode, "green")
+    mode_colors = {"code": theme.accent_rich, "plan": "yellow", "auto": "red"}
+    mc = mode_colors.get(mode, theme.accent_rich)
     parts.append(f"[bold {mc}]{mode}[/bold {mc}]")
 
     # Model display name (instead of raw endpoint key)
@@ -1301,7 +1537,7 @@ def _render_status_bar(state: _ReplState) -> None:
     parts.append(f"[blue]{state.current_primary_agent_display()}[/blue]")
 
     if state.config.active_formation:
-        parts.append(f"[{_NVIDIA_GREEN}]{state.config.active_formation}[/{_NVIDIA_GREEN}]")
+        parts.append(f"[{theme.accent_rich}]{state.config.active_formation}[/{theme.accent_rich}]")
 
     # Git branch
     branch = _get_git_branch()
@@ -1384,9 +1620,6 @@ def _auto_save_session(state: _ReplState) -> None:
 # ===================================================================
 
 
-_NVIDIA_GREEN = "bright_green"
-
-
 def _compact_gpu_name(name: str) -> str:
     """Shorten vendor-heavy GPU names for display."""
     cleaned = name.strip()
@@ -1437,17 +1670,19 @@ def _print_banner(state: _ReplState) -> None:
 
     manifest = state.config.manifests.get(model_id) if ep else None
     model_display = manifest.display_name if manifest else _short_model_ref(model_id)
+    theme = _repl_theme(state.config)
     if manifest:
         cw = manifest.context_window
         ctx_k = f"{cw // 1_000_000}M" if cw >= 1_000_000 else f"{cw // 1000}K"
     else:
         ctx_k = "128K"
 
-    mode_colors = {"code": _NVIDIA_GREEN, "plan": "yellow", "auto": "red"}
-    mode_style = mode_colors.get(state.mode, _NVIDIA_GREEN)
+    mode_colors = {"code": theme.accent_rich, "plan": "yellow", "auto": "red"}
+    mode_style = mode_colors.get(state.mode, theme.accent_rich)
     formation_str = f" · {formation}" if formation else ""
     hw_line = _get_hardware_line()
     path_line = str(Path.cwd())
+    keys = state.config.keybindings.repl
 
     # Compact banner for small terminals (< 30 rows)
     try:
@@ -1457,7 +1692,7 @@ def _print_banner(state: _ReplState) -> None:
 
     if term_height < 30:
         console.print(
-            f"[bold {_NVIDIA_GREEN}]NeMoCode // NVIDIA NIM[/bold {_NVIDIA_GREEN}] "
+            f"[bold {theme.accent_rich}]NeMoCode // NVIDIA NIM[/bold {theme.accent_rich}] "
             f"[dim]v{__version__}[/dim]"
         )
         console.print(
@@ -1481,20 +1716,24 @@ def _print_banner(state: _ReplState) -> None:
     content.append(f"{ctx_k} ctx", style="dim")
     if formation:
         content.append("  ·  ", style="dim")
-        content.append(formation, style=f"bold {_NVIDIA_GREEN}")
+        content.append(formation, style=f"bold {theme.accent_rich}")
     content.append("  ·  ", style="dim")
     content.append(state.mode.upper(), style=f"bold {mode_style}")
     content.append("\n")
     if hw_line:
         content.append(f"{hw_line}\n", style="dim")
     content.append(f"{path_line}\n", style="dim")
-    content.append('/help · """ multi-line · Tab mode · Ctrl+D exit', style="dim")
+    content.append(
+        f'/help · """ multi-line · {format_key_label(keys.cycle_mode)} mode · '
+        f"{format_key_label(keys.exit)} exit",
+        style="dim",
+    )
 
     panel = Panel(
         content,
-        title=f"[bold {_NVIDIA_GREEN}]NeMoCode // NVIDIA NIM[/bold {_NVIDIA_GREEN}]",
+        title=f"[bold {theme.accent_rich}]NeMoCode // NVIDIA NIM[/bold {theme.accent_rich}]",
         subtitle=f"[dim]v{__version__}[/dim]",
-        border_style=_NVIDIA_GREEN,
+        border_style=theme.accent_rich,
         padding=(0, 1),
         expand=False,
     )
@@ -1513,8 +1752,8 @@ async def run_repl(
     endpoint_name: str | None,
     formation_name: str | None,
     agent_name: str | None,
-    show_thinking: bool,
-    auto_yes: bool,
+    show_thinking: bool = True,
+    auto_yes: bool = False,
 ) -> None:
     """Run the interactive REPL. This is the main entry point called by code_cmd.
 
@@ -1533,6 +1772,7 @@ async def run_repl(
         auto_yes=auto_yes,
         agent_name=agent_name,
     )
+    _apply_repl_theme(config)
     reader = _InputReader(state)
     commands = _SlashDispatcher(state)
 
@@ -1557,11 +1797,20 @@ async def run_repl(
     from nemocode.tools.clarify import set_ask_fn
 
     async def _ask_user_interactive(question: str, options: list[str]) -> str:
-        console.print(f"\n[bold yellow]Agent question:[/bold yellow] {question}")
+        # Stop any active spinner before prompting — they fight over the terminal
+        renderer_ref = getattr(state, "_active_renderer", None)
+        if renderer_ref:
+            renderer_ref._renderer._stop_thinking()
+
+        console.print(f"\n[bold yellow]{question}[/bold yellow]")
         if options:
-            console.print(f"[dim]  Options: {', '.join(options)}[/dim]")
+            for opt in options:
+                console.print(f"  [dim]{opt}[/dim]")
         try:
-            answer = console.input("[yellow]  Your answer: [/yellow]")
+            loop = asyncio.get_running_loop()
+            answer = await loop.run_in_executor(
+                None, lambda: console.input("[yellow]  ▸ [/yellow]")
+            )
             return answer.strip()
         except (EOFError, KeyboardInterrupt):
             return "(no answer)"
@@ -1627,16 +1876,21 @@ async def run_repl(
                                 console.print(f"[dim]{result}[/dim]")
                         except Exception as e:
                             console.print(f"[red]Skill error: {e}[/red]")
-                continue
+                if state._queued_input is None:
+                    continue
+                stripped = state._queued_input
+                state._queued_input = None
 
             # ---- Execute turn ----
             global _auto_approve_remaining
             _auto_approve_remaining = False  # Reset per-turn auto-approve
+            state.begin_turn(stripped)
             state.turn_count += 1
             state.clear_cancel()
 
             # Check for external file changes and prepend to input
             changes = watcher.get_changes()
+            turn_input = stripped
             if changes:
                 watcher.clear()
                 changed_files = [c.path for c in changes[:10]]
@@ -1644,18 +1898,19 @@ async def run_repl(
                 change_note = ", ".join(f"{Path(f).name} ({kinds[f]})" for f in changed_files)
                 if len(changes) > 10:
                     change_note += f", ... and {len(changes) - 10} more"
-                stripped = (
+                turn_input = (
                     f"[Note: these files changed externally since last turn: "
                     f"{change_note}]\n\n{stripped}"
                 )
                 console.print(f"[dim]  {len(changes)} file(s) changed externally[/dim]")
 
             renderer = _TurnRenderer(state)
+            state._active_renderer = renderer
 
             state._turn_active = True
             state._turn_start_time = time.time()
             try:
-                await _run_turn(state, stripped, renderer)
+                await _run_turn(state, turn_input, renderer)
             except KeyboardInterrupt:
                 # Ctrl+C during streaming — the turn is cancelled but the session continues
                 console.print("\n[dim]Turn cancelled.[/dim]")
@@ -1664,15 +1919,18 @@ async def run_repl(
                 console.print(f"\n[bold red]Unexpected error: {exc}[/bold red]")
             finally:
                 state._turn_active = False
+                state.finish_turn()
                 renderer.finalize()
                 _render_status_bar(state)
 
             # Check if plan approval is pending after the turn
             if state.agent.has_pending_plan:
                 console.print(
-                    "\n[yellow]Plan awaiting your approval."
-                    " Reply with [bold]approve[/bold], [bold]revise[/bold],"
-                    " or [bold]cancel[/bold].[/yellow]"
+                    "\n[yellow]Plan awaiting your decision:[/yellow]"
+                    "\n  [dim]1. Start implementing[/dim]"
+                    "\n  [dim]2. Edit the plan[/dim]"
+                    "\n  [dim]3. Ask a question[/dim]"
+                    "\n  [dim]4. Cancel[/dim]"
                 )
 
             # Auto-save session after each turn
@@ -1700,30 +1958,46 @@ async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer)
     """
     # Check if we're resuming a pending plan approval
     if state.agent.has_pending_plan:
-        result = await state.agent.try_handle_plan_response(user_input)
-        if result is not None:
-            # User input was a recognized plan decision — handle it
-            renderer.start_thinking("Processing plan decision")
-            try:
-                async for event in result:
-                    if state.cancelled:
-                        continue
-                    try:
-                        renderer.render_event(event)
-                    except KeyboardInterrupt:
-                        state.cancel()
-                        console.print("\n[dim]Cancelling...[/dim]")
-                        continue
-            finally:
-                pass
-            return
-        # Not a plan decision — clear pending state and proceed as normal input
-        state.agent._pending_plan_text = None
-        state.agent._pending_plan_user_input = None
+        from nemocode.workflows.code_agent import CodeAgent
 
-    # Start a unified thinking spinner via the renderer.
-    # It persists through read-only tool execution, updating with progress,
-    # and stops automatically when the text response begins.
+        decision, feedback = CodeAgent.parse_plan_decision(user_input)
+
+        if decision == "ask":
+            # Frame the question in the context of the existing plan
+            question = feedback.strip() or user_input
+            plan_text = state.agent.pending_plan_text or ""
+            user_input = (
+                f"The user is reviewing this plan and has a question:\n\n"
+                f"## Current Plan\n{plan_text}\n\n"
+                f"## Question\n{question}\n\n"
+                "Answer the question concisely. Do not generate a new plan."
+            )
+            # Keep plan pending — menu will show again after this turn
+
+        elif decision != "pending":
+            # Recognized decision (approve, cancel, revise)
+            result = await state.agent.try_handle_plan_response(user_input)
+            if result is not None:
+                renderer.start_thinking("Processing plan decision")
+                try:
+                    async for event in result:
+                        if state.cancelled:
+                            continue
+                        try:
+                            renderer.render_event(event)
+                        except KeyboardInterrupt:
+                            state.cancel()
+                            console.print("\n[dim]Cancelling...[/dim]")
+                            continue
+                finally:
+                    renderer._renderer.flush()
+                return
+
+        else:
+            # Not a recognized decision — clear pending, proceed as normal input
+            state.agent._pending_plan_text = None
+            state.agent._pending_plan_user_input = None
+
     import random
 
     _THINKING_PHRASES = [
@@ -1750,7 +2024,7 @@ async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer)
                 console.print("\n[dim]Cancelling...[/dim]")
                 continue
     finally:
-        pass  # flush() in the caller's finally block cleans up spinners
+        renderer._renderer.flush()
 
 
 # ===================================================================
@@ -1762,8 +2036,8 @@ def start_repl(
     endpoint: str | None,
     formation: str | None,
     agent_name: str | None,
-    think: bool,
-    yes: bool,
+    think: bool = True,
+    yes: bool = False,
 ) -> None:
     """Synchronous entry point: loads config and runs the async REPL loop.
 

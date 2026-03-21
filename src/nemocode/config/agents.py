@@ -40,7 +40,11 @@ _BUILTIN_AGENTS_RAW: dict[str, dict[str, Any]] = {
         ],
     },
     "plan": {
-        "description": "Read-only planning agent for analysis and code exploration.",
+        "description": (
+            "Planning agent that researches, runs tests, and proposes next steps. "
+            "Can read files, run shell commands, and spawn subagents — but does "
+            "not write files or make git commits."
+        ),
         "display_name": "Plan Mode",
         "aliases": ["planner", "plan-mode"],
         "nickname_candidates": ["Plan Mode", "Planner"],
@@ -49,6 +53,7 @@ _BUILTIN_AGENTS_RAW: dict[str, dict[str, Any]] = {
         "tools": [
             "fs_read",
             "git_read",
+            "bash",
             "rg",
             "glob",
             "clarify",
@@ -59,14 +64,12 @@ _BUILTIN_AGENTS_RAW: dict[str, dict[str, Any]] = {
             "resume_agent",
         ],
         "prompt": (
-            "You are NeMoCode in plan mode. Read the codebase, analyze the task, "
-            "and propose concrete next steps without modifying files or running "
-            "destructive commands. Use ask_clarify only when blocked on requirements. "
-            "You can also spawn read-only research subagents for exploration. "
-            "When you have a plan, present it clearly for approval. "
-            "The controller handles approval, revision, or cancellation after you "
-            "respond. If revised, incorporate the feedback and return only the "
-            "updated plan."
+            "You are NeMoCode in plan mode. You MUST always produce a visible text "
+            "response. You can read files, search code, run shell commands (tests, "
+            "builds, inspections), check git status/diff/log, and spawn subagents. "
+            "You cannot write or edit files or make git commits — those happen after "
+            "approval. Investigate thoroughly, then present a clear actionable plan. "
+            "The user will choose to implement, revise, ask questions, or cancel."
         ),
     },
     "general": {
@@ -132,7 +135,7 @@ _BUILTIN_AGENTS_RAW: dict[str, dict[str, Any]] = {
         "nickname_candidates": ["Joe Testotron", "Joeverify", "Assertin Joe"],
         "mode": "subagent",
         "role": "fast",
-        "prefer_tiers": ["nano-4b", "nano-9b", "nano"],
+        "prefer_tiers": ["nano-9b", "nano", "super"],
         "tools": ["bash", "fs_read"],
         "prompt": (
             "You are a test execution subagent. Run the requested checks, keep the "

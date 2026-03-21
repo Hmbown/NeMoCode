@@ -22,7 +22,7 @@ def code_cmd(
     endpoint: str = typer.Option(None, "-e", "--endpoint", help="Endpoint override"),
     formation: str = typer.Option(None, "-f", "--formation", help="Formation to use"),
     agent: str = typer.Option(None, "-a", "--agent", help="Primary agent profile to use"),
-    think: bool = typer.Option(False, "--think", help="Show thinking trace"),
+    think: bool = typer.Option(True, "--think/--no-think", help="Show/hide thinking trace"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Auto-approve all tool calls"),
     tui: bool = typer.Option(False, "--tui", help="Launch full-screen TUI instead of REPL"),
 ) -> None:

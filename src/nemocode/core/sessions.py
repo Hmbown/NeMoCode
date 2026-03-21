@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from nemocode.core.streaming import Message, Role
 
@@ -29,6 +30,31 @@ class TokenUsage:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
         }
+
+
+@dataclass(frozen=True)
+class SessionCheckpoint:
+    """Restorable snapshot of one conversation session."""
+
+    messages: tuple[Message, ...]
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    updated_at: float
+
+
+@dataclass
+class TurnBoundary:
+    """Whole-turn checkpoint across conversation, undo stack, and UI metrics."""
+
+    user_input: str
+    turn_count_before: int
+    metrics_request_count: int
+    undo_depth_before: int
+    session_checkpoints: dict[Any, SessionCheckpoint] = field(default_factory=dict)
+    pending_plan_text: str | None = None
+    pending_plan_user_input: str | None = None
+    created_at: float = field(default_factory=time.time)
 
 
 class Session:
@@ -68,9 +94,33 @@ class Session:
         )
         self.updated_at = time.time()
 
+    def checkpoint(self) -> SessionCheckpoint:
+        """Capture the current session state for turn-level revert."""
+        return SessionCheckpoint(
+            messages=tuple(self.messages),
+            prompt_tokens=self.usage.prompt_tokens,
+            completion_tokens=self.usage.completion_tokens,
+            total_tokens=self.usage.total_tokens,
+            updated_at=self.updated_at,
+        )
+
+    def restore(self, checkpoint: SessionCheckpoint) -> None:
+        """Restore the session to a previously captured checkpoint."""
+        self.messages = list(checkpoint.messages)
+        self.usage.prompt_tokens = checkpoint.prompt_tokens
+        self.usage.completion_tokens = checkpoint.completion_tokens
+        self.usage.total_tokens = checkpoint.total_tokens
+        self.updated_at = checkpoint.updated_at
+
     def last_assistant_text(self) -> str:
         for msg in reversed(self.messages):
             if msg.role == Role.ASSISTANT and msg.content:
+                return msg.content
+        return ""
+
+    def last_user_text(self) -> str:
+        for msg in reversed(self.messages):
+            if msg.role == Role.USER and msg.content:
                 return msg.content
         return ""
 

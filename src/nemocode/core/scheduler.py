@@ -301,7 +301,7 @@ class Scheduler:
         single_role: FormationRole = FormationRole.EXECUTOR,
         single_prompt: str | None = None,
         single_session_id: str = "main",
-        status_interval_s: float = 8.0,
+        status_interval_s: float = 30.0,
     ) -> None:
         self._reg = registry
         self._tools = tool_registry
@@ -547,6 +547,7 @@ class Scheduler:
                         text_buf += chunk.text
                         yield AgentEvent(kind="text", text=chunk.text, role=role)
                     if chunk.thinking:
+                        visible_progress = True
                         think_buf += chunk.thinking
                         yield AgentEvent(kind="thinking", thinking=chunk.thinking, role=role)
                     if chunk.tool_calls:

@@ -274,6 +274,30 @@ class HooksConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# UI config
+# ---------------------------------------------------------------------------
+
+
+class ReplKeybindings(BaseModel):
+    cycle_mode: str = "tab"
+    clear_input: str = "escape"
+    exit: str = "ctrl+d"
+
+
+class TUIKeybindings(BaseModel):
+    exit: str = "ctrl+q"
+    cycle_mode: str = "tab"
+    cancel_turn: str = "ctrl+c"
+    submit: str = "enter"
+    toggle_tools: str = "ctrl+t"
+
+
+class KeybindingsConfig(BaseModel):
+    repl: ReplKeybindings = Field(default_factory=ReplKeybindings)
+    tui: TUIKeybindings = Field(default_factory=TUIKeybindings)
+
+
+# ---------------------------------------------------------------------------
 # Root config
 # ---------------------------------------------------------------------------
 
@@ -282,6 +306,8 @@ class NeMoCodeConfig(BaseModel):
     default_endpoint: str = "nim-super"
     active_formation: str | None = None
     max_tool_rounds: int = 100
+    theme: str = "nvidia-dark"
+    keybindings: KeybindingsConfig = Field(default_factory=KeybindingsConfig)
     endpoints: dict[str, Endpoint] = Field(default_factory=dict)
     manifests: dict[str, Manifest] = Field(default_factory=dict)
     formations: dict[str, Formation] = Field(default_factory=dict)

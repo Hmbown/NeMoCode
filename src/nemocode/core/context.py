@@ -3,13 +3,16 @@
 
 """Context window manager — tracks usage and manages smart compaction.
 
-Token counting uses tiktoken (cl100k_base) when available for accurate
-counts, falling back to a character-based estimate (4 chars/token).
+Token counting prefers an exact local tokenizer for the active model, then
+falls back to tiktoken when it can resolve the model or a deliberate family
+estimate, and only uses the old character heuristic as a last resort.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from nemocode.core.streaming import Message, Role
@@ -17,65 +20,235 @@ from nemocode.core.streaming import Message, Role
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Token counting — tiktoken with fallback
+# Token counting — exact when possible, explicit estimate otherwise
 # ---------------------------------------------------------------------------
 
-_encoder = None
-_USE_TIKTOKEN = False
+_tiktoken = None
+_HAS_TIKTOKEN = False
+_DEFAULT_MODEL_ID: str | None = None
 
 try:
     import tiktoken
 
-    _encoder = tiktoken.get_encoding("cl100k_base")
-    _USE_TIKTOKEN = True
-    logger.debug("Using tiktoken (cl100k_base) for accurate token counting")
+    _tiktoken = tiktoken
+    _HAS_TIKTOKEN = True
+    logger.debug("tiktoken available for token counting")
 except ImportError:
     logger.debug("tiktoken not installed — using character-based estimation")
 
 # Approximate tokens per character ratio for English text (fallback)
 _CHARS_PER_TOKEN = 4
+_GENERIC_TIKTOKEN_ENCODING = "cl100k_base"
 
 
-def estimate_tokens(text: str) -> int:
+@dataclass(frozen=True)
+class TokenCountStatus:
+    """Describes how token counts are being produced for a model."""
+
+    exact: bool
+    method: str
+    detail: str
+
+
+def configure_token_counting(model_id: str | None) -> None:
+    """Set the default model used for token counting when callers omit one."""
+    global _DEFAULT_MODEL_ID
+    _DEFAULT_MODEL_ID = model_id.strip() if model_id and model_id.strip() else None
+
+
+def _active_model_id(model_id: str | None = None) -> str | None:
+    candidate = model_id.strip() if model_id and model_id.strip() else None
+    return candidate or _DEFAULT_MODEL_ID
+
+
+@lru_cache(maxsize=32)
+def _load_cached_transformers_tokenizer(model_id: str):
+    try:
+        from transformers import AutoTokenizer
+    except ImportError:
+        return None
+
+    try:
+        return AutoTokenizer.from_pretrained(
+            model_id,
+            local_files_only=True,
+            trust_remote_code=False,
+            use_fast=True,
+        )
+    except Exception as exc:
+        logger.debug("No local tokenizer cache for %s: %s", model_id, exc)
+        return None
+
+
+@lru_cache(maxsize=8)
+def _get_tiktoken_encoding(name: str):
+    if not _HAS_TIKTOKEN or _tiktoken is None:
+        return None
+    try:
+        return _tiktoken.get_encoding(name)
+    except Exception as exc:
+        logger.debug("Failed to load tiktoken encoding %s: %s", name, exc)
+        return None
+
+
+@lru_cache(maxsize=32)
+def _resolve_exact_tiktoken_encoding(model_id: str):
+    if not _HAS_TIKTOKEN or _tiktoken is None:
+        return None
+    try:
+        return _tiktoken.encoding_for_model(model_id)
+    except KeyError:
+        return None
+    except Exception as exc:
+        logger.debug("Failed to resolve exact tiktoken encoding for %s: %s", model_id, exc)
+        return None
+
+
+def _family_tiktoken_encoding_name(model_id: str) -> str | None:
+    lowered = model_id.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "nemotron-3",
+            "nvidia-nemotron-3",
+            "nemotron-nano",
+            "nemotron-content-safety",
+            "llama-3.1-nemotron",
+        )
+    ):
+        return "o200k_base"
+    return None
+
+
+def _transformers_count(text: str, tokenizer) -> int:
+    encoded = tokenizer(text, add_special_tokens=False)
+    input_ids = encoded["input_ids"] if isinstance(encoded, dict) else encoded.input_ids
+    return len(input_ids)
+
+
+def token_count_status(model_id: str | None = None) -> TokenCountStatus:
+    """Return the current token counting mode for the active or given model."""
+    active_model = _active_model_id(model_id)
+
+    if active_model:
+        tokenizer = _load_cached_transformers_tokenizer(active_model)
+        if tokenizer is not None:
+            return TokenCountStatus(
+                exact=True,
+                method="transformers-local",
+                detail=f"Using the locally cached tokenizer for {active_model}.",
+            )
+
+        encoding = _resolve_exact_tiktoken_encoding(active_model)
+        if encoding is not None:
+            return TokenCountStatus(
+                exact=True,
+                method=f"tiktoken:{encoding.name}",
+                detail=f"Using tiktoken's exact model mapping for {active_model}.",
+            )
+
+        family_encoding_name = _family_tiktoken_encoding_name(active_model)
+        if family_encoding_name:
+            return TokenCountStatus(
+                exact=False,
+                method=f"tiktoken:{family_encoding_name}",
+                detail=(
+                    "Using a model-family tiktoken estimate because this model id does not "
+                    "have an exact built-in tokenizer mapping."
+                ),
+            )
+
+    if _HAS_TIKTOKEN:
+        return TokenCountStatus(
+            exact=False,
+            method=f"tiktoken:{_GENERIC_TIKTOKEN_ENCODING}",
+            detail=(
+                "Using a generic tiktoken estimate. Configure a model or cache its tokenizer "
+                "locally for exact counts."
+            ),
+        )
+
+    return TokenCountStatus(
+        exact=False,
+        method="chars/4",
+        detail="Using a character heuristic. Install tiktoken for better token estimates.",
+    )
+
+
+def estimate_tokens(text: str, model_id: str | None = None) -> int:
     """Count or estimate tokens in text.
 
-    Uses tiktoken (cl100k_base) when available for accurate counting.
-    Falls back to len(text) // 4 otherwise.
+    Prefers an exact local tokenizer when available, then exact tiktoken model
+    mappings, then explicit estimate paths.
     """
     if not text:
         return 0
-    if _USE_TIKTOKEN and _encoder is not None:
+
+    active_model = _active_model_id(model_id)
+    if active_model:
+        tokenizer = _load_cached_transformers_tokenizer(active_model)
+        if tokenizer is not None:
+            try:
+                return _transformers_count(text, tokenizer)
+            except Exception as exc:
+                logger.debug("Local tokenizer count failed for %s: %s", active_model, exc)
+
+        encoding = _resolve_exact_tiktoken_encoding(active_model)
+        if encoding is not None:
+            try:
+                return len(encoding.encode(text, disallowed_special=()))
+            except Exception as exc:
+                logger.debug("Exact tiktoken count failed for %s: %s", active_model, exc)
+
+        family_encoding_name = _family_tiktoken_encoding_name(active_model)
+        if family_encoding_name:
+            encoding = _get_tiktoken_encoding(family_encoding_name)
+            if encoding is not None:
+                try:
+                    return len(encoding.encode(text, disallowed_special=()))
+                except Exception as exc:
+                    logger.debug(
+                        "Model-family tiktoken estimate failed for %s via %s: %s",
+                        active_model,
+                        family_encoding_name,
+                        exc,
+                    )
+
+    generic_encoding = _get_tiktoken_encoding(_GENERIC_TIKTOKEN_ENCODING)
+    if generic_encoding is not None:
         try:
-            return len(_encoder.encode(text, disallowed_special=()))
-        except Exception:
-            pass
+            return len(generic_encoding.encode(text, disallowed_special=()))
+        except Exception as exc:
+            logger.debug("Generic tiktoken estimate failed: %s", exc)
+
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
-def estimate_message_tokens(msg: Message) -> int:
+def estimate_message_tokens(msg: Message, model_id: str | None = None) -> int:
     """Count or estimate token count for a single message."""
-    tokens = estimate_tokens(msg.content)
+    tokens = estimate_tokens(msg.content, model_id=model_id)
     if msg.thinking:
-        tokens += estimate_tokens(msg.thinking)
+        tokens += estimate_tokens(msg.thinking, model_id=model_id)
     for tc in msg.tool_calls:
-        tokens += estimate_tokens(str(tc.arguments)) + 20  # function overhead
+        tokens += estimate_tokens(str(tc.arguments), model_id=model_id) + 20  # function overhead
     return tokens + 4  # role/message overhead
 
 
-def is_accurate() -> bool:
-    """Return True if using accurate token counting (tiktoken)."""
-    return _USE_TIKTOKEN
+def is_accurate(model_id: str | None = None) -> bool:
+    """Return True if current token counting is exact for the given model."""
+    return token_count_status(model_id=model_id).exact
 
 
 class ContextManager:
     """Manages context window usage and smart compaction."""
 
-    def __init__(self, context_window: int = 1_048_576) -> None:
+    def __init__(self, context_window: int = 1_048_576, model_id: str | None = None) -> None:
         self.context_window = context_window
+        self.model_id = _active_model_id(model_id)
 
     def usage(self, messages: list[Message]) -> int:
         """Estimate total token usage for a message list."""
-        return sum(estimate_message_tokens(m) for m in messages)
+        return sum(estimate_message_tokens(m, model_id=self.model_id) for m in messages)
 
     def usage_fraction(self, messages: list[Message]) -> float:
         """Return context usage as a fraction (0.0 to 1.0)."""

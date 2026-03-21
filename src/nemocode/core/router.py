@@ -161,11 +161,9 @@ def route_to_formation(user_input: str, config: NeMoCodeConfig) -> str | None:
     has_spark = _has_spark_endpoints(config)
 
     if complexity == TaskComplexity.SIMPLE:
-        # Use Nano endpoint if available
-        for name, ep in config.endpoints.items():
-            if "nano" in ep.model_id.lower() and "local" not in name:
-                # Switch to nano endpoint, no formation
-                return None  # Will use nano endpoint directly
+        # No formation needed for simple tasks — get_auto_endpoint() handles
+        # routing to Nano as a fallback
+        return None
 
     if complexity == TaskComplexity.COMPLEX:
         # On Spark, prefer local formations.

@@ -21,7 +21,7 @@ console = Console()
 def chat_cmd(
     prompt: str = typer.Argument(None, help="Chat message (or pipe via stdin)"),
     endpoint: str = typer.Option(None, "-e", "--endpoint", help="Endpoint to use"),
-    think: bool = typer.Option(False, "--think", help="Show thinking trace"),
+    think: bool = typer.Option(True, "--think/--no-think", help="Show/hide thinking trace"),
 ) -> None:
     """Simple streaming chat with a Nemotron model. No tools."""
     # Read from stdin if no prompt

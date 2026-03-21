@@ -79,7 +79,7 @@ def main(
         # Launch the REPL (same as `nemo code` with no args)
         from nemocode.cli.commands.repl import start_repl
 
-        start_repl(endpoint=None, formation=None, agent_name=None, think=False, yes=False)
+        start_repl(endpoint=None, formation=None, agent_name=None, think=True, yes=False)
 
 
 _register_commands()

@@ -25,6 +25,7 @@ from rich.live import Live
 from rich.status import Status
 from rich.text import Text
 
+from nemocode.cli.theme import get_theme
 from nemocode.core.scheduler import AgentEvent
 
 # NVIDIA green accent used throughout the UI
@@ -58,6 +59,7 @@ _READ_ONLY_TOOLS = frozenset(
         "list_memories_tool",
         "list_tasks",
         "web_search",
+        "web_fetch",
         "lsp_diagnostics",
         "lsp_hover",
         "lsp_references",
@@ -71,6 +73,12 @@ _ERROR_RESULT_LINES = 15
 
 # During multi-tool sequences, cap further
 _MULTI_TOOL_RESULT_LINES = 2
+
+
+def set_render_theme(theme_name: str | None) -> None:
+    """Update shared Rich accent colors to match the active UI theme."""
+    global _NV_GREEN
+    _NV_GREEN = get_theme(theme_name).accent_rich
 
 
 @dataclass
@@ -168,7 +176,7 @@ class EventRenderer:
     # Max lines of thinking to show at once (rolling window)
     _THINK_VISIBLE_LINES = 8
 
-    def __init__(self, console: Console, *, show_thinking: bool = False) -> None:
+    def __init__(self, console: Console, *, show_thinking: bool = True) -> None:
         self._console = console
         self.show_thinking = show_thinking
         self._streaming = False
@@ -294,7 +302,17 @@ class EventRenderer:
 
     def _status(self, event: AgentEvent) -> None:
         self._maybe_show_hidden_reasoning_hint()
-        self._console.print(f"  [dim]· {event.text}[/dim]")
+        # Fold status into the spinner instead of printing a separate line
+        if self._thinking_spinner:
+            self._spinner_label = event.text
+            elapsed = ""
+            if self._turn_start:
+                elapsed = f" ({time.monotonic() - self._turn_start:.0f}s)"
+            self._thinking_spinner.update(
+                f"  [{_NV_GREEN}]{event.text}{elapsed}…[/{_NV_GREEN}]"
+            )
+        else:
+            self._console.print(f"  [dim]· {event.text}[/dim]")
 
     def _render_think_live(self, now: float) -> None:
         """Update the thinking Live widget with a rolling window of lines."""
@@ -536,8 +554,7 @@ class EventRenderer:
             return
         self._hidden_reasoning_hint_shown = True
         self._console.print(
-            "  [dim]Reasoning trace hidden. Use [bold]--think[/bold] or"
-            " [bold]/think[/bold] to show it when available.[/dim]"
+            "  [dim]Reasoning trace hidden. Use [bold]/think[/bold] to re-enable.[/dim]"
         )
 
 
@@ -655,6 +672,12 @@ def format_tool_call(name: str, args: dict) -> str:
         if len(q) > 50:
             q = q[:47] + "..."
         return f"Search web: {q}"
+
+    if name == "web_fetch":
+        url = args.get("url", "?")
+        if len(url) > 60:
+            url = url[:57] + "..."
+        return f"Fetch web: {url}"
 
     if name == "parse_document":
         return f"Parse {_short_path(args.get('path', '?'))}"
@@ -991,6 +1014,10 @@ def _read_only_suffix(tool_name: str, result: str, parsed) -> str:
     if tool_name == "web_search" and parsed and isinstance(parsed, dict):
         count = parsed.get("count", len(parsed.get("results", [])))
         return f"({count} results)"
+
+    if tool_name == "web_fetch" and parsed and isinstance(parsed, dict):
+        title = str(parsed.get("title") or "").strip()
+        return f"({title})" if title else "(page)"
 
     if tool_name in ("list_memories_tool", "list_tasks"):
         if parsed and isinstance(parsed, dict):

@@ -20,7 +20,6 @@ from nemocode.core.registry import Registry
 from nemocode.core.router import get_auto_endpoint, route_to_formation
 from nemocode.core.scheduler import ROLE_PROMPTS, AgentEvent, Scheduler
 from nemocode.core.snapshot import SnapshotManager
-from nemocode.tools.clarify import request_user_response
 from nemocode.tools.delegate import create_delegate_tools
 from nemocode.tools.loader import load_tools
 
@@ -189,7 +188,7 @@ class CodeAgent:
         agent_name: str | None = None,
     ) -> None:
         self._config = config or load_config(project_dir)
-        self._project_dir = project_dir
+        self._project_dir = (project_dir or Path.cwd()).resolve()
         self._registry = Registry(self._config)
         self._read_only = read_only
         self._confirm_fn = confirm_fn
@@ -197,12 +196,18 @@ class CodeAgent:
         self._pending_plan_user_input: str | None = None
         self._agent_profile = self._resolve_primary_agent(agent_name)
         if self._agent_profile:
-            self._tool_registry = load_tools(self._agent_profile.tools)
+            self._tool_registry = load_tools(
+                self._agent_profile.tools,
+                project_dir=self._project_dir,
+            )
         elif read_only:
-            # Plan mode: read-only tools only — no writes, edits, bash, commits
-            self._tool_registry = load_tools(["fs_read", "git_read", "rg", "glob", "clarify"])
+            # Plan mode: no file writes or git commits, but bash is allowed
+            self._tool_registry = load_tools(
+                ["fs_read", "git_read", "bash", "rg", "glob", "clarify"],
+                project_dir=self._project_dir,
+            )
         else:
-            self._tool_registry = load_tools()
+            self._tool_registry = load_tools(project_dir=self._project_dir)
         self._auto_route = auto_route
         self._mcp_clients: list = []
 
@@ -343,7 +348,12 @@ class CodeAgent:
         self._mcp_clients.clear()
 
     async def run(self, user_input: str) -> AsyncIterator[AgentEvent]:
-        """Run the agent with user input, yielding events."""
+        """Run the agent with user input, yielding events.
+
+        In plan mode, the response streams normally (with read-only tools),
+        then a decision menu appears so the user can execute, revise, ask
+        questions, or just continue chatting.
+        """
         if self._agent_profile and self._agent_profile.role == FormationRole.PLANNER:
             endpoint = self._config.default_endpoint
             async for event in self._run_plan_mode(endpoint, user_input):
@@ -377,107 +387,43 @@ class CodeAgent:
         endpoint: str,
         user_input: str,
     ) -> AsyncIterator[AgentEvent]:
-        """Generate a plan, iterate on feedback, then hand off to execution."""
-        replan_input = user_input
-        max_iterations = 5
+        """Stream a plan-mode response and store it as pending for decision.
 
-        for _ in range(max_iterations):
-            plan_text = ""
-            async for event in self._scheduler.run_single(endpoint, replan_input):
-                if event.kind == "text":
-                    plan_text += event.text
-                yield event
+        The response streams normally (read-only tools allowed). Afterward,
+        the plan text is saved as pending so the REPL can show the decision
+        menu non-blockingly. The user then types 1-4 or continues chatting.
+        """
+        plan_text = ""
+        had_activity = False
+        async for event in self._scheduler.run_single(endpoint, user_input):
+            if event.kind == "text":
+                plan_text += event.text
+            if event.kind in ("text", "thinking", "tool_call"):
+                had_activity = True
+            yield event
 
-            plan_text = plan_text.strip()
-            if not plan_text:
-                yield AgentEvent(
-                    kind="error",
-                    text="Planner produced no plan to approve.",
-                    is_error=True,
-                    role=FormationRole.PLANNER,
-                )
-                return
-
-            decision, feedback = await self._request_plan_decision(plan_text)
-            if decision == "approve":
-                async for event in self._run_approved_plan(user_input, plan_text):
-                    yield event
-                return
-            if decision == "cancel":
-                yield AgentEvent(
-                    kind="text",
-                    text="\nPlan cancelled.\n",
-                    role=FormationRole.PLANNER,
-                )
-                return
-            if decision == "pending":
-                self._pending_plan_text = plan_text
-                self._pending_plan_user_input = user_input
-                yield AgentEvent(
-                    kind="text",
-                    text=(
-                        "\nPlan is waiting for your approval. Reply with approve, revise, or"
-                        " cancel in your next message.\n"
-                    ),
-                    role=FormationRole.PLANNER,
-                )
-                return
-
-            feedback_text = feedback.strip() or "Make the plan more concrete and actionable."
+        plan_text = plan_text.strip()
+        if plan_text:
+            self._pending_plan_text = plan_text
+            self._pending_plan_user_input = user_input
+        elif had_activity:
+            # Model did work (thinking/tools) but produced no text — nudge it
             yield AgentEvent(
-                kind="status",
-                text="Revising plan from user feedback.",
+                kind="text",
+                text="\n[No text response was generated. Try rephrasing your request.]\n",
                 role=FormationRole.PLANNER,
-                phase="planning",
             )
-            replan_input = (
-                f"## Original Request\n{user_input}\n\n"
-                f"## Previous Plan\n{plan_text}\n\n"
-                f"## User Feedback\n{feedback_text}\n\n"
-                "Revise the plan to address the feedback. Present only the updated plan."
-            )
-
-        yield AgentEvent(
-            kind="error",
-            text="Max plan revisions reached without approval.",
-            is_error=True,
-            role=FormationRole.PLANNER,
-        )
-
-    async def _request_plan_decision(self, plan_text: str) -> tuple[str, str]:
-        """Ask the user to approve, revise, or cancel the current plan."""
-        answer, pending = await request_user_response(
-            (
-                "Review this plan:\n\n"
-                f"{plan_text}\n\n"
-                "Reply with approve, revise, or cancel. If you want changes, include the"
-                " feedback in your reply."
-            ),
-            ["approve", "revise", "cancel"],
-        )
-        if pending:
-            return "pending", ""
-
-        normalized = answer.strip()
-        lowered = normalized.lower()
-        if lowered in {"approve", "approved", "yes", "y"}:
-            return "approve", ""
-        if lowered in {"cancel", "cancelled", "decline", "declined", "no", "n"}:
-            return "cancel", ""
-        if lowered.startswith("revise"):
-            _, _, remainder = normalized.partition(":")
-            feedback = remainder.strip() or normalized[len("revise") :].strip()
-            return "revise", feedback
-        if not normalized:
-            return "cancel", ""
-        return "revise", normalized
 
     async def _run_approved_plan(
         self,
         user_input: str,
         plan_text: str,
     ) -> AsyncIterator[AgentEvent]:
-        """Execute an approved plan with the normal build agent in auto-routing mode."""
+        """Execute an approved plan using the current endpoint.
+
+        Transfers the planner's session history to the executor so it has
+        all the research context (file reads, git checks, tool results).
+        """
         yield AgentEvent(
             kind="phase",
             phase="executing",
@@ -486,16 +432,41 @@ class CodeAgent:
         )
         executor_agent = CodeAgent(
             config=self._config,
-            confirm_fn=self._confirm_fn,
+            confirm_fn=None,  # Plan was approved — auto-approve all tools
             project_dir=self._project_dir,
-            auto_route=True,
+            auto_route=False,
             read_only=False,
             agent_name="build",
         )
+        # Transfer planner's conversation history to executor
+        old_sessions = self._scheduler._sessions
+        if old_sessions:
+            old_session = next(iter(old_sessions.values()), None)
+            if old_session and old_session.messages:
+                from nemocode.core.sessions import Session
+                from nemocode.core.streaming import Role as MsgRole
+
+                exec_role = executor_agent._scheduler._single_role
+                s = Session(
+                    id=executor_agent._scheduler._single_session_id,
+                    endpoint_name=old_session.endpoint_name,
+                )
+                # Set executor system prompt
+                exec_prompt = executor_agent._scheduler._single_prompt or ROLE_PROMPTS.get(
+                    FormationRole.EXECUTOR, ""
+                )
+                if executor_agent._scheduler._project_context:
+                    exec_prompt += f"\n\n## Project Context\n{executor_agent._scheduler._project_context}"
+                if exec_prompt:
+                    s.add_system(exec_prompt)
+                # Copy non-system messages from planner session
+                s.messages.extend(m for m in old_session.messages if m.role != MsgRole.SYSTEM)
+                executor_agent._scheduler._sessions[exec_role] = s
+
         executor_input = (
-            f"{user_input}\n\n"
             f"## Approved Plan\n{plan_text}\n\n"
-            "Execute the approved plan. Do not ask for plan approval again."
+            "Execute the approved plan above. You have the full conversation "
+            "context from the planning phase. Do not re-plan or ask for approval."
         )
         async for event in executor_agent.run(executor_input):
             yield event
@@ -556,10 +527,22 @@ class CodeAgent:
         """Parse user input as a plan decision without prompting.
 
         Returns (decision, feedback) where decision is one of:
-        approve, cancel, revise, or pending (not a recognized decision).
+        approve, cancel, revise, ask, or pending (not a recognized decision).
         """
         normalized = user_input.strip()
         lowered = normalized.lower()
+        # Numbered shortcuts
+        if lowered in {"1", "1."}:
+            return "approve", ""
+        if lowered in {"4", "4."}:
+            return "cancel", ""
+        if lowered.startswith("2"):
+            feedback = normalized[1:].strip().lstrip(".").strip()
+            return "revise", feedback
+        if lowered.startswith("3"):
+            question = normalized[1:].strip().lstrip(".").strip()
+            return "ask", question
+        # Legacy text inputs
         if lowered in {"approve", "approved", "yes", "y"}:
             return "approve", ""
         if lowered in {"cancel", "cancelled", "decline", "declined", "no", "n"}:
@@ -585,8 +568,12 @@ class CodeAgent:
 
         plan_text = self._pending_plan_text
         original_input = self._pending_plan_user_input or ""
-        self._pending_plan_text = None
-        self._pending_plan_user_input = None
+
+        # For "ask", keep the plan pending — _execute_plan_decision will
+        # answer the question and re-prompt, potentially re-setting pending state.
+        if decision != "ask":
+            self._pending_plan_text = None
+            self._pending_plan_user_input = None
 
         return self._execute_plan_decision(decision, feedback, original_input, plan_text)
 
@@ -597,80 +584,52 @@ class CodeAgent:
         original_input: str,
         plan_text: str,
     ) -> AsyncIterator[AgentEvent]:
-        """Execute a plan decision (approve, cancel, or revise)."""
-        if decision == "approve":
-            async for event in self._run_approved_plan(original_input, plan_text):
-                yield event
-            return
+        """Execute a plan decision (approve, cancel, or revise).
 
-        if decision == "cancel":
-            yield AgentEvent(
-                kind="text",
-                text="\nPlan cancelled.\n",
-                role=FormationRole.PLANNER,
-            )
-            return
-
-        # Revise — run the planner again with feedback
-        feedback_text = feedback.strip() or "Make the plan more concrete and actionable."
-        yield AgentEvent(
-            kind="status",
-            text="Revising plan from user feedback.",
-            role=FormationRole.PLANNER,
-            phase="planning",
-        )
-        replan_input = (
-            f"## Original Request\n{original_input}\n\n"
-            f"## Previous Plan\n{plan_text}\n\n"
-            f"## User Feedback\n{feedback_text}\n\n"
-            "Revise the plan to address the feedback. Present only the updated plan."
-        )
+        Never blocks for user input — revise streams the new plan and
+        stores it as pending for the REPL to handle.
+        """
         endpoint = self._config.default_endpoint
-        plan_text = ""
-        async for event in self._scheduler.run_single(endpoint, replan_input):
-            if event.kind == "text":
-                plan_text += event.text
-            yield event
 
-        plan_text = plan_text.strip()
-        if not plan_text:
-            yield AgentEvent(
-                kind="error",
-                text="Planner produced no plan to approve.",
-                is_error=True,
-                role=FormationRole.PLANNER,
-            )
-            return
-
-        decision, feedback = await self._request_plan_decision(plan_text)
         if decision == "approve":
             async for event in self._run_approved_plan(original_input, plan_text):
                 yield event
         elif decision == "cancel":
+            yield AgentEvent(kind="text", text="\nPlan cancelled.\n", role=FormationRole.PLANNER)
+        elif decision == "revise":
+            feedback_text = feedback.strip() or "Make the plan more concrete and actionable."
             yield AgentEvent(
-                kind="text",
-                text="\nPlan cancelled.\n",
-                role=FormationRole.PLANNER,
+                kind="status", text="Revising plan from user feedback.",
+                role=FormationRole.PLANNER, phase="planning",
             )
-        elif decision == "pending":
+            replan_input = (
+                f"## Original Request\n{original_input}\n\n"
+                f"## Previous Plan\n{plan_text}\n\n"
+                f"## User Feedback\n{feedback_text}\n\n"
+                "Revise the plan to address the feedback. Present only the updated plan."
+            )
+            plan_text = ""
+            async for event in self._scheduler.run_single(endpoint, replan_input):
+                if event.kind == "text":
+                    plan_text += event.text
+                yield event
+            plan_text = plan_text.strip()
+            if not plan_text:
+                self._pending_plan_text = None
+                self._pending_plan_user_input = None
+                yield AgentEvent(
+                    kind="error", text="Revision produced no output. Plan cleared.",
+                    is_error=True, role=FormationRole.PLANNER,
+                )
+                return
+            # Store revised plan as pending — REPL shows menu again
             self._pending_plan_text = plan_text
             self._pending_plan_user_input = original_input
-            yield AgentEvent(
-                kind="text",
-                text=(
-                    "\nPlan is waiting for your approval. Reply with approve, revise, or"
-                    " cancel in your next message.\n"
-                ),
-                role=FormationRole.PLANNER,
-            )
         else:
             self._pending_plan_text = plan_text
             self._pending_plan_user_input = original_input
             yield AgentEvent(
                 kind="text",
-                text=(
-                    "\nPlan is waiting for your approval. Reply with approve, revise, or"
-                    " cancel in your next message.\n"
-                ),
+                text="\nPlan waiting for your decision. Choose 1-4 in your next message.\n",
                 role=FormationRole.PLANNER,
             )

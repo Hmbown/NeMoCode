@@ -176,5 +176,6 @@ class TestAgentControlTools:
         final = json.loads(await tools["wait_agent"](agent_id=spawned["run_id"], timeout_s=1.0))
 
         assert final["status"] == "completed"
-        assert captured["categories"] == ["fs_read"]
-        assert captured["scheduler_read_only"] is True
+        # Subagents get their own tools regardless of parent read-only state
+        assert captured["categories"] == ["bash", "fs_read"]
+        assert captured["scheduler_read_only"] is False

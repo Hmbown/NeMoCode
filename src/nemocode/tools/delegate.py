@@ -243,6 +243,11 @@ def _pick_endpoint(
             )
             return matches[0][0]
 
+    if tiers:
+        logger.warning(
+            "No endpoint matched tiers %s; falling back to default (%s)",
+            tiers, config.default_endpoint,
+        )
     return config.default_endpoint
 
 
@@ -412,15 +417,13 @@ def _spawn_subagent_run(
     session_id = f"{resolved_name}-{next(session_counter):04d}"
 
     tool_categories = agent.tools
-    if parent_read_only:
-        tool_categories = _restrict_to_read_only_categories(tool_categories)
     tool_registry = load_tools(tool_categories) if tool_categories else load_tools([])
     scheduler = Scheduler(
         registry=registry,
         tool_registry=tool_registry,
         confirm_fn=None,
         hook_runner=hook_runner,
-        read_only=parent_read_only,
+        read_only=False,
         permission_engine=permission_engine,
         max_tool_rounds=config.max_tool_rounds,
         single_role=agent.role,

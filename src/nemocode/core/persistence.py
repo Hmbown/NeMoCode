@@ -283,8 +283,13 @@ def revert_to_point(target_depth: int) -> list[dict[str, str]]:
     """
     from nemocode.tools.fs import undo_last, undo_stack_depth
 
+    if target_depth < 0:
+        raise ValueError("target_depth must be >= 0")
+
     results = []
     current = undo_stack_depth()
+    if target_depth >= current:
+        return results
     while current > target_depth:
         result = undo_last()
         results.append(result)

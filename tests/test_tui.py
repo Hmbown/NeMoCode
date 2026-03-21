@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nemocode.cli.theme import get_theme
 from nemocode.cli.tui import (
     NeMoCodeTUI,
     StatusBar,
@@ -32,6 +33,9 @@ from nemocode.config.schema import (
     NeMoCodeConfig,
     ToolPermissions,
 )
+from nemocode.core.metrics import RequestMetrics
+from nemocode.core.sessions import Session
+from nemocode.core.streaming import Message, Role
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -95,7 +99,7 @@ class TestAppConstruction:
         app = NeMoCodeTUI(config=sample_config)
         assert app._state.config is sample_config
         assert app._state.mode == "code"
-        assert app._state.show_thinking is False
+        assert app._state.show_thinking is True
 
     def test_app_applies_endpoint_override(self, sample_config):
         app = NeMoCodeTUI(config=sample_config, endpoint="other-ep")
@@ -122,6 +126,20 @@ class TestAppConstruction:
         assert "enter" in binding_keys
         assert "ctrl+t" in binding_keys
 
+    def test_app_applies_custom_theme_and_keybindings(self, sample_config):
+        sample_config.theme = "minimal"
+        sample_config.keybindings.tui.exit = "ctrl+x"
+        sample_config.keybindings.tui.toggle_tools = "ctrl+y"
+
+        app = NeMoCodeTUI(config=sample_config)
+
+        assert app._theme.name == "minimal"
+        assert get_theme("minimal").accent_hex in app.CSS
+        exit_bindings = app._bindings.get_bindings_for_key("ctrl+x")
+        toggle_bindings = app._bindings.get_bindings_for_key("ctrl+y")
+        assert any(binding.action == "quit_app" for binding in exit_bindings)
+        assert any(binding.action == "toggle_tools" for binding in toggle_bindings)
+
 
 # ---------------------------------------------------------------------------
 # TUI State tests
@@ -132,7 +150,7 @@ class TestTUIState:
     def test_initial_state(self, sample_config):
         state = _TUIState(config=sample_config)
         assert state.mode == "code"
-        assert state.show_thinking is False
+        assert state.show_thinking is True
         assert state.auto_yes is False
         assert state.turn_count == 0
         assert state.is_streaming is False
@@ -247,11 +265,11 @@ class TestSlashCommands:
         """The /think command should toggle thinking display."""
         async with NeMoCodeTUI(config=sample_config).run_test() as pilot:
             app = pilot.app
-            assert app._state.show_thinking is False
-            app._dispatch_slash("/think")
             assert app._state.show_thinking is True
             app._dispatch_slash("/think")
             assert app._state.show_thinking is False
+            app._dispatch_slash("/think")
+            assert app._state.show_thinking is True
 
     @pytest.mark.asyncio
     async def test_mode_cycle(self, sample_config):
@@ -351,6 +369,47 @@ class TestSlashCommands:
             app = pilot.app
             app._dispatch_slash("/agent builder")
             assert app._state.agent_name == "build"
+
+    @pytest.mark.asyncio
+    async def test_retry_rewinds_last_turn_and_resends_input(self, sample_config, tmp_path):
+        from nemocode.tools.fs import _UNDO_STACK
+
+        _UNDO_STACK.clear()
+        async with NeMoCodeTUI(config=sample_config).run_test() as pilot:
+            app = pilot.app
+            session = Session(id="executor")
+            session.add_system("System prompt")
+            session.add_user("Before")
+            app._state.agent.sessions[FormationRole.EXECUTOR] = session
+
+            chat = app.query_one("#chat-scroll")
+            app._chat_children_before_turn = len(chat.children)
+            app._tool_children_before_turn = 0
+
+            app._state.begin_turn("Retry this")
+            app._state.turn_count += 1
+            chat.add_user_message("Retry this")
+            chat.add_assistant_text("Done")
+            chat.finalize_assistant()
+
+            test_file = tmp_path / "retry.txt"
+            test_file.write_text("after turn")
+            _UNDO_STACK.append((str(test_file), "before turn"))
+            session.add_user("Retry this")
+            session.add_assistant(Message(role=Role.ASSISTANT, content="Done"))
+            app._state.metrics.record(RequestMetrics(prompt_tokens=10, completion_tokens=5))
+            app._state.finish_turn()
+
+            app._send_message = MagicMock()
+            app._dispatch_slash("/retry")
+
+            assert app._send_message.call_args[0][0] == "Retry this"
+            assert app._state.turn_count == 0
+            assert test_file.read_text() == "before turn"
+            assert session.message_count() == 2
+            assert app._state.metrics.request_count == 0
+            assert len(chat.children) == app._chat_children_before_turn + 1
+        _UNDO_STACK.clear()
 
     @pytest.mark.asyncio
     async def test_unknown_command(self, sample_config):

@@ -3,7 +3,9 @@
 
 """Configuration loader.
 
-Merge order: defaults.yaml → ~/.config/nemocode/config.yaml → .nemocode.yaml → env vars.
+Merge order:
+defaults.yaml → ~/.config/nemocode/config.yaml → project .nemocode.yaml
+→ project-root-to-cwd .nemocode/config.yaml overrides → env vars.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from nemocode.config.schema import (
     FormationRole,
     FormationSlot,
     HooksConfig,
+    KeybindingsConfig,
     Manifest,
     MCPConfig,
     MCPServerConfig,
@@ -35,6 +38,7 @@ from nemocode.config.schema import (
     StructuredOutputConfig,
     ToolPermissions,
 )
+from nemocode.core.context import configure_token_counting
 
 # Locate the bundled defaults.yaml (inside the package, not repo root)
 _PACKAGE_DIR = Path(__file__).resolve().parent.parent
@@ -42,6 +46,7 @@ _DEFAULTS_PATH = _PACKAGE_DIR / "defaults.yaml"
 _USER_CONFIG_DIR = Path(os.environ.get("NEMOCODE_CONFIG_DIR", "~/.config/nemocode")).expanduser()
 _USER_CONFIG_PATH = _USER_CONFIG_DIR / "config.yaml"
 _PROJECT_CONFIG_NAME = ".nemocode.yaml"
+_DIRECTORY_CONFIG_SUBPATH = Path(".nemocode") / "config.yaml"
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -61,6 +66,43 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     with open(path) as f:
         data = yaml.safe_load(f)
     return data if isinstance(data, dict) else {}
+
+
+def _find_project_root(start_dir: Path) -> Path:
+    """Resolve the project root for config discovery.
+
+    Prefer the nearest explicit project config. If none exists, fall back to
+    the nearest git root. Otherwise treat the current
+    directory as the root.
+    """
+    resolved = start_dir.resolve()
+    for parent in [resolved, *resolved.parents]:
+        if (parent / _PROJECT_CONFIG_NAME).exists():
+            return parent
+        if parent == Path.home():
+            break
+    for parent in [resolved, *resolved.parents]:
+        if (parent / ".git").exists():
+            return parent
+        if parent == Path.home():
+            break
+    return resolved
+
+
+def _iter_directory_config_paths(start_dir: Path, project_root: Path) -> list[Path]:
+    """Return directory override configs from project root to cwd."""
+    resolved = start_dir.resolve()
+    config_paths: list[Path] = []
+    if project_root not in {resolved, *resolved.parents}:
+        return [resolved / _DIRECTORY_CONFIG_SUBPATH]
+
+    current = project_root
+    config_paths.append(current / _DIRECTORY_CONFIG_SUBPATH)
+    if resolved != project_root:
+        for part in resolved.relative_to(project_root).parts:
+            current = current / part
+            config_paths.append(current / _DIRECTORY_CONFIG_SUBPATH)
+    return config_paths
 
 
 def _parse_endpoint(name: str, data: dict[str, Any]) -> Endpoint:
@@ -187,6 +229,8 @@ def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
         default_endpoint=raw.get("default_endpoint", "nim-super"),
         active_formation=raw.get("active_formation"),
         max_tool_rounds=raw.get("max_tool_rounds", 100),
+        theme=raw.get("theme", "nvidia-dark"),
+        keybindings=KeybindingsConfig(**raw.get("keybindings", {})),
         endpoints=endpoints,
         manifests=manifests,
         formations=formations,
@@ -209,8 +253,18 @@ def _apply_env_overrides(cfg: NeMoCodeConfig) -> NeMoCodeConfig:
     return cfg
 
 
+def _default_model_id(cfg: NeMoCodeConfig) -> str | None:
+    endpoint = cfg.endpoints.get(cfg.default_endpoint)
+    return endpoint.model_id if endpoint and endpoint.model_id else None
+
+
 def load_config(project_dir: Path | None = None) -> NeMoCodeConfig:
-    """Load and merge configuration from all sources."""
+    """Load and merge configuration from all supported sources.
+
+    Directory overrides are deep-merged in ascending specificity starting at
+    ``<project-root>/.nemocode/config.yaml`` and ending at the current working
+    directory's ``.nemocode/config.yaml``.
+    """
     # Layer 1: Bundled defaults
     raw = _load_yaml(_DEFAULTS_PATH)
 
@@ -219,16 +273,20 @@ def load_config(project_dir: Path | None = None) -> NeMoCodeConfig:
     if user_raw:
         raw = _deep_merge(raw, user_raw)
 
-    # Layer 3: Project config
-    if project_dir is None:
-        project_dir = Path.cwd()
-    project_path = project_dir / _PROJECT_CONFIG_NAME
-    project_raw = _load_yaml(project_path)
+    # Layer 3: Project config + nested directory overrides
+    cwd = Path.cwd() if project_dir is None else project_dir
+    project_root = _find_project_root(cwd)
+    project_raw = _load_yaml(project_root / _PROJECT_CONFIG_NAME)
     if project_raw:
         raw = _deep_merge(raw, project_raw)
 
-    # Layer 3b: Agent markdown profiles
-    discovered_agents = discover_agent_markdown(project_dir)
+    for config_path in _iter_directory_config_paths(cwd, project_root):
+        directory_raw = _load_yaml(config_path)
+        if directory_raw:
+            raw = _deep_merge(raw, directory_raw)
+
+    # Layer 3b: Agent markdown profiles from the project root
+    discovered_agents = discover_agent_markdown(project_root)
     if discovered_agents:
         raw["agents"] = _deep_merge(raw.get("agents", {}), discovered_agents)
 
@@ -237,6 +295,7 @@ def load_config(project_dir: Path | None = None) -> NeMoCodeConfig:
 
     # Layer 4: Environment overrides
     cfg = _apply_env_overrides(cfg)
+    configure_token_counting(_default_model_id(cfg))
 
     return cfg
 

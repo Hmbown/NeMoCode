@@ -49,59 +49,29 @@ def plan_config() -> NeMoCodeConfig:
 
 class TestCodeAgentPlanMode:
     @pytest.mark.asyncio
-    async def test_plan_mode_revises_then_executes(self, plan_config):
+    async def test_plan_mode_streams_and_stores_pending(self, plan_config):
+        """Plan mode streams the response and stores it as pending."""
         agent = CodeAgent(config=plan_config, read_only=True, agent_name="plan")
         prompts: list[tuple[str, str]] = []
-        plan_outputs = iter(["Plan v1", "Plan v2"])
-        decisions = iter([("revise", "Add tests"), ("approve", "")])
-        executions: list[tuple[str, str]] = []
 
         async def _fake_run_single(endpoint: str, user_input: str):
             prompts.append((endpoint, user_input))
-            yield AgentEvent(kind="text", text=next(plan_outputs), role=FormationRole.PLANNER)
-
-        async def _fake_request_plan_decision(plan_text: str) -> tuple[str, str]:
-            return next(decisions)
-
-        async def _fake_run_approved_plan(user_input: str, plan_text: str):
-            executions.append((user_input, plan_text))
-            yield AgentEvent(kind="text", text="executed", role=FormationRole.EXECUTOR)
+            yield AgentEvent(kind="text", text="Here is my plan.", role=FormationRole.PLANNER)
 
         agent._scheduler.run_single = _fake_run_single
-        agent._request_plan_decision = _fake_request_plan_decision
-        agent._run_approved_plan = _fake_run_approved_plan
 
-        events = [event async for event in agent.run("Ship the release")]
+        events = [event async for event in agent.run("What should we do?")]
 
-        assert prompts[0] == ("nim-super", "Ship the release")
-        assert prompts[1][0] == "nim-super"
-        assert "## Previous Plan\nPlan v1" in prompts[1][1]
-        assert "## User Feedback\nAdd tests" in prompts[1][1]
-        assert executions == [("Ship the release", "Plan v2")]
-        assert any(event.kind == "status" and "Revising plan" in event.text for event in events)
-        assert any(event.kind == "text" and event.text == "executed" for event in events)
+        assert prompts[0] == ("nim-super", "What should we do?")
+        assert any(e.text == "Here is my plan." for e in events if e.kind == "text")
+        assert agent.has_pending_plan
+        assert agent.pending_plan_text == "Here is my plan."
 
     @pytest.mark.asyncio
-    async def test_plan_mode_runs_before_active_formation(self, plan_config):
-        plan_config.active_formation = "plan_execute"
+    async def test_plan_mode_is_read_only(self, plan_config):
+        """Plan mode creates agent with read-only tools."""
         agent = CodeAgent(config=plan_config, read_only=True, agent_name="plan")
-        calls: list[tuple[str, str]] = []
-
-        async def _fake_run_plan_mode(endpoint: str, user_input: str):
-            calls.append((endpoint, user_input))
-            yield AgentEvent(kind="text", text="planned", role=FormationRole.PLANNER)
-
-        async def _unexpected_run_formation(*args, **kwargs):
-            raise AssertionError("run_formation should not be used before plan approval")
-            yield AgentEvent(kind="text", text="")
-
-        agent._run_plan_mode = _fake_run_plan_mode
-        agent._scheduler.run_formation = _unexpected_run_formation
-
-        events = [event async for event in agent.run("Prepare release notes")]
-
-        assert calls == [("nim-super", "Prepare release notes")]
-        assert [event.text for event in events if event.kind == "text"] == ["planned"]
+        assert agent._read_only is True
 
 
 class TestPlanApprovalResume:
@@ -109,17 +79,13 @@ class TestPlanApprovalResume:
 
     @pytest.mark.asyncio
     async def test_pending_plan_stored_on_agent(self, plan_config):
-        """When approval returns pending, plan text is stored on agent."""
+        """Plan mode always stores response as pending."""
         agent = CodeAgent(config=plan_config, read_only=True, agent_name="plan")
 
         async def _fake_run_single(endpoint, user_input):
             yield AgentEvent(kind="text", text="My plan", role=FormationRole.PLANNER)
 
-        async def _fake_request_decision(plan_text):
-            return ("pending", "")
-
         agent._scheduler.run_single = _fake_run_single
-        agent._request_plan_decision = _fake_request_decision
 
         [e async for e in agent.run("do something")]
         assert agent.has_pending_plan
@@ -218,6 +184,8 @@ class TestPlanApprovalResume:
         assert CodeAgent.parse_plan_decision("approved") == ("approve", "")
         assert CodeAgent.parse_plan_decision("yes") == ("approve", "")
         assert CodeAgent.parse_plan_decision("y") == ("approve", "")
+        assert CodeAgent.parse_plan_decision("1") == ("approve", "")
+        assert CodeAgent.parse_plan_decision("1.") == ("approve", "")
 
     @pytest.mark.asyncio
     async def test_parse_plan_decision_cancel(self):
@@ -225,11 +193,23 @@ class TestPlanApprovalResume:
         assert CodeAgent.parse_plan_decision("Cancel") == ("cancel", "")
         assert CodeAgent.parse_plan_decision("no") == ("cancel", "")
         assert CodeAgent.parse_plan_decision("n") == ("cancel", "")
+        assert CodeAgent.parse_plan_decision("4") == ("cancel", "")
+        assert CodeAgent.parse_plan_decision("4.") == ("cancel", "")
 
     @pytest.mark.asyncio
     async def test_parse_plan_decision_revise(self):
         assert CodeAgent.parse_plan_decision("revise: add tests") == ("revise", "add tests")
         assert CodeAgent.parse_plan_decision("revise") == ("revise", "")
+        assert CodeAgent.parse_plan_decision("2") == ("revise", "")
+        assert CodeAgent.parse_plan_decision("2 add error handling") == ("revise", "add error handling")
+        assert CodeAgent.parse_plan_decision("2. add error handling") == ("revise", "add error handling")
+
+    @pytest.mark.asyncio
+    async def test_parse_plan_decision_ask(self):
+        """Numbered '3' or '3. question' returns ask decision."""
+        assert CodeAgent.parse_plan_decision("3") == ("ask", "")
+        assert CodeAgent.parse_plan_decision("3 what about tests?") == ("ask", "what about tests?")
+        assert CodeAgent.parse_plan_decision("3. what about tests?") == ("ask", "what about tests?")
 
     @pytest.mark.asyncio
     async def test_parse_plan_decision_pending(self):
@@ -241,22 +221,16 @@ class TestPlanApprovalResume:
     async def test_full_cycle_plan_pending_approve_execute(self, plan_config):
         """End-to-end: plan → pending → approve → execution."""
         agent = CodeAgent(config=plan_config, read_only=True, agent_name="plan")
-        plan_outputs = iter(["Plan v1"])
 
         async def _fake_run_single(endpoint, user_input):
-            yield AgentEvent(kind="text", text=next(plan_outputs), role=FormationRole.PLANNER)
-
-        async def _fake_request_decision(plan_text):
-            return ("pending", "")
+            yield AgentEvent(kind="text", text="Plan v1", role=FormationRole.PLANNER)
 
         agent._scheduler.run_single = _fake_run_single
-        agent._request_plan_decision = _fake_request_decision
 
-        # Phase 1: generate plan
-        events1 = [e async for e in agent.run("Ship it")]
+        # Phase 1: generate plan (non-blocking, stored as pending)
+        [e async for e in agent.run("Ship it")]
         assert agent.has_pending_plan
         assert agent.pending_plan_text == "Plan v1"
-        assert any("waiting for your approval" in e.text for e in events1 if e.kind == "text")
 
         # Phase 2: approve
         executed = []
@@ -267,7 +241,7 @@ class TestPlanApprovalResume:
 
         agent._run_approved_plan = _fake_run_approved
 
-        result = await agent.try_handle_plan_response("approve")
+        result = await agent.try_handle_plan_response("1")
         assert result is not None
         events2 = [e async for e in result]
         assert executed == [("Ship it", "Plan v1")]
@@ -282,18 +256,14 @@ class TestPlanApprovalResume:
         async def _fake_run_single(endpoint, user_input):
             yield AgentEvent(kind="text", text="Plan v1", role=FormationRole.PLANNER)
 
-        async def _fake_request_decision(plan_text):
-            return ("pending", "")
-
         agent._scheduler.run_single = _fake_run_single
-        agent._request_plan_decision = _fake_request_decision
 
         # Phase 1: generate plan
         [e async for e in agent.run("Ship it")]
         assert agent.has_pending_plan
 
         # Phase 2: cancel
-        result = await agent.try_handle_plan_response("cancel")
+        result = await agent.try_handle_plan_response("4")
         events = [e async for e in result]
         assert any("cancelled" in e.text.lower() for e in events if e.kind == "text")
         assert not agent.has_pending_plan

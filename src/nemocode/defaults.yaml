@@ -40,7 +40,7 @@ endpoints:
     tier: dev-hosted
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: NVIDIA_API_KEY
-    model_id: "nvidia/nemotron-nano-9b-v2"
+    model_id: "nvidia/nvidia-nemotron-nano-9b-v2"
     capabilities: [chat, code]
     max_tokens: 8192
 
@@ -496,6 +496,34 @@ manifests:
       uses_latent_moe: false
       uses_mtp: false
       uses_mamba: true               # Hybrid Mamba-Transformer
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+      regex: true
+    supports_tools: true
+    supports_lora: true
+    recommended_gpu: "DGX Spark / L40S / RTX 4090"
+    min_gpu_memory_gb: 10
+    min_gpus: 1
+
+  # API Catalog uses a different model ID for 9B
+  nvidia/nvidia-nemotron-nano-9b-v2:
+    display_name: "Nemotron Nano 9B v2"
+    arch: nemotron-3
+    tier_in_family: nano-9b
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 9
+      active_params_b: 9
+      uses_latent_moe: false
+      uses_mtp: false
+      uses_mamba: true
       precision: "fp8"
     reasoning:
       supports_thinking: true

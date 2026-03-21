@@ -95,6 +95,70 @@ class TestToolRegistry:
         registry = load_tools([])
         assert registry.list_tools() == []
 
+    def test_load_tools_discovers_project_plugin(self, monkeypatch, tmp_path: Path):
+        plugin_dir = tmp_path / ".nemocode" / "tools"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "demo_plugin.py").write_text(
+            "import json\n"
+            "from nemocode.tools import tool\n\n"
+            '@tool(name="demo_plugin", description="Demo plugin", category="plugin")\n'
+            "async def demo_plugin(subject: str = 'world') -> str:\n"
+            '    return json.dumps({"hello": subject})\n'
+        )
+
+        monkeypatch.chdir(tmp_path)
+        registry = load_tools()
+        names = {t.name for t in registry.list_tools()}
+        assert "demo_plugin" in names
+
+    def test_load_tools_filters_project_plugin_by_category(self, monkeypatch, tmp_path: Path):
+        plugin_dir = tmp_path / ".nemocode" / "tools"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "demo_plugin.py").write_text(
+            "from nemocode.tools import tool\n\n"
+            '@tool(name="demo_plugin", description="Demo plugin", category="plugin")\n'
+            "async def demo_plugin() -> str:\n"
+            '    return "ok"\n'
+        )
+
+        monkeypatch.chdir(tmp_path)
+        registry = load_tools(["plugin"])
+        names = {t.name for t in registry.list_tools()}
+        assert names == {"demo_plugin"}
+
+    def test_load_tools_uses_explicit_project_dir_for_plugins(
+        self, monkeypatch, tmp_path: Path
+    ):
+        plugin_dir = tmp_path / ".nemocode" / "tools"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "demo_plugin.py").write_text(
+            "from nemocode.tools import tool\n\n"
+            '@tool(name="demo_plugin", description="Demo plugin", category="plugin")\n'
+            "async def demo_plugin() -> str:\n"
+            '    return "ok"\n'
+        )
+        nested_dir = tmp_path / "services" / "api"
+        nested_dir.mkdir(parents=True)
+
+        monkeypatch.chdir(nested_dir)
+        registry = load_tools(["plugin"], project_dir=tmp_path)
+        names = {t.name for t in registry.list_tools()}
+        assert names == {"demo_plugin"}
+
+    def test_load_no_tools_with_empty_list_ignores_plugins(self, monkeypatch, tmp_path: Path):
+        plugin_dir = tmp_path / ".nemocode" / "tools"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "demo_plugin.py").write_text(
+            "from nemocode.tools import tool\n\n"
+            '@tool(name="demo_plugin", description="Demo plugin", category="plugin")\n'
+            "async def demo_plugin() -> str:\n"
+            '    return "ok"\n'
+        )
+
+        monkeypatch.chdir(tmp_path)
+        registry = load_tools([])
+        assert registry.list_tools() == []
+
     @pytest.mark.asyncio
     async def test_search_files_accepts_text_alias(self, tmp_path: Path):
         from nemocode.tools.rg import search_files
@@ -104,6 +168,126 @@ class TestToolRegistry:
 
         result = await search_files(text="needle", path=str(tmp_path))
         assert "sample.py:1:needle = 1" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_project_plugin_tool(self, monkeypatch, tmp_path: Path):
+        plugin_dir = tmp_path / ".nemocode" / "tools"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "demo_plugin.py").write_text(
+            "import json\n"
+            "from nemocode.tools import tool\n\n"
+            '@tool(name="demo_plugin", description="Demo plugin", category="plugin")\n'
+            "async def demo_plugin(subject: str) -> str:\n"
+            '    return json.dumps({"hello": subject})\n'
+        )
+
+        monkeypatch.chdir(tmp_path)
+        registry = load_tools(["plugin"])
+        result = await registry.execute("demo_plugin", {"subject": "mars"})
+        assert json.loads(result) == {"hello": "mars"}
+
+
+class TestWebTools:
+    @pytest.mark.asyncio
+    async def test_web_fetch_extracts_main_content(self, monkeypatch):
+        from nemocode.tools.web import web_fetch
+
+        html_doc = """
+        <html>
+          <head><title>Example Docs</title><style>.noise { display:none; }</style></head>
+          <body>
+            <nav>Navigation noise</nav>
+            <main>
+              <h1>Install Guide</h1>
+              <p>Step one: install the package.</p>
+              <p>Step two: run the command.</p>
+            </main>
+            <script>console.log("ignore me")</script>
+          </body>
+        </html>
+        """
+
+        class _FakeHeaders:
+            def __init__(self, content_type: str) -> None:
+                self._content_type = content_type
+
+            def get(self, name: str, default=None):
+                if name.lower() == "content-type":
+                    return self._content_type
+                return default
+
+            def get_content_charset(self):
+                return "utf-8"
+
+        class _FakeResponse:
+            def __init__(self, body: str) -> None:
+                self.headers = _FakeHeaders("text/html; charset=utf-8")
+                self.status = 200
+                self._body = body.encode()
+
+            def read(self):
+                return self._body
+
+            def geturl(self):
+                return "https://example.com/docs"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(
+            "nemocode.tools.web.urllib.request.urlopen",
+            lambda req, timeout=20: _FakeResponse(html_doc),
+        )
+
+        result = json.loads(await web_fetch("https://example.com/docs"))
+        assert result["status"] == 200
+        assert result["title"] == "Example Docs"
+        assert "Install Guide" in result["content"]
+        assert "Step one: install the package." in result["content"]
+        assert "Navigation noise" not in result["content"]
+        assert "ignore me" not in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_web_fetch_plain_text_passthrough(self, monkeypatch):
+        from nemocode.tools.web import web_fetch
+
+        class _FakeHeaders:
+            def get(self, name: str, default=None):
+                if name.lower() == "content-type":
+                    return "text/plain; charset=utf-8"
+                return default
+
+            def get_content_charset(self):
+                return "utf-8"
+
+        class _FakeResponse:
+            def __init__(self) -> None:
+                self.headers = _FakeHeaders()
+                self.status = 200
+
+            def read(self):
+                return b"line one\nline two\n"
+
+            def geturl(self):
+                return "https://example.com/plain.txt"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(
+            "nemocode.tools.web.urllib.request.urlopen",
+            lambda req, timeout=20: _FakeResponse(),
+        )
+
+        result = json.loads(await web_fetch("https://example.com/plain.txt"))
+        assert result["content"] == "line one\nline two"
+        assert result["title"] == ""
 
 
 class TestFSTools:

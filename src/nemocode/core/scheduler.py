@@ -27,8 +27,7 @@ from nemocode.config.schema import FormationRole, FormationSlot
 from nemocode.core.context import ContextManager
 from nemocode.core.registry import Registry
 from nemocode.core.sessions import Session
-from nemocode.core.streaming import Message, Role, ToolCall
-from nemocode.providers.nim_chat import NIMChatProvider
+from nemocode.core.streaming import ChatProvider, Message, Role, ToolCall
 from nemocode.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -468,7 +467,7 @@ class Scheduler:
 
     async def _agent_loop(
         self,
-        provider: NIMChatProvider,
+        provider: ChatProvider,
         session: Session,
         role: FormationRole,
         *,

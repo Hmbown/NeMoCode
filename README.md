@@ -16,6 +16,11 @@ From PyPI:
 pip install nemocode
 ```
 
+Recommended (isolated environment):
+```bash
+pipx install nemocode
+```
+
 Or from source (editable):
 ```bash
 pip install -e .

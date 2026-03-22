@@ -836,8 +836,7 @@ class _SlashDispatcher:
         new_agent = self._state._build_agent()
         self._state._transfer_sessions(old_agent, new_agent)
         # Preserve pending plan across mode switch
-        new_agent._pending_plan_text = old_agent._pending_plan_text
-        new_agent._pending_plan_user_input = old_agent._pending_plan_user_input
+        new_agent.transfer_pending_plan(old_agent)
         self._state.agent = new_agent
         self._state.clear_turn_history()
         mode_desc = {
@@ -943,7 +942,7 @@ class _SlashDispatcher:
             return True
 
         # Inject the loaded session into the agent's scheduler
-        self._state.agent._scheduler._sessions[FormationRole.EXECUTOR] = session
+        self._state.agent.set_session(FormationRole.EXECUTOR, session)
         self._state.clear_turn_history()
         msg_count = session.message_count()
         console.print(f"[dim]Resumed session {arg} ({msg_count} messages)[/dim]")
@@ -1178,34 +1177,33 @@ class _ReplState:
         """
         from nemocode.core.streaming import Role as MsgRole
 
-        old_sessions = old_agent._scheduler._sessions
-        if not old_sessions:
-            return
-        # Get the single session from the old agent (keyed by its role)
-        old_session = next(iter(old_sessions.values()), None)
+        old_session = old_agent.get_session()
         if not old_session or not old_session.messages:
             return
-        # Extract non-system messages
         history = [m for m in old_session.messages if m.role != MsgRole.SYSTEM]
         if not history:
             return
-        # Force the new agent's session to be created (with its own system prompt)
-        new_role = new_agent._scheduler._single_role
-        if new_role not in new_agent._scheduler._sessions:
+        new_session = new_agent.get_session()
+        if new_session is None:
+            from nemocode.config.schema import FormationRole
             from nemocode.core.sessions import Session
 
+            role = (
+                new_agent._agent_profile.role
+                if new_agent._agent_profile
+                else FormationRole.EXECUTOR
+            )
             s = Session(
-                id=new_agent._scheduler._single_session_id,
                 endpoint_name=old_session.endpoint_name,
             )
-            prompt = new_agent._scheduler._single_prompt or ""
-            project_ctx = new_agent._scheduler._project_context
+            prompt = new_agent._agent_profile.prompt if new_agent._agent_profile else ""
+            project_ctx = new_agent.scheduler._project_context
             if project_ctx:
                 prompt = f"{prompt}\n\n## Project Context\n{project_ctx}"
             if prompt:
                 s.add_system(prompt)
-            new_agent._scheduler._sessions[new_role] = s
-        new_session = new_agent._scheduler._sessions[new_role]
+            new_agent.set_session(role, s)
+            new_session = s
         new_session.messages.extend(history)
         new_session.usage = old_session.usage
 
@@ -1274,7 +1272,7 @@ class _ReplState:
                 role: session.checkpoint() for role, session in self.agent.sessions.items()
             },
             pending_plan_text=self.agent.pending_plan_text,
-            pending_plan_user_input=getattr(self.agent, "_pending_plan_user_input", None),
+            pending_plan_user_input=self.agent.pending_plan_user_input,
         )
 
     def finish_turn(self) -> None:
@@ -1316,7 +1314,7 @@ class _ReplState:
         del self.metrics._requests[turn.metrics_request_count :]
         self.turn_count = turn.turn_count_before
         self.agent._pending_plan_text = turn.pending_plan_text
-        self.agent._pending_plan_user_input = turn.pending_plan_user_input
+        self.agent.pending_plan_user_input = turn.pending_plan_user_input
         self.clear_cancel()
         self._last_turn = None
 
@@ -2002,8 +2000,7 @@ async def _run_turn(state: _ReplState, user_input: str, renderer: _TurnRenderer)
 
         else:
             # Not a recognized decision — clear pending, proceed as normal input
-            state.agent._pending_plan_text = None
-            state.agent._pending_plan_user_input = None
+            state.agent.clear_pending_plan()
 
     import random
 

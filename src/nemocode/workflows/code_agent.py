@@ -19,6 +19,7 @@ from nemocode.core.permissions import PermissionEngine
 from nemocode.core.registry import Registry
 from nemocode.core.router import get_auto_endpoint, route_to_formation
 from nemocode.core.scheduler import ROLE_PROMPTS, AgentEvent, Scheduler
+from nemocode.core.sessions import Session
 from nemocode.core.snapshot import SnapshotManager
 from nemocode.tools.delegate import create_delegate_tools
 from nemocode.tools.loader import load_tools
@@ -523,6 +524,22 @@ class CodeAgent:
     def snapshot_mgr(self) -> SnapshotManager:
         return self._snapshot_mgr
 
+    @property
+    def scheduler(self) -> Scheduler:
+        """Public access to the scheduler for advanced use."""
+        return self._scheduler
+
+    def get_session(self, role: FormationRole | None = None) -> Session | None:
+        """Get a session by role, or the first available session."""
+        if role is not None and role in self._scheduler._sessions:
+            return self._scheduler._sessions[role]
+        sessions = self._scheduler._sessions
+        return next(iter(sessions.values()), None) if sessions else None
+
+    def set_session(self, role: FormationRole, session: Session) -> None:
+        """Set a session for a given role."""
+        self._scheduler._sessions[role] = session
+
     async def create_snapshot(self, label: str = "") -> dict | None:
         """Create a git snapshot for safe rollback."""
         snap = await self._snapshot_mgr.create_snapshot(label)
@@ -537,6 +554,25 @@ class CodeAgent:
     def pending_plan_text(self) -> str | None:
         """The plan text awaiting approval, or None."""
         return self._pending_plan_text
+
+    @property
+    def pending_plan_user_input(self) -> str | None:
+        """The original user input that triggered the pending plan."""
+        return self._pending_plan_user_input
+
+    @pending_plan_user_input.setter
+    def pending_plan_user_input(self, value: str | None) -> None:
+        self._pending_plan_user_input = value
+
+    def clear_pending_plan(self) -> None:
+        """Clear any pending plan approval state."""
+        self._pending_plan_text = None
+        self._pending_plan_user_input = None
+
+    def transfer_pending_plan(self, other: "CodeAgent") -> None:
+        """Copy pending plan state from another agent instance."""
+        self._pending_plan_text = other._pending_plan_text
+        self._pending_plan_user_input = other._pending_plan_user_input
 
     @staticmethod
     def parse_plan_decision(user_input: str) -> tuple[str, str]:

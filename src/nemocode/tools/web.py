@@ -174,9 +174,7 @@ def _extract_readable_text(raw_html: str) -> tuple[str, str]:
 
 
 @tool(
-    description=(
-        "Fetch a webpage and extract readable content for documentation/reference pages."
-    ),
+    description=("Fetch a webpage and extract readable content for documentation/reference pages."),
     category="web",
 )
 async def web_fetch(url: str, max_chars: int = _MAX_FETCH_CHARS) -> str:

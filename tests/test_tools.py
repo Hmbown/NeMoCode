@@ -126,9 +126,7 @@ class TestToolRegistry:
         names = {t.name for t in registry.list_tools()}
         assert names == {"demo_plugin"}
 
-    def test_load_tools_uses_explicit_project_dir_for_plugins(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_load_tools_uses_explicit_project_dir_for_plugins(self, monkeypatch, tmp_path: Path):
         plugin_dir = tmp_path / ".nemocode" / "tools"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "demo_plugin.py").write_text(

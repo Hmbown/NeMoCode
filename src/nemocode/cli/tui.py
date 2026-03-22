@@ -162,6 +162,7 @@ def _turn_preview(text: str, limit: int = 60) -> str:
 # Slash command dispatcher (TUI variant)
 # ---------------------------------------------------------------------------
 
+
 def _help_text(state: "_TUIState") -> str:
     keys = state.config.keybindings.tui
     return f"""\
@@ -310,7 +311,7 @@ class _TUIState:
             return False, f"Failed to rewind last turn: {exc}"
 
         self._restore_turn_sessions(turn)
-        del self.metrics._requests[turn.metrics_request_count:]
+        del self.metrics._requests[turn.metrics_request_count :]
         self.turn_count = turn.turn_count_before
         self.agent._pending_plan_text = turn.pending_plan_text
         self.agent._pending_plan_user_input = turn.pending_plan_user_input
@@ -979,9 +980,7 @@ class NeMoCodeTUI(App):
             lines = ["Snapshots:"]
             for snap in snaps:
                 ts = time.strftime("%H:%M:%S", time.localtime(snap["timestamp"]))
-                lines.append(
-                    f"  {snap['id']}  {snap['kind']}  {snap['files_changed']} files  {ts}"
-                )
+                lines.append(f"  {snap['id']}  {snap['kind']}  {snap['files_changed']} files  {ts}")
             lines.append("Use /revert <id> to restore.")
             chat.add_system("\n".join(lines))
         except Exception as exc:

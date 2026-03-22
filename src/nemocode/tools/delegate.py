@@ -246,7 +246,8 @@ def _pick_endpoint(
     if tiers:
         logger.warning(
             "No endpoint matched tiers %s; falling back to default (%s)",
-            tiers, config.default_endpoint,
+            tiers,
+            config.default_endpoint,
         )
     return config.default_endpoint
 

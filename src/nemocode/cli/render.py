@@ -204,6 +204,7 @@ class EventRenderer:
         self._timer_thread: threading.Thread | None = None
         self._spinner_label: str = ""  # current spinner prefix (without elapsed)
         self._hidden_reasoning_hint_shown = False
+        self._mutation_count = 0  # mutations shown in current tool round
 
     def render(self, event: AgentEvent) -> None:
         """Render a single event to the console."""
@@ -308,9 +309,7 @@ class EventRenderer:
             elapsed = ""
             if self._turn_start:
                 elapsed = f" ({time.monotonic() - self._turn_start:.0f}s)"
-            self._thinking_spinner.update(
-                f"  [{_NV_GREEN}]{event.text}{elapsed}…[/{_NV_GREEN}]"
-            )
+            self._thinking_spinner.update(f"  [{_NV_GREEN}]{event.text}{elapsed}…[/{_NV_GREEN}]")
         else:
             self._console.print(f"  [dim]· {event.text}[/dim]")
 
@@ -380,6 +379,7 @@ class EventRenderer:
             # Mutation: stop thinking, flush read-only summary, show tool line
             self._stop_thinking()
             self._flush_tool_buffer_if_needed()
+            self._mutation_count += 1
             line = format_tool_call(event.tool_name, event.tool_args)
             self._console.print(f"  [{_NV_GREEN}]▸[/{_NV_GREEN}] [dim]{line}[/dim]", end="")
 
@@ -393,13 +393,14 @@ class EventRenderer:
         else:
             # Show mutation result immediately
             elapsed = time.monotonic() - self._tool_start if self._tool_start else 0
+            in_multi = self._mutation_count > 1
             _render_tool_result_inline(
                 self._console,
                 tool_name,
                 event.tool_result,
                 event.is_error,
                 elapsed,
-                in_multi_tool=False,
+                in_multi_tool=in_multi,
             )
             # Restart spinner for the next API round so the user isn't
             # staring at a frozen terminal during the next LLM call
@@ -442,6 +443,7 @@ class EventRenderer:
             return
         if self._thinking_spinner:
             return  # already running
+        self._mutation_count = 0
         elapsed = time.monotonic() - self._turn_start if self._turn_start else 0
         self._spinner_label = "Working"
         self._thinking_spinner = _beam_status(

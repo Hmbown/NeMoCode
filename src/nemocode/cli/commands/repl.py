@@ -1570,9 +1570,9 @@ def _render_status_bar(state: _ReplState) -> None:
     if last_tps > 0:
         parts.append(f"[dim]{last_tps:.0f} tok/s[/dim]")
 
-    # Cost
+    # Cost — only when interesting (> $0.01)
     total_cost = state.metrics.total_cost
-    if total_cost > 0:
+    if total_cost > 0.01:
         parts.append(f"[dim]${total_cost:.4f}[/dim]")
 
     bar = " [dim]│[/dim] ".join(parts)
@@ -1693,7 +1693,7 @@ def _print_banner(state: _ReplState) -> None:
     except (OSError, ValueError):
         term_height = 40  # default: assume large enough
 
-    if term_height < 30:
+    if term_height < 40:
         console.print(
             f"[bold {theme.accent_rich}]NeMoCode // NVIDIA NIM[/bold {theme.accent_rich}] "
             f"[dim]v{__version__}[/dim]"
@@ -1705,6 +1705,10 @@ def _print_banner(state: _ReplState) -> None:
         if hw_line:
             console.print(f"[dim]{hw_line}[/dim]")
         console.print(f"[dim]{path_line}[/dim]")
+        console.print(
+            f'[dim]/help · """ multi-line · {format_key_label(keys.cycle_mode)} mode · '
+            f"{format_key_label(keys.exit)} exit[/dim]"
+        )
         return
 
     # Full banner for tall terminals

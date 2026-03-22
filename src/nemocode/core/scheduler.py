@@ -203,7 +203,9 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "Produce numbered steps, each including:\n"
         "- The file path(s) to read or modify\n"
         "- The specific change or action\n"
+        "- Estimated complexity (trivial / small / moderate / large)\n"
         "- Risks or edge cases to watch for\n"
+        "- Files that should be read first to understand existing patterns\n"
         "- Success criteria for that step\n\n"
         "Be specific -- the EXECUTOR follows your plan verbatim."
     ),
@@ -214,30 +216,20 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "and iterate until the task is done.\n\n"
         "## Workflow\n"
         "1. FIND relevant files with glob_files or search_files\n"
-        "2. READ what you need with read_file\n"
-        "3. IMPLEMENT changes with edit_file (preferred) or write_file (new files)\n"
+        "2. READ what you need with read_file — always read before editing\n"
+        "3. IMPLEMENT changes with edit_file (preferred) or write_file (new files only)\n"
         "4. For multiple edits in one file, use multi_edit instead of repeated edit_file calls\n"
-        "5. VERIFY by running tests: bash_exec with pytest, ruff, etc.\n"
+        "5. VERIFY by running tests: bash_exec with pytest, ruff, or the project's test command\n"
         "6. FIX any failures — read the error, edit the code, re-run\n"
         "7. REPORT what you did (brief summary, not a lecture)\n\n"
-        "## Tools\n"
-        "- glob_files: Find files by pattern (e.g. '**/*.py'). Use this FIRST to locate files.\n"
-        "- search_files: Search file contents with regex. Great for finding usages.\n"
-        "- read_file: Read file contents. Read before editing.\n"
-        "- edit_file: Search-and-replace edit. Preferred for existing files.\n"
-        "- multi_edit: Apply multiple edits to one file atomically. Use when making 2+ changes.\n"
-        "- write_file: Create new files or full rewrites.\n"
-        "- bash_exec: Run shell commands (tests, builds, git, etc.).\n"
-        "- spawn_agent: Launch a background sub-agent for a bounded parallel subtask.\n"
-        "- wait_agent: Wait for a spawned sub-agent only when its result is on the critical path.\n"
-        "- close_agent / resume_agent: Manage spawned sub-agent handles when needed.\n"
-        "- delegate: Synchronous compatibility wrapper that spawns a child and waits for it.\n"
-        "- ask_user: Ask the user a question when you need clarification.\n\n"
+        "{tool_list}\n\n"
         "## Rules\n"
         "- ALWAYS use tools — never just describe changes.\n"
-        "- Read a file before editing it.\n"
+        "- Read a file before editing it. Understand the surrounding context.\n"
+        "- Follow existing code conventions — match the style, patterns, and idioms you see.\n"
         "- Keep text responses SHORT. The code speaks for itself.\n"
         "- Do not ask for permission — just do the work.\n"
+        "- Run tests after making changes. Do not skip verification.\n"
         "- Only use sub-agent tools when the user has explicitly asked for "
         "delegation, sub-agents, or parallel agent work.\n"
         "- Spawn sidecar tasks that can run in parallel with your immediate next "
@@ -252,10 +244,11 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "- Edge cases: Are boundary conditions handled?\n"
         "- Error handling: Are failures handled gracefully?\n"
         "- Test coverage: Are there tests for the new/changed code?\n"
+        "- Regressions: Could these changes break existing functionality?\n"
         "- Style: Does the code follow project conventions?\n\n"
         "Output exactly one of:\n"
         "- APPROVE: If all checks pass, with a brief summary of what was done well.\n"
-        "- REQUEST_CHANGES: If issues were found, with specific items to fix."
+        "- REQUEST_CHANGES: If issues were found, with specific file paths and items to fix."
     ),
     FormationRole.DEBUGGER: (
         "You are the DEBUGGER. Analyze the error, read relevant source, identify root cause, "
@@ -319,6 +312,18 @@ class Scheduler:
         self._single_session_id = single_session_id
         self._status_interval_s = max(status_interval_s, 0.0)
 
+    def _build_executor_prompt(self) -> str:
+        tool_lines = []
+        for td in self._tools.list_tools():
+            tool_lines.append(f"- {td.name}: {td.description}")
+        tool_text = "## Tools\n" + "\n".join(tool_lines)
+        return ROLE_PROMPTS[FormationRole.EXECUTOR].format(tool_list=tool_text)
+
+    def _resolve_prompt(self, role: FormationRole, fallback: str | None = None) -> str:
+        if role == FormationRole.EXECUTOR:
+            return self._build_executor_prompt()
+        return fallback or ROLE_PROMPTS.get(role, "")
+
     # ------------------------------------------------------------------
     # Single-model mode
     # ------------------------------------------------------------------
@@ -329,7 +334,7 @@ class Scheduler:
         if session_role not in self._sessions:
             s = Session(id=self._single_session_id, endpoint_name=endpoint_name)
             prompt = self._single_prompt or (
-                _PLAN_MODE_PROMPT if self._read_only else ROLE_PROMPTS[FormationRole.EXECUTOR]
+                _PLAN_MODE_PROMPT if self._read_only else self._build_executor_prompt()
             )
             if self._project_context:
                 prompt = f"{prompt}\n\n## Project Context\n{self._project_context}"
@@ -761,7 +766,7 @@ class Scheduler:
     def _get_session(self, role: FormationRole, slot: FormationSlot) -> Session:
         if role not in self._sessions:
             s = Session(id=role.value, endpoint_name=slot.endpoint)
-            prompt = slot.system_prompt or ROLE_PROMPTS.get(role, "")
+            prompt = slot.system_prompt or self._resolve_prompt(role)
             if self._project_context:
                 prompt = f"{prompt}\n\n## Project Context\n{self._project_context}"
             s.add_system(prompt)

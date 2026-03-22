@@ -1,5 +1,10 @@
 # NeMoCode
 
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-771%20passed-success.svg)](https://github.com/Hmbown/NeMoCode)
+[![PyPI](https://img.shields.io/pypi/v/nemocode.svg)](https://pypi.org/project/nemocode/)
+
 Agentic coding CLI for [NVIDIA NIM](https://build.nvidia.com). Reads your code, makes edits, runs commands — powered by any model on the NIM API or your own GPU via [vLLM](https://docs.vllm.ai/), [SGLang](https://sgl-project.github.io/), or [TensorRT-LLM](https://nvidia.github.io/TensorRT-LLM/).
 
 > **Community project** — not affiliated with or endorsed by NVIDIA.
@@ -218,6 +223,8 @@ nemo init                   # create .nemocode.yaml without overriding user defa
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and PR guidelines.
+
 ```bash
 pip install -e ".[dev]"
 ruff check src/ tests/ && ruff format --check src/ tests/
@@ -227,3 +234,47 @@ pytest tests/ -v
 ## License
 
 [MIT](LICENSE). NVIDIA, Nemotron, and NIM are trademarks of NVIDIA Corporation.
+
+## Architecture
+
+```
+  User Input (CLI / TUI)
+         |
+  CodeAgent (orchestrator)
+    |  agent profiles, project context, git state, memories
+    v
+  Scheduler (formation pipeline driver)
+    |  single-model or plan/execute/review formation
+    |  stagnation detection, auto-compaction, permission engine
+    v
+  Registry (endpoint / manifest / formation resolver)
+    |
+    v
+  Providers (NIM Chat, Embeddings, Rerank)
+    |  OpenAI-compatible API, SSE streaming, retry with backoff
+    v
+  ToolRegistry (18+ tools)
+    - fs: read, write, edit, multi_edit
+    - git: status, diff, log, commit, snapshot
+    - search: rg, glob
+    - bash: shell command execution
+    - agent: delegate, spawn, wait, close, resume
+    - memory: save, recall
+    - web, parse, test, ask_user, clarify, LSP, MCP
+```
+
+## Comparison
+
+| Feature | NeMoCode | Claude Code | Cursor | OpenCode |
+|---------|----------|-------------|--------|----------|
+| Open source | MIT | No | No | MIT |
+| Terminal-first | Yes | Yes | IDE | Yes |
+| Multi-model formations | Yes | No | No | No |
+| Local GPU serving | vLLM, SGLang, TRT-LLM | No | No | No |
+| Hardware detection | Yes (GPU/RAM/Spark) | No | No | No |
+| 1M token context | Yes (Nemotron 3) | 200K | 128K | Varies |
+| Sub-agent orchestration | Yes | No | No | Yes |
+| LSP integration | Yes | No | Yes | Yes |
+| Vision (screenshots) | Yes (VLM) | Yes | Yes | Yes |
+| Plugin system | Yes | No | No | Yes |
+| NVIDIA NIM native | Yes | No | No | No |

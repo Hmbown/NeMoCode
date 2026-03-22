@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from nemocode.core.persistence import _SESSION_DIR
+from nemocode.core.persistence import list_sessions, load_session
 
 console = Console()
 session_app = typer.Typer(help="Manage conversation sessions.")
@@ -23,11 +23,7 @@ def session_ls(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of sessions to show"),
 ) -> None:
     """List past sessions."""
-    if not _SESSION_DIR.exists():
-        console.print("[dim]No sessions found.[/dim]")
-        return
-
-    sessions = sorted(_SESSION_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    sessions = list_sessions(limit=limit)
     if not sessions:
         console.print("[dim]No sessions found.[/dim]")
         return
@@ -38,18 +34,22 @@ def session_ls(
     table.add_column("Endpoint")
     table.add_column("Messages")
     table.add_column("Tokens")
+    table.add_column("Branch", style="dim")
+    table.add_column("CWD", style="dim")
 
-    for sp in sessions[:limit]:
-        try:
-            data = json.loads(sp.read_text())
-            sid = sp.stem
-            date = datetime.fromtimestamp(data.get("created_at", 0)).strftime("%Y-%m-%d %H:%M")
-            endpoint = data.get("endpoint_name", "")
-            msg_count = data.get("message_count", 0)
-            tokens = data.get("usage", {}).get("total_tokens", 0)
-            table.add_row(sid, date, endpoint, str(msg_count), f"{tokens:,}")
-        except Exception:
-            continue
+    for s in sessions:
+        sid = s.get("id", "")
+        ts = s.get("updated_at", s.get("created_at", 0))
+        date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+        endpoint = s.get("endpoint_name", "")
+        msg_count = s.get("message_count", 0)
+        tokens = s.get("total_tokens", 0)
+        meta = s.get("metadata") or {}
+        branch = meta.get("git_branch", "")
+        cwd = meta.get("cwd", "")
+        if cwd and len(cwd) > 40:
+            cwd = "~" + cwd[-39:]
+        table.add_row(sid, date, endpoint, str(msg_count), f"{tokens:,}", branch, cwd)
 
     console.print(table)
 
@@ -60,19 +60,22 @@ def session_export(
     fmt: str = typer.Option("md", "--format", "-f", help="Export format: md or json"),
 ) -> None:
     """Export a session."""
-    session_path = _SESSION_DIR / f"{session_id}.json"
-    if not session_path.exists():
+    session = load_session(session_id)
+    if session is None:
         console.print(f"[red]Session not found: {session_id}[/red]")
         raise typer.Exit(1)
 
-    data = json.loads(session_path.read_text())
-
     if fmt == "json":
+        data = {
+            "id": session.id,
+            "endpoint_name": session.endpoint_name,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "messages": [{"role": m.role.value, "content": m.content} for m in session.messages],
+        }
         console.print_json(json.dumps(data, indent=2))
     else:
         console.print(f"# Session {session_id}\n")
-        for msg in data.get("messages", []):
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            console.print(f"## {role.upper()}\n")
-            console.print(f"{content}\n")
+        for msg in session.messages:
+            console.print(f"## {msg.role.value.upper()}\n")
+            console.print(f"{msg.content}\n")

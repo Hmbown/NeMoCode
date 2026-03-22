@@ -21,7 +21,7 @@ from nemocode.config.schema import (
 from nemocode.core.registry import Registry
 from nemocode.core.scheduler import ROLE_PROMPTS, Scheduler
 from nemocode.core.sessions import Session
-from nemocode.core.streaming import CompletionResult, StreamChunk
+from nemocode.core.streaming import CompletionResult, StreamChunk, ToolCall
 from nemocode.tools.loader import load_tools
 
 
@@ -216,3 +216,164 @@ class TestRolePrompts:
         prompt = ROLE_PROMPTS[FormationRole.EXECUTOR]
         assert "tools" in prompt.lower()
         assert "read" in prompt.lower()
+
+
+class TestAgentLoopWithTools:
+    @pytest.mark.asyncio
+    async def test_agent_loop_with_tools(self, scheduler_config):
+
+        registry = Registry(scheduler_config)
+        tools = load_tools(["fs"])
+
+        call_count = 0
+
+        async def mock_stream(messages, tools=None, extra_body=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield StreamChunk(
+                    tool_calls=[
+                        ToolCall(id="tc1", name="read_file", arguments={"path": "/dev/null"})
+                    ],
+                )
+                yield StreamChunk(
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 50, "completion_tokens": 10},
+                )
+            else:
+                yield StreamChunk(text="Done")
+                yield StreamChunk(
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 100, "completion_tokens": 5},
+                )
+
+        provider = AsyncMock()
+        provider.stream = mock_stream
+
+        with (
+            patch.object(registry, "get_chat_provider", return_value=provider),
+            patch.object(
+                tools, "execute", new_callable=AsyncMock, return_value='{"content": "hello world"}'
+            ),
+        ):
+            scheduler = Scheduler(registry, tools)
+            session = Session(id="test", endpoint_name="test-ep")
+            events = []
+            async for ev in scheduler._agent_loop(provider, session, FormationRole.EXECUTOR):
+                events.append(ev)
+
+        tool_call_events = [e for e in events if e.kind == "tool_call"]
+        tool_result_events = [e for e in events if e.kind == "tool_result"]
+        text_events = [e for e in events if e.kind == "text"]
+
+        assert len(tool_call_events) == 1
+        assert tool_call_events[0].tool_name == "read_file"
+        assert len(tool_result_events) == 1
+        assert any("hello world" in e.text for e in text_events) or any(
+            "Done" in e.text for e in text_events
+        )
+
+
+class TestRunFormation:
+    @pytest.mark.asyncio
+    async def test_run_formation(self):
+        planner_ep = Endpoint(
+            name="planner-ep",
+            tier=EndpointTier.DEV_HOSTED,
+            base_url="https://test.com/v1",
+            model_id="planner-model",
+        )
+        executor_ep = Endpoint(
+            name="executor-ep",
+            tier=EndpointTier.DEV_HOSTED,
+            base_url="https://test.com/v1",
+            model_id="executor-model",
+        )
+        reviewer_ep = Endpoint(
+            name="reviewer-ep",
+            tier=EndpointTier.DEV_HOSTED,
+            base_url="https://test.com/v1",
+            model_id="reviewer-model",
+        )
+
+        config = NeMoCodeConfig(
+            default_endpoint="planner-ep",
+            endpoints={
+                "planner-ep": planner_ep,
+                "executor-ep": executor_ep,
+                "reviewer-ep": reviewer_ep,
+            },
+            formations={
+                "trio": Formation(
+                    name="Trio",
+                    slots=[
+                        FormationSlot(endpoint="planner-ep", role=FormationRole.PLANNER),
+                        FormationSlot(endpoint="executor-ep", role=FormationRole.EXECUTOR),
+                        FormationSlot(endpoint="reviewer-ep", role=FormationRole.REVIEWER),
+                    ],
+                    verification_rounds=1,
+                ),
+            },
+        )
+        registry = Registry(config)
+        tools = load_tools(["fs"])
+
+        planner_provider = AsyncMock()
+        planner_provider.complete = AsyncMock(
+            return_value=CompletionResult(content="Plan: step 1, step 2", finish_reason="stop")
+        )
+
+        async def executor_stream(messages, tools=None, extra_body=None):
+            yield StreamChunk(text="Executing step 1...")
+            yield StreamChunk(text="Executing step 2...")
+            yield StreamChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 100, "completion_tokens": 20},
+            )
+
+        executor_provider = AsyncMock()
+        executor_provider.stream = executor_stream
+        executor_provider.complete = AsyncMock(
+            return_value=CompletionResult(content="Executed all steps", finish_reason="stop")
+        )
+
+        async def reviewer_stream(messages, tools=None, extra_body=None):
+            yield StreamChunk(text="APPROVE")
+            yield StreamChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 50, "completion_tokens": 5},
+            )
+
+        reviewer_provider = AsyncMock()
+        reviewer_provider.stream = reviewer_stream
+        reviewer_provider.complete = AsyncMock(
+            return_value=CompletionResult(content="APPROVE", finish_reason="stop")
+        )
+
+        provider_map = {
+            "planner-ep": planner_provider,
+            "executor-ep": executor_provider,
+            "reviewer-ep": reviewer_provider,
+        }
+
+        def get_provider(name):
+            return provider_map[name]
+
+        with patch.object(registry, "get_chat_provider", side_effect=get_provider):
+            scheduler = Scheduler(registry, tools)
+            events = []
+            async for ev in scheduler.run_formation("trio", "Build a feature"):
+                events.append(ev)
+
+        phases = [e for e in events if e.kind == "phase"]
+        phase_values = [e.phase for e in phases]
+
+        assert "planning" in phase_values
+        assert "executing" in phase_values
+        assert "reviewing" in phase_values
+
+        text_events = [e for e in events if e.kind == "text" and e.text.strip()]
+        all_text = " ".join(e.text for e in text_events)
+
+        assert "Plan" in all_text or "step" in all_text.lower()
+        assert "APPROVE" in all_text or "approved" in all_text.lower()

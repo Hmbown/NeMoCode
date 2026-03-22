@@ -456,7 +456,8 @@ class CodeAgent:
                     FormationRole.EXECUTOR, ""
                 )
                 if executor_agent._scheduler._project_context:
-                    exec_prompt += f"\n\n## Project Context\n{executor_agent._scheduler._project_context}"
+                    ctx = executor_agent._scheduler._project_context
+                    exec_prompt += f"\n\n## Project Context\n{ctx}"
                 if exec_prompt:
                     s.add_system(exec_prompt)
                 # Copy non-system messages from planner session
@@ -470,6 +471,21 @@ class CodeAgent:
         )
         async for event in executor_agent.run(executor_input):
             yield event
+
+        # Transfer executor's session back so the parent has full context
+        exec_sessions = executor_agent._scheduler._sessions
+        if exec_sessions:
+            exec_session = next(iter(exec_sessions.values()), None)
+            if exec_session and exec_session.messages:
+                from nemocode.core.streaming import Role as MsgRole
+
+                parent_role = self._scheduler._single_role
+                parent_session = self._scheduler._sessions.get(parent_role)
+                if parent_session:
+                    # Append executor's non-system messages to parent session
+                    parent_session.messages.extend(
+                        m for m in exec_session.messages if m.role != MsgRole.SYSTEM
+                    )
 
     async def run_with_endpoint(
         self, endpoint_name: str, user_input: str
@@ -599,8 +615,10 @@ class CodeAgent:
         elif decision == "revise":
             feedback_text = feedback.strip() or "Make the plan more concrete and actionable."
             yield AgentEvent(
-                kind="status", text="Revising plan from user feedback.",
-                role=FormationRole.PLANNER, phase="planning",
+                kind="status",
+                text="Revising plan from user feedback.",
+                role=FormationRole.PLANNER,
+                phase="planning",
             )
             replan_input = (
                 f"## Original Request\n{original_input}\n\n"
@@ -618,8 +636,10 @@ class CodeAgent:
                 self._pending_plan_text = None
                 self._pending_plan_user_input = None
                 yield AgentEvent(
-                    kind="error", text="Revision produced no output. Plan cleared.",
-                    is_error=True, role=FormationRole.PLANNER,
+                    kind="error",
+                    text="Revision produced no output. Plan cleared.",
+                    is_error=True,
+                    role=FormationRole.PLANNER,
                 )
                 return
             # Store revised plan as pending — REPL shows menu again

@@ -201,8 +201,14 @@ class TestPlanApprovalResume:
         assert CodeAgent.parse_plan_decision("revise: add tests") == ("revise", "add tests")
         assert CodeAgent.parse_plan_decision("revise") == ("revise", "")
         assert CodeAgent.parse_plan_decision("2") == ("revise", "")
-        assert CodeAgent.parse_plan_decision("2 add error handling") == ("revise", "add error handling")
-        assert CodeAgent.parse_plan_decision("2. add error handling") == ("revise", "add error handling")
+        assert CodeAgent.parse_plan_decision("2 add error handling") == (
+            "revise",
+            "add error handling",
+        )
+        assert CodeAgent.parse_plan_decision("2. add error handling") == (
+            "revise",
+            "add error handling",
+        )
 
     @pytest.mark.asyncio
     async def test_parse_plan_decision_ask(self):

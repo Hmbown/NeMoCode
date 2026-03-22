@@ -23,7 +23,6 @@ import time
 from pathlib import Path
 
 import yaml
-
 from rich.console import Console
 from rich.table import Table
 
@@ -46,8 +45,10 @@ from nemocode.workflows.code_agent import CodeAgent
 try:
     from nemocode.cli.render import set_render_theme
 except ImportError:  # pragma: no cover - compatibility with in-flight theme work
+
     def set_render_theme(_theme_name: str) -> None:
         return None
+
 
 logger = logging.getLogger(__name__)
 _NVIDIA_GREEN = "bright_green"
@@ -73,6 +74,7 @@ def _ptk_binding_args(spec: str) -> tuple[str, ...]:
     if normalized.startswith("alt+") and len(normalized) == 5:
         return ("escape", normalized[-1])
     raise ValueError(f"Unsupported prompt_toolkit keybinding: {spec}")
+
 
 # ---------------------------------------------------------------------------
 # Console instance — shared by all rendering functions
@@ -751,11 +753,12 @@ class _SlashDispatcher:
 
         if save:
             if _save_project_default_endpoint(ep_key):
-                console.print(f"[dim]Saved as default in .nemocode.yaml[/dim]")
+                console.print("[dim]Saved as default in .nemocode.yaml[/dim]")
             else:
                 console.print("[yellow]Could not save to .nemocode.yaml[/yellow]")
         else:
-            console.print(f"[dim]Use [bold]/endpoint {ep_key} --save[/bold] to make permanent.[/dim]")
+            hint = f"[dim]Use [bold]/endpoint {ep_key} --save[/bold] to make permanent.[/dim]"
+            console.print(hint)
         return True
 
     def _cmd_formation(self, arg: str) -> bool:
@@ -1310,7 +1313,7 @@ class _ReplState:
             return False, f"Failed to rewind last turn: {exc}"
 
         self._restore_turn_sessions(turn)
-        del self.metrics._requests[turn.metrics_request_count:]
+        del self.metrics._requests[turn.metrics_request_count :]
         self.turn_count = turn.turn_count_before
         self.agent._pending_plan_text = turn.pending_plan_text
         self.agent._pending_plan_user_input = turn.pending_plan_user_input

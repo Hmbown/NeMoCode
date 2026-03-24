@@ -3,7 +3,7 @@
 
 """NeMoCode CLI — main entry point.
 
-Commands: nemo chat | code | customize | endpoint | model | formation | auth | hardware | init | session
+Commands: nemo chat | code | customize | serve | endpoint | model | formation | auth | hardware | init | session
 """
 
 from __future__ import annotations
@@ -34,11 +34,13 @@ def _register_commands() -> None:
     from nemocode.cli.commands.obs import obs_app
     from nemocode.cli.commands.session import session_app
     from nemocode.cli.commands.setup import setup_app
+    from nemocode.cli.commands.serve import serve_app
 
     app.command("chat")(chat_cmd)
     app.command("code")(code_cmd)
     app.add_typer(agent_app, name="agent")
     app.add_typer(customize_app, name="customize")
+    app.add_typer(serve_app, name="serve")
     app.add_typer(endpoint_app, name="endpoint")
     app.add_typer(model_app, name="model")
     app.add_typer(formation_app, name="formation")

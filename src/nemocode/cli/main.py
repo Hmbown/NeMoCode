@@ -25,6 +25,7 @@ def _register_commands() -> None:
     from nemocode.cli.commands.code import code_cmd
     from nemocode.cli.commands.config import config_app
     from nemocode.cli.commands.customize import customize_app
+    from nemocode.cli.commands.data import data_app
     from nemocode.cli.commands.doctor import doctor_app
     from nemocode.cli.commands.endpoint import endpoint_app
     from nemocode.cli.commands.formation import formation_app
@@ -40,6 +41,7 @@ def _register_commands() -> None:
     app.command("code")(code_cmd)
     app.add_typer(agent_app, name="agent")
     app.add_typer(customize_app, name="customize")
+    app.add_typer(data_app, name="data")
     app.add_typer(serve_app, name="serve")
     app.add_typer(endpoint_app, name="endpoint")
     app.add_typer(model_app, name="model")

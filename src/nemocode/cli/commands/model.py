@@ -1,9 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: MIT
 
-"""nemo model — inspect model manifests."""
+"""nemo model — inspect model manifests, pull NIM containers."""
 
 from __future__ import annotations
+
+import os
+import shutil
+import subprocess
 
 import typer
 from rich.console import Console
@@ -13,12 +17,130 @@ from rich.table import Table
 from nemocode.config import load_config
 
 console = Console()
-model_app = typer.Typer(help="Inspect Nemotron model manifests.")
+model_app = typer.Typer(help="Inspect Nemotron model manifests and manage NIM containers.")
+
+# ---------------------------------------------------------------------------
+# NGC NIM container URI mapping
+# ---------------------------------------------------------------------------
+NGC_CONTAINER_MAP: dict[str, str] = {
+    "nemotron-3-nano-4b": "nvcr.io/nim/nvidia/nemotron-3-nano-4b-instruct:latest",
+    "nemotron-3-super-120b": "nvcr.io/nim/nvidia/nemotron-3-super-120b-a12b-instruct:latest",
+    "nemotron-nano-9b": "nvcr.io/nim/nvidia/nemotron-nano-9b-v2:latest",
+    "nemotron-nano-12b-vl": "nvcr.io/nim/nvidia/nemotron-nano-12b-v2-vl:latest",
+}
+
+
+def _resolve_ngc_key() -> str | None:
+    """Resolve NGC API key from credentials store or environment.
+
+    Checks NGC_CLI_API_KEY first, then falls back to NGC_API_KEY.
+    """
+    # Try credentials store
+    try:
+        from nemocode.core.credentials import get_credential
+
+        for key_name in ("NGC_CLI_API_KEY", "NGC_API_KEY"):
+            key = get_credential(key_name)
+            if key:
+                return key
+    except ImportError:
+        pass
+
+    # Fall back to environment variables
+    for env_var in ("NGC_CLI_API_KEY", "NGC_API_KEY"):
+        key = os.environ.get(env_var)
+        if key:
+            return key
+
+    return None
+
+
+def _docker_login(api_key: str) -> None:
+    """Authenticate with nvcr.io using the NGC API key."""
+    result = subprocess.run(
+        ["docker", "login", "nvcr.io", "-u", "$oauthtoken", "--password-stdin"],
+        input=api_key,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]Docker login failed:[/red] {result.stderr.strip()}")
+        raise typer.Exit(1)
+
+
+def _docker_pull(uri: str) -> None:
+    """Pull a container image, streaming output to the console."""
+    result = subprocess.run(
+        ["docker", "pull", uri],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]Docker pull failed:[/red] {result.stderr.strip()}")
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+@model_app.command("pull")
+def model_pull(
+    model_name: str = typer.Argument(..., help="Model name to pull (e.g. nemotron-nano-9b)"),
+    tag: str = typer.Option("latest", "--tag", "-t", help="Container image tag"),
+) -> None:
+    """Pull a NIM container image from NGC registry."""
+    # 1. Check Docker is available
+    if not shutil.which("docker"):
+        console.print("[red]Error:[/red] Docker is not installed or not in PATH.")
+        console.print("[dim]Install Docker: https://docs.docker.com/get-docker/[/dim]")
+        raise typer.Exit(1)
+
+    # 2. Resolve model name to container URI
+    uri = NGC_CONTAINER_MAP.get(model_name)
+    if not uri:
+        console.print(f"[red]Unknown model:[/red] {model_name}")
+        console.print("[dim]Available models:[/dim]")
+        for name in sorted(NGC_CONTAINER_MAP):
+            console.print(f"  [cyan]{name}[/cyan]")
+        raise typer.Exit(1)
+
+    # Apply custom tag if specified
+    if tag != "latest":
+        uri = uri.rsplit(":", 1)[0] + f":{tag}"
+
+    # 3. Resolve NGC API key
+    api_key = _resolve_ngc_key()
+    if not api_key:
+        console.print("[red]Error:[/red] NGC API key not found.")
+        console.print(
+            "[dim]Set it with:[/dim]\n"
+            "  nemo auth set NGC_CLI_API_KEY\n"
+            "  [dim]or[/dim] export NGC_CLI_API_KEY='your-key'"
+        )
+        raise typer.Exit(1)
+
+    # 4. Docker login
+    with console.status("[bold green]Authenticating with nvcr.io..."):
+        _docker_login(api_key)
+    console.print("[green]\u2713[/green] Authenticated with nvcr.io")
+
+    # 5. Pull the image
+    with console.status(f"[bold green]Pulling {uri}..."):
+        _docker_pull(uri)
+    console.print(f"[green]\u2713[/green] Successfully pulled [cyan]{uri}[/cyan]")
 
 
 @model_app.command("ls")
-def model_ls() -> None:
-    """List all known model manifests."""
+def model_ls(
+    local: bool = typer.Option(False, "--local", help="List locally pulled NIM container images"),
+) -> None:
+    """List model manifests, or locally pulled NIM containers with --local."""
+    if local:
+        _list_local_containers()
+        return
+
     cfg = load_config()
     table = Table(title="Model Manifests")
     table.add_column("Model ID", style="cyan")
@@ -43,6 +165,45 @@ def model_ls() -> None:
             ctx,
             "yes" if m.supports_tools else "no",
         )
+
+    console.print(table)
+
+
+def _list_local_containers() -> None:
+    """List locally available NIM container images."""
+    if not shutil.which("docker"):
+        console.print("[red]Error:[/red] Docker is not installed or not in PATH.")
+        raise typer.Exit(1)
+
+    result = subprocess.run(
+        ["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]Failed to list images:[/red] {result.stderr.strip()}")
+        raise typer.Exit(1)
+
+    table = Table(title="Local NIM Container Images")
+    table.add_column("Image", style="cyan")
+    table.add_column("Size", justify="right")
+
+    found = False
+    for line in result.stdout.strip().splitlines():
+        if not line.startswith("nvcr.io/nim/"):
+            continue
+        parts = line.rsplit(" ", 1)
+        if len(parts) == 2:
+            image, size = parts
+        else:
+            image, size = line, "?"
+        table.add_row(image, size)
+        found = True
+
+    if not found:
+        console.print("[dim]No NIM containers found locally.[/dim]")
+        console.print("[dim]Pull one with: nemo model pull <model-name>[/dim]")
+        return
 
     console.print(table)
 

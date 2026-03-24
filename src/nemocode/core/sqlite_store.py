@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nemocode.core.metrics import RequestMetrics
 from nemocode.core.sessions import Session, TokenUsage
 from nemocode.core.streaming import Message, Role, ToolCall
 
@@ -64,6 +65,26 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session
     ON messages(session_id, position);
+
+CREATE TABLE IF NOT EXISTS request_metrics (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id        TEXT,
+    model_id          TEXT NOT NULL DEFAULT '',
+    endpoint_name     TEXT NOT NULL DEFAULT '',
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    thinking_tokens   INTEGER NOT NULL DEFAULT 0,
+    total_time_ms     REAL NOT NULL DEFAULT 0.0,
+    tool_calls        INTEGER NOT NULL DEFAULT 0,
+    estimated_cost    REAL NOT NULL DEFAULT 0.0,
+    timestamp         REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_metrics_model
+    ON request_metrics(model_id);
+
+CREATE INDEX IF NOT EXISTS idx_request_metrics_ts
+    ON request_metrics(timestamp);
 """
 
 
@@ -294,6 +315,148 @@ def search_sessions(query: str) -> list[dict[str, Any]]:
                     "created_at": r["created_at"],
                     "updated_at": r["updated_at"],
                     "metadata": json.loads(r["metadata_json"]),
+                }
+            )
+        return results
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Request metrics persistence
+# ---------------------------------------------------------------------------
+
+
+def save_request_metrics(metrics: RequestMetrics) -> None:
+    """Save a single RequestMetrics record to the database."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO request_metrics
+                (session_id, model_id, endpoint_name, prompt_tokens,
+                 completion_tokens, thinking_tokens, total_time_ms,
+                 tool_calls, estimated_cost, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                None,
+                metrics.model_id,
+                metrics.endpoint_name,
+                metrics.prompt_tokens,
+                metrics.completion_tokens,
+                metrics.thinking_tokens,
+                metrics.total_time_ms,
+                metrics.tool_calls,
+                metrics.estimated_cost,
+                metrics.timestamp,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_request_metrics(
+    limit: int = 50,
+    model_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load recent request metrics, optionally filtered by model_id."""
+    conn = _get_conn()
+    try:
+        if model_id:
+            rows = conn.execute(
+                """
+                SELECT * FROM request_metrics
+                WHERE model_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (model_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM request_metrics
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            results.append(
+                {
+                    "id": r["id"],
+                    "session_id": r["session_id"],
+                    "model_id": r["model_id"],
+                    "endpoint_name": r["endpoint_name"],
+                    "prompt_tokens": r["prompt_tokens"],
+                    "completion_tokens": r["completion_tokens"],
+                    "thinking_tokens": r["thinking_tokens"],
+                    "total_tokens": r["prompt_tokens"] + r["completion_tokens"],
+                    "total_time_ms": r["total_time_ms"],
+                    "tool_calls": r["tool_calls"],
+                    "estimated_cost": r["estimated_cost"],
+                    "timestamp": r["timestamp"],
+                }
+            )
+        return results
+    finally:
+        conn.close()
+
+
+def load_usage_summary(since: float | None = None) -> list[dict[str, Any]]:
+    """Load usage grouped by model, optionally filtered by timestamp.
+
+    Returns rows sorted by total_tokens descending.
+    """
+    conn = _get_conn()
+    try:
+        if since is not None:
+            rows = conn.execute(
+                """
+                SELECT
+                    model_id,
+                    COUNT(*) AS requests,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens,
+                    SUM(prompt_tokens + completion_tokens) AS total_tokens,
+                    SUM(estimated_cost) AS estimated_cost
+                FROM request_metrics
+                WHERE timestamp >= ?
+                GROUP BY model_id
+                ORDER BY total_tokens DESC
+                """,
+                (since,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    model_id,
+                    COUNT(*) AS requests,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens,
+                    SUM(prompt_tokens + completion_tokens) AS total_tokens,
+                    SUM(estimated_cost) AS estimated_cost
+                FROM request_metrics
+                GROUP BY model_id
+                ORDER BY total_tokens DESC
+                """,
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            results.append(
+                {
+                    "model_id": r["model_id"],
+                    "requests": r["requests"],
+                    "prompt_tokens": r["prompt_tokens"],
+                    "completion_tokens": r["completion_tokens"],
+                    "total_tokens": r["total_tokens"],
+                    "estimated_cost": r["estimated_cost"],
                 }
             )
         return results

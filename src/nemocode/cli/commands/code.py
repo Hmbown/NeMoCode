@@ -25,6 +25,9 @@ def code_cmd(
     think: bool = typer.Option(True, "--think/--no-think", help="Show/hide thinking trace"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Auto-approve all tool calls"),
     tui: bool = typer.Option(False, "--tui", help="Launch full-screen TUI instead of REPL"),
+    guardrails: bool | None = typer.Option(
+        None, "--guardrails/--no-guardrails", help="Enable/disable content safety"
+    ),
 ) -> None:
     """Agentic coding — one-shot, piped, or interactive REPL.
 
@@ -37,7 +40,6 @@ def code_cmd(
         if not sys.stdin.isatty():
             prompt = sys.stdin.read().strip()
 
-    # No prompt available: launch interactive REPL or TUI
     if not prompt:
         if tui:
             from nemocode.cli.tui import start_tui
@@ -48,6 +50,7 @@ def code_cmd(
                 agent_name=agent,
                 think=think,
                 yes=yes,
+                guardrails=guardrails,
             )
         else:
             from nemocode.cli.commands.repl import start_repl
@@ -58,11 +61,11 @@ def code_cmd(
                 agent_name=agent,
                 think=think,
                 yes=yes,
+                guardrails=guardrails,
             )
         return
 
-    # One-shot mode with a prompt
-    asyncio.run(_code(prompt, endpoint, formation, agent, think, yes))
+    asyncio.run(_code(prompt, endpoint, formation, agent, think, yes, guardrails))
 
 
 async def _confirm(tool_name: str, args: dict) -> bool:
@@ -89,6 +92,7 @@ async def _code(
     agent_name: str | None,
     show_thinking: bool,
     auto_yes: bool,
+    guardrails_flag: bool | None = None,
 ) -> None:
     from nemocode.config import load_config
 
@@ -98,6 +102,8 @@ async def _code(
         cfg.default_endpoint = endpoint_name
     if formation_name:
         cfg.active_formation = formation_name
+    if guardrails_flag is not None:
+        cfg.guardrails.enabled = guardrails_flag
 
     confirm_fn = _auto_confirm if auto_yes else _confirm
     agent = CodeAgent(config=cfg, confirm_fn=confirm_fn, agent_name=agent_name)

@@ -134,6 +134,72 @@ class MetricsCollector:
             "session_duration_s": round(self.session_duration_s, 1),
         }
 
+    @property
+    def usage_by_model(self) -> dict[str, dict[str, Any]]:
+        """Return token usage grouped by model_id."""
+        groups: dict[str, dict[str, Any]] = {}
+        for r in self._requests:
+            if r.model_id not in groups:
+                groups[r.model_id] = {
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "estimated_cost_usd": 0.0,
+                }
+            g = groups[r.model_id]
+            g["requests"] += 1
+            g["prompt_tokens"] += r.prompt_tokens
+            g["completion_tokens"] += r.completion_tokens
+            g["total_tokens"] += r.total_tokens
+            g["estimated_cost_usd"] += r.estimated_cost
+        # Round costs
+        for g in groups.values():
+            g["estimated_cost_usd"] = round(g["estimated_cost_usd"], 6)
+        return groups
+
+    @property
+    def usage_by_endpoint(self) -> dict[str, dict[str, Any]]:
+        """Return token usage grouped by endpoint_name."""
+        groups: dict[str, dict[str, Any]] = {}
+        for r in self._requests:
+            if r.endpoint_name not in groups:
+                groups[r.endpoint_name] = {
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "estimated_cost_usd": 0.0,
+                }
+            g = groups[r.endpoint_name]
+            g["requests"] += 1
+            g["prompt_tokens"] += r.prompt_tokens
+            g["completion_tokens"] += r.completion_tokens
+            g["total_tokens"] += r.total_tokens
+            g["estimated_cost_usd"] += r.estimated_cost
+        # Round costs
+        for g in groups.values():
+            g["estimated_cost_usd"] = round(g["estimated_cost_usd"], 6)
+        return groups
+
+    def to_records(self) -> list[dict[str, Any]]:
+        """Return list of dicts suitable for SQLite storage."""
+        return [
+            {
+                "model_id": r.model_id,
+                "endpoint_name": r.endpoint_name,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "thinking_tokens": r.thinking_tokens,
+                "total_tokens": r.total_tokens,
+                "total_time_ms": r.total_time_ms,
+                "tool_calls": r.tool_calls,
+                "estimated_cost_usd": round(r.estimated_cost, 6),
+                "timestamp": r.timestamp,
+            }
+            for r in self._requests
+        ]
+
     def reset(self) -> None:
         self._requests.clear()
         self._session_start = time.time()

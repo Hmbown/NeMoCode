@@ -185,6 +185,7 @@ class NIMChatProvider(NIMProviderBase):
         tools: list[dict[str, Any]] | None = None,
         stream: bool = False,
         extra_body: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.endpoint.model_id,
@@ -202,6 +203,10 @@ class NIMChatProvider(NIMProviderBase):
             if r.thinking_param:
                 chat_kwargs = body.setdefault("chat_template_kwargs", {})
                 chat_kwargs[r.thinking_param] = True
+
+        # Apply structured output response_format
+        if response_format:
+            body["response_format"] = response_format
 
         if tools:
             body["tools"] = tools
@@ -225,12 +230,19 @@ class NIMChatProvider(NIMProviderBase):
         *,
         tools: list[dict[str, Any]] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream chat completions, yielding chunks with text, thinking, tool calls, and usage.
 
         Retries on transient errors (429, 5xx, connection errors) with exponential backoff.
         """
-        body = self._build_body(messages, tools=tools, stream=True, extra_body=extra_body)
+        body = self._build_body(
+            messages,
+            tools=tools,
+            stream=True,
+            extra_body=extra_body,
+            response_format=response_format,
+        )
         url = f"{self._base_url}/chat/completions"
 
         last_error: str = ""
@@ -393,9 +405,16 @@ class NIMChatProvider(NIMProviderBase):
         *,
         tools: list[dict[str, Any]] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> CompletionResult:
         """Non-streaming completion with retry logic."""
-        body = self._build_body(messages, tools=tools, stream=False, extra_body=extra_body)
+        body = self._build_body(
+            messages,
+            tools=tools,
+            stream=False,
+            extra_body=extra_body,
+            response_format=response_format,
+        )
         url = f"{self._base_url}/chat/completions"
 
         last_error = ""

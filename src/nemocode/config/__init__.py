@@ -25,6 +25,7 @@ from nemocode.config.schema import (
     Formation,
     FormationRole,
     FormationSlot,
+    GuardrailsConfig,
     HooksConfig,
     KeybindingsConfig,
     Manifest,
@@ -225,6 +226,9 @@ def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
     hooks_data = raw.get("hooks", {})
     hooks = HooksConfig(**hooks_data) if hooks_data else HooksConfig()
 
+    guardrails_data = raw.get("guardrails", {})
+    guardrails = GuardrailsConfig(**guardrails_data) if guardrails_data else GuardrailsConfig()
+
     return NeMoCodeConfig(
         default_endpoint=raw.get("default_endpoint", "nim-super"),
         active_formation=raw.get("active_formation"),
@@ -236,6 +240,7 @@ def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
         formations=formations,
         agents=agents,
         permissions=perms,
+        guardrails=guardrails,
         project=project,
         mcp=mcp,
         hooks=hooks,

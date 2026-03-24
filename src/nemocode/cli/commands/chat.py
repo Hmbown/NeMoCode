@@ -22,6 +22,7 @@ def chat_cmd(
     prompt: str = typer.Argument(None, help="Chat message (or pipe via stdin)"),
     endpoint: str = typer.Option(None, "-e", "--endpoint", help="Endpoint to use"),
     think: bool = typer.Option(True, "--think/--no-think", help="Show/hide thinking trace"),
+    output_format: str = typer.Option(None, "--output-format", help="Output format: json, text"),
 ) -> None:
     """Simple streaming chat with a Nemotron model. No tools."""
     # Read from stdin if no prompt
@@ -32,10 +33,15 @@ def chat_cmd(
             console.print("[yellow]Usage: nemo chat 'your message here'[/yellow]")
             raise typer.Exit(1)
 
-    asyncio.run(_chat(prompt, endpoint, think))
+    asyncio.run(_chat(prompt, endpoint, think, output_format))
 
 
-async def _chat(prompt: str, endpoint_name: str | None, show_thinking: bool) -> None:
+async def _chat(
+    prompt: str,
+    endpoint_name: str | None,
+    show_thinking: bool,
+    output_format: str | None = None,
+) -> None:
     cfg = load_config()
     registry = Registry(cfg)
     ep_name = endpoint_name or cfg.default_endpoint
@@ -51,11 +57,16 @@ async def _chat(prompt: str, endpoint_name: str | None, show_thinking: bool) -> 
         Message(role=Role.USER, content=prompt),
     ]
 
+    # Build response_format from --output-format flag
+    response_format: dict[str, str] | None = None
+    if output_format and output_format.lower() == "json":
+        response_format = {"type": "json_object"}
+
     text_buf = ""
     think_buf = ""
     last_usage = None
 
-    async for chunk in provider.stream(messages):
+    async for chunk in provider.stream(messages, response_format=response_format):
         if chunk.thinking and show_thinking:
             think_buf += chunk.thinking
             console.print(f"[dim]{chunk.thinking}[/dim]", end="")

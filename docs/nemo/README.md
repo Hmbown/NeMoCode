@@ -29,6 +29,7 @@ NeMo has two layers:
 | [Skills](skills.md) | Synthetic data generation and evaluation pipelines | This folder |
 | [Export & Deploy](export-deploy.md) | Model export and deployment utilities | This folder |
 | [Microservices](microservices.md) | Customizer, Evaluator, Data Designer, Guardrails, etc. | This folder |
+| [Data Workflows](data-workflows.md) | Repo-aware synthetic-data planning with NeMoCode + NVIDIA services | This folder |
 
 ## Key Framework Capabilities
 

@@ -251,6 +251,20 @@ class MCPConfig(BaseModel):
     servers: list[MCPServerConfig] = Field(default_factory=list)
 
 
+class GuardrailsConfig(BaseModel):
+    enabled: bool = False
+    endpoint: str = "nim-content-safety"
+    timeout: float = 10.0
+    reject_categories: list[str] = Field(
+        default_factory=lambda: [
+            "violence",
+            "self_harm",
+            "sexual_content",
+            "hate_speech",
+        ]
+    )
+
+
 class HooksConfig(BaseModel):
     """Pre/post tool execution hooks — shell commands with template variables."""
 
@@ -313,6 +327,7 @@ class NeMoCodeConfig(BaseModel):
     formations: dict[str, Formation] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     permissions: ToolPermissions = Field(default_factory=ToolPermissions)
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     project: ProjectContext = Field(default_factory=ProjectContext)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)

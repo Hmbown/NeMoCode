@@ -58,6 +58,10 @@ class TestCLIHelp:
         result = runner.invoke(app, ["auth", "--help"])
         assert result.exit_code == 0
 
+    def test_data_help(self):
+        result = runner.invoke(app, ["data", "--help"])
+        assert result.exit_code == 0
+
     def test_hardware_help(self):
         result = runner.invoke(app, ["hardware", "--help"])
         assert result.exit_code == 0
@@ -153,6 +157,89 @@ class TestInitCommand:
         (tmp_path / ".nemocode.yaml").write_text("existing: true")
         result = runner.invoke(app, ["init"])
         assert result.exit_code == 1
+
+
+class TestDataCommand:
+    def test_data_analyze(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "pyproject.toml").write_text(
+            "[project]\nname='demo'\ndependencies=['typer>=0.12', 'rich>=13.0', 'pytest>=8.0']\n"
+        )
+        (repo / "README.md").write_text("# Demo\n")
+        src_dir = repo / "src"
+        src_dir.mkdir()
+        (src_dir / "app.py").write_text("print('hello')\n")
+        tests_dir = repo / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_app.py").write_text("def test_ok():\n    assert True\n")
+
+        result = runner.invoke(app, ["data", "analyze", str(repo)])
+
+        assert result.exit_code == 0
+        out = _strip_ansi(result.stdout)
+        assert "Recommended NVIDIA Stack" in out
+        assert "data_designer" in out
+
+    def test_data_analyze_writes_plan(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(
+            '{"dependencies":{"react":"19.0.0"},"devDependencies":{"vitest":"3.0.0"}}'
+        )
+        (repo / "src").mkdir()
+        (repo / "src" / "app.tsx").write_text("export const x = 1;\n")
+        out_path = tmp_path / "plan.yaml"
+
+        result = runner.invoke(
+            app,
+            ["data", "analyze", str(repo), "--output", str(out_path)],
+        )
+
+        assert result.exit_code == 0
+        assert out_path.exists()
+        raw = yaml.safe_load(out_path.read_text())
+        assert raw["repo_profile"]["root"] == str(repo.resolve())
+        assert "data_designer_starter" in raw
+
+    def test_export_seeds_help(self):
+        result = runner.invoke(app, ["data", "export-seeds", "--help"])
+        assert result.exit_code == 0
+
+    def test_export_sft_help(self):
+        result = runner.invoke(app, ["data", "export-sft", "--help"])
+        assert result.exit_code == 0
+
+    def test_preview_help(self):
+        result = runner.invoke(app, ["data", "preview", "--help"])
+        assert result.exit_code == 0
+
+    def test_job_help(self):
+        result = runner.invoke(app, ["data", "job", "--help"])
+        assert result.exit_code == 0
+
+    def test_job_create_help(self):
+        result = runner.invoke(app, ["data", "job", "create", "--help"])
+        assert result.exit_code == 0
+
+    def test_job_status_help(self):
+        result = runner.invoke(app, ["data", "job", "status", "--help"])
+        assert result.exit_code == 0
+
+    def test_job_logs_help(self):
+        result = runner.invoke(app, ["data", "job", "logs", "--help"])
+        assert result.exit_code == 0
+
+    def test_job_results_help(self):
+        result = runner.invoke(app, ["data", "job", "results", "--help"])
+        assert result.exit_code == 0
+
+    def test_setup_data(self):
+        result = runner.invoke(app, ["setup", "data"])
+        assert result.exit_code == 0
+        out = _strip_ansi(result.stdout)
+        assert "NVIDIA Data Workflow Setup" in out
+        assert "nemo data analyze" in out
 
 
 class TestObsCommand:

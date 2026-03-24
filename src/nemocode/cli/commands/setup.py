@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: MIT
 
-"""nemo setup — guided setup for local inference backends."""
+"""nemo setup — guided setup for local inference backends and data services."""
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import shutil
+import subprocess
 import sys
 
 import typer
@@ -16,7 +19,7 @@ from rich.table import Table
 from nemocode.core.setup_wizard import run_setup_wizard
 
 console = Console()
-setup_app = typer.Typer(help="Set up local inference backends.")
+setup_app = typer.Typer(help="Set up local inference backends and NVIDIA data services.")
 
 
 @setup_app.callback(invoke_without_command=True)
@@ -37,7 +40,7 @@ def setup_default(
         console.print(
             Panel(
                 "[bold]NeMoCode Local Inference Setup[/bold]\n\n"
-                "Set up a local model server for offline/private coding.\n"
+                "Set up local model servers and NVIDIA data workflow services.\n"
                 "NeMoCode works with any OpenAI-compatible endpoint.",
                 border_style="bright_green",
                 expand=False,
@@ -79,6 +82,11 @@ def setup_default(
             "Brev (Cloud GPU)",
             "nemo setup brev",
             "Rent an NVIDIA GPU (L40S/A100/H100) in minutes",
+        )
+        table.add_row(
+            "Data Workflows",
+            "nemo setup data",
+            "Data Designer, Evaluator, Safe Synthesizer, Curator",
         )
 
         console.print(table)
@@ -690,6 +698,194 @@ def setup_brev() -> None:
 
     console.print("\n[dim]Brev: https://console.brev.dev[/dim]")
     console.print("[dim]Docs: https://docs.brev.dev[/dim]")
+
+
+@setup_app.command("data")
+def setup_data() -> None:
+    """Set up NVIDIA synthetic-data and evaluation services."""
+    console.print("[bold]NVIDIA Data Workflow Setup[/bold]\n")
+
+    docker_ok = shutil.which("docker") is not None
+    compose_ok = _docker_compose_available()
+    ngc_ok = shutil.which("ngc") is not None
+    microservices_sdk = importlib.util.find_spec("nemo_microservices") is not None
+    curator_sdk = importlib.util.find_spec("nemo_curator") is not None
+    gpu_name = _detect_gpu_name()
+    ngc_key = bool(os.environ.get("NGC_CLI_API_KEY") or os.environ.get("NGC_API_KEY"))
+    nim_key = bool(os.environ.get("NIM_API_KEY") or os.environ.get("NVIDIA_API_KEY"))
+
+    status = Table(show_header=True, box=None, padding=(0, 2))
+    status.add_column("Check", style="cyan")
+    status.add_column("Status")
+    status.add_column("Details", style="dim")
+    status.add_row("Docker", _status_label(docker_ok), "Required for all Docker Compose paths")
+    status.add_row(
+        "Docker Compose",
+        _status_label(compose_ok),
+        "Required for Data Designer, Evaluator, Safe Synthesizer",
+    )
+    status.add_row("NGC CLI", _status_label(ngc_ok), "Required by NVIDIA quickstart downloads")
+    status.add_row(
+        "NGC key",
+        _status_label(ngc_key),
+        "Needed for nvcr.io and NGC quickstart access",
+    )
+    status.add_row("build.nvidia.com key", _status_label(nim_key), "Needed for model-backed flows")
+    status.add_row("GPU", gpu_name or "not detected", "Safe Synthesizer is the strictest path")
+    status.add_row(
+        "nemo-microservices SDK",
+        _status_label(microservices_sdk),
+        "Optional, but useful for programmatic Data Designer and Evaluator access",
+    )
+    status.add_row(
+        "nemo-curator",
+        _status_label(curator_sdk),
+        "Optional for large-scale curation pipelines",
+    )
+    console.print(status)
+
+    console.print()
+    console.print(
+        Panel(
+            "Recommended NeMoCode path:\n"
+            "1. Analyze the repo with [bold]nemo data analyze[/bold]\n"
+            "2. Launch NeMo Data Designer for preview and job APIs\n"
+            "3. Use NeMo Evaluator to score generated tasks\n"
+            "4. Add Safe Synthesizer only when private tabular data is involved\n"
+            "5. Add Curator when you scale beyond repo-local artifacts into large corpora",
+            border_style="bright_green",
+            title="[bold]Suggested Order[/bold]",
+            expand=False,
+        )
+    )
+
+    console.print("\n[bold]NeMo Data Designer[/bold]")
+    console.print(
+        Panel(
+            "# NVIDIA docs: https://docs.nvidia.com/nemo/microservices/latest/"
+            "design-synthetic-data-from-scratch-or-seeds/docker-compose.html\n"
+            "export NGC_CLI_API_KEY=<your-ngc-api-key>\n"
+            "echo $NGC_CLI_API_KEY | docker login nvcr.io -u '$oauthtoken' --password-stdin\n"
+            "ngc registry resource download-version "
+            "\"nvidia/nemo-microservices/nemo-microservices-quickstart:25.12\"\n"
+            "cd nemo-microservices-quickstart_v25.12\n"
+            "export NEMO_MICROSERVICES_IMAGE_REGISTRY=nvcr.io/nvidia/nemo-microservices\n"
+            "export NEMO_MICROSERVICES_IMAGE_TAG=25.12\n"
+            "export NIM_API_KEY=<build.nvidia.com-api-key>\n"
+            "docker compose --profile data-designer up --detach --quiet-pull --wait\n"
+            "\n"
+            "# Verify:\n"
+            "curl -X POST -H 'Content-type: application/json' "
+            "localhost:8080/v1/data-designer/preview -d @preview.json\n"
+            "\n"
+            "# SDK:\n"
+            "pip install \"nemo-microservices[data-designer]\"",
+            title="[bold]Shell Commands[/bold]",
+            border_style="green",
+        )
+    )
+
+    console.print("\n[bold]NeMo Evaluator[/bold]")
+    console.print(
+        Panel(
+            "# NVIDIA docs: https://docs.nvidia.com/nemo/microservices/latest/evaluate/docker-compose.html\n"
+            "export NGC_CLI_API_KEY=<your-ngc-api-key>\n"
+            "docker login nvcr.io -u '$oauthtoken' -p $NGC_CLI_API_KEY\n"
+            "ngc registry resource download-version "
+            "\"nvidia/nemo-microservices/nemo-microservices-quickstart:25.10\"\n"
+            "cd nemo-microservices-quickstart_v25.10\n"
+            "export NEMO_MICROSERVICES_IMAGE_REGISTRY=nvcr.io/nvidia/nemo-microservices\n"
+            "export NEMO_MICROSERVICES_IMAGE_TAG=25.10\n"
+            "docker compose --profile evaluator up --detach --quiet-pull --wait\n"
+            "\n"
+            "# Verify:\n"
+            "curl -fv http://localhost:8080/v2/evaluation/jobs",
+            title="[bold]Shell Commands[/bold]",
+            border_style="green",
+        )
+    )
+
+    console.print("\n[bold]NeMo Safe Synthesizer[/bold]")
+    console.print(
+        Panel(
+            "# NVIDIA docs: https://docs.nvidia.com/nemo/microservices/latest/"
+            "generate-private-synthetic-data/docker-compose.html\n"
+            "# Use this only when you have private tabular data to protect.\n"
+            "export NGC_CLI_API_KEY=<your-ngc-api-key>\n"
+            "echo $NGC_CLI_API_KEY | docker login nvcr.io -u '$oauthtoken' --password-stdin\n"
+            "ngc registry resource download-version "
+            "\"nvidia/nemo-microservices/nemo-microservices-quickstart:25.12\"\n"
+            "cd nemo-microservices-quickstart_v25.12\n"
+            "export NEMO_MICROSERVICES_IMAGE_REGISTRY=nvcr.io/nvidia/nemo-microservices\n"
+            "export NEMO_MICROSERVICES_IMAGE_TAG=25.12\n"
+            "export NIM_API_KEY=<build.nvidia.com-api-key>\n"
+            "docker compose -f docker-compose.yaml -f gpu/config.yaml "
+            "--profile safe-synthesizer up --detach --quiet-pull --wait\n"
+            "\n"
+            "# SDK:\n"
+            "pip install \"nemo-microservices[safe-synthesizer]\"",
+            title="[bold]Shell Commands[/bold]",
+            border_style="yellow",
+        )
+    )
+
+    console.print(
+        "[dim]NVIDIA's Docker guide for Safe Synthesizer calls out 16GB RAM and an NVIDIA "
+        "GPU with 80GB. Treat smaller or unlisted GPUs as experimental.[/dim]"
+    )
+
+    console.print("\n[bold]NeMo Curator[/bold]")
+    console.print(
+        Panel(
+            "# NVIDIA docs: https://docs.nvidia.com/nemo/curator/latest/index.html\n"
+            "pip install nemo-curator\n"
+            "# or\n"
+            "pip install 'nemo-curator[cuda12x]'",
+            title="[bold]Shell Commands[/bold]",
+            border_style="green",
+        )
+    )
+
+    console.print(
+        "\n[dim]Best first milestone: get Data Designer running, then use "
+        "[bold]nemo data analyze[/bold] to produce a repo-aware plan and preview request.[/dim]"
+    )
+
+
+def _status_label(ok: bool) -> str:
+    return "[green]ready[/green]" if ok else "[yellow]missing[/yellow]"
+
+
+def _docker_compose_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "version"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _detect_gpu_name() -> str | None:
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.splitlines()[0].strip() if result.stdout.strip() else None
 
 
 def _check_docker() -> None:

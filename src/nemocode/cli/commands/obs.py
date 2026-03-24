@@ -5,13 +5,29 @@
 
 from __future__ import annotations
 
+import re
+import sys
+import time
+
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from nemocode.core.metrics import PRICING
 
-console = Console()
+
+def _console() -> Console:
+    """Return a Console that writes to the current sys.stdout.
+
+    This is important for testability — typer's CliRunner replaces
+    sys.stdout at invocation time, so a module-level Console would
+    miss the redirection.
+    """
+    return Console(file=sys.stdout)
+
+
+# Kept for backward compatibility with obs_tail / obs_pricing.
+console = _console()
 obs_app = typer.Typer(help="Observability and cost tracking.")
 
 
@@ -83,3 +99,122 @@ def obs_pricing() -> None:
     console.print(
         "\n[dim]Prices are estimates for NIM API Catalog. Self-hosted costs vary by hardware.[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Duration parsing helper
+# ---------------------------------------------------------------------------
+
+_DURATION_RE = re.compile(r"^(\d+)\s*(h|d|m|s|hr|hrs|min|mins|sec|secs|hour|hours|day|days)$", re.I)
+
+_UNIT_SECONDS: dict[str, int] = {
+    "s": 1,
+    "sec": 1,
+    "secs": 1,
+    "m": 60,
+    "min": 60,
+    "mins": 60,
+    "h": 3600,
+    "hr": 3600,
+    "hrs": 3600,
+    "hour": 3600,
+    "hours": 3600,
+    "d": 86400,
+    "day": 86400,
+    "days": 86400,
+}
+
+
+def _parse_duration(text: str) -> float | None:
+    """Parse a human duration like '24h', '7d', '30m' into seconds. Returns None on failure."""
+    match = _DURATION_RE.match(text.strip())
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2).lower()
+    multiplier = _UNIT_SECONDS.get(unit)
+    if multiplier is None:
+        return None
+    return float(value * multiplier)
+
+
+# ---------------------------------------------------------------------------
+# nemo obs usage
+# ---------------------------------------------------------------------------
+
+
+@obs_app.command("usage")
+def obs_usage(
+    since: str = typer.Option(None, "--since", help="Time range, e.g. '1h', '24h', '7d'"),
+) -> None:
+    """Show token usage summary by model."""
+    from nemocode.core.sqlite_store import load_usage_summary
+
+    since_ts: float | None = None
+    label = ""
+    c = _console()
+
+    if since:
+        duration_s = _parse_duration(since)
+        if duration_s is None:
+            c.print(f"[red]Could not parse duration: '{since}'. Use e.g. 1h, 24h, 7d.[/red]")
+            raise typer.Exit(code=1)
+        since_ts = time.time() - duration_s
+        label = f" (last {since})"
+
+    summary = load_usage_summary(since=since_ts)
+
+    if not summary:
+        c.print(f"[dim]No usage data recorded yet{label}.[/dim]")
+        return
+
+    table = Table(title=f"Token Usage by Model{label}", min_width=100)
+    table.add_column("Model", style="cyan")
+    table.add_column("Requests", justify="right")
+    table.add_column("Prompt Tokens", justify="right")
+    table.add_column("Completion Tokens", justify="right")
+    table.add_column("Total Tokens", justify="right")
+    table.add_column("Est. Cost", justify="right", style="green")
+
+    total_requests = 0
+    total_prompt = 0
+    total_completion = 0
+    total_tokens = 0
+    total_cost = 0.0
+
+    for row in summary:
+        model = row["model_id"]
+        if len(model) > 40:
+            model = "..." + model[-37:]
+        reqs = row["requests"]
+        pt = row["prompt_tokens"]
+        ct = row["completion_tokens"]
+        tt = row["total_tokens"]
+        cost = row["estimated_cost"]
+
+        total_requests += reqs
+        total_prompt += pt
+        total_completion += ct
+        total_tokens += tt
+        total_cost += cost
+
+        table.add_row(
+            model,
+            f"{reqs:,}",
+            f"{pt:,}",
+            f"{ct:,}",
+            f"{tt:,}",
+            f"${cost:.6f}",
+        )
+
+    table.add_section()
+    table.add_row(
+        "[bold]Total[/bold]",
+        f"[bold]{total_requests:,}[/bold]",
+        f"[bold]{total_prompt:,}[/bold]",
+        f"[bold]{total_completion:,}[/bold]",
+        f"[bold]{total_tokens:,}[/bold]",
+        f"[bold green]${total_cost:.6f}[/bold green]",
+    )
+
+    c.print(table)

@@ -36,7 +36,7 @@ def obs_tail(
     count: int = typer.Option(20, "-n", "--count", help="Number of recent metrics to show"),
 ) -> None:
     """Show recent request metrics from the metrics store."""
-    # Load persisted metrics if available
+    c = _console()
     try:
         from nemocode.core.persistence import load_latest_session_metrics
 
@@ -45,8 +45,8 @@ def obs_tail(
         metrics_list = []
 
     if not metrics_list:
-        console.print("[dim]No metrics recorded yet. Run a session first.[/dim]")
-        console.print("[dim]Use /cost in the REPL for live session cost tracking.[/dim]")
+        c.print("[dim]No metrics recorded yet. Run a session first.[/dim]")
+        c.print("[dim]Use /cost in the REPL for live session cost tracking.[/dim]")
         return
 
     table = Table(title=f"Recent Requests (last {len(metrics_list)})")
@@ -77,12 +77,13 @@ def obs_tail(
             str(tools),
         )
 
-    console.print(table)
+    c.print(table)
 
 
 @obs_app.command("pricing")
 def obs_pricing() -> None:
     """Show model pricing estimates."""
+    c = _console()
     table = Table(title="NIM API Pricing (per 1M tokens)")
     table.add_column("Model", style="cyan")
     table.add_column("Input", justify="right")
@@ -95,8 +96,8 @@ def obs_pricing() -> None:
             f"${prices['output']:.2f}",
         )
 
-    console.print(table)
-    console.print(
+    c.print(table)
+    c.print(
         "\n[dim]Prices are estimates for NIM API Catalog. Self-hosted costs vary by hardware.[/dim]"
     )
 

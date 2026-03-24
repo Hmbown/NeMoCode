@@ -20,6 +20,7 @@ _SERVICE_NAME = "nemocode"
 # Known credential keys and their descriptions
 KNOWN_KEYS: dict[str, str] = {
     "NVIDIA_API_KEY": "NVIDIA API Key (build.nvidia.com / NIM API Catalog)",
+    "NGC_CLI_API_KEY": "NGC API Key (container pulls, NeMo Microservices, Customizer)",
     "OPENROUTER_API_KEY": "OpenRouter API Key",
     "TOGETHER_API_KEY": "Together AI API Key",
     "DEEPINFRA_API_KEY": "DeepInfra API Key",
@@ -133,6 +134,7 @@ async def test_credential(key_name: str) -> dict[str, Any]:
     # Test based on which API the key is for
     test_urls: dict[str, str] = {
         "NVIDIA_API_KEY": "https://integrate.api.nvidia.com/v1/models",
+        "NGC_CLI_API_KEY": "https://api.ngc.nvidia.com/v2/org/nvidia/repos",
         "OPENROUTER_API_KEY": "https://openrouter.ai/api/v1/models",
         "TOGETHER_API_KEY": "https://api.together.xyz/v1/models",
         "DEEPINFRA_API_KEY": "https://api.deepinfra.com/v1/openai/models",
@@ -143,9 +145,15 @@ async def test_credential(key_name: str) -> dict[str, Any]:
     if not url:
         return {"status": "unknown", "key": key_name, "message": "No test URL for this key"}
 
+    # NGC API uses ApiKey header; all others use Bearer
+    if key_name == "NGC_CLI_API_KEY":
+        headers = {"Authorization": f"ApiKey {value}"}
+    else:
+        headers = {"Authorization": f"Bearer {value}"}
+
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers={"Authorization": f"Bearer {value}"})
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 return {"status": "ok", "key": key_name}
             elif resp.status_code == 401:

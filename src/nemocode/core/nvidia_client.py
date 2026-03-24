@@ -25,8 +25,25 @@ def _env(name: str, default: str) -> str:
 
 
 def _api_key() -> str | None:
-    """Return the best available API key, preferring NIM_API_KEY."""
-    return os.environ.get("NIM_API_KEY") or os.environ.get("NGC_CLI_API_KEY")
+    """Return the best available API key.
+
+    Checks the unified NeMoCode credential store (keyring + env) first,
+    then falls back to direct env var reads for NIM_API_KEY / NGC_CLI_API_KEY.
+    """
+    try:
+        from nemocode.core.credentials import get_credential
+
+        # NGC key is the primary auth for microservices
+        key = get_credential("NGC_CLI_API_KEY")
+        if key:
+            return key
+        key = get_credential("NVIDIA_API_KEY")
+        if key:
+            return key
+    except Exception:
+        pass
+    # Direct env fallback
+    return os.environ.get("NGC_CLI_API_KEY") or os.environ.get("NIM_API_KEY")
 
 
 def _auth_headers() -> dict[str, str]:

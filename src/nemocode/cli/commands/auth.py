@@ -44,6 +44,12 @@ def auth_setup() -> None:
         console.print(f"\n  [bold]{description}[/bold]")
         if key_name == "NVIDIA_API_KEY":
             console.print("  [dim]Get a free key at https://build.nvidia.com[/dim]")
+        elif key_name == "NGC_CLI_API_KEY":
+            console.print("  [dim]Generate at https://ngc.nvidia.com/setup/api-key[/dim]")
+            console.print(
+                "  [dim]Required for: Docker image pulls, Data Designer, "
+                "Evaluator, Customizer[/dim]"
+            )
 
         value = getpass.getpass(f"  {key_name}: ")
         if not value.strip():

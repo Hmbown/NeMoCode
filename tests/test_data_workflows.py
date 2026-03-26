@@ -233,6 +233,26 @@ class TestSFTExport:
         assert result.output_path == str(out)
         assert out.exists()
 
+    def test_default_export_prefers_implementation_files(self, sample_repo: Path):
+        result = export_sft(sample_repo)
+        rows = [
+            json.loads(line)
+            for line in Path(result.output_path).read_text().splitlines()
+            if line.strip()
+        ]
+        assert rows
+        assert all(not row["metadata"]["filepath"].startswith("tests/") for row in rows)
+
+    def test_include_tests_can_restore_test_definitions(self, sample_repo: Path):
+        result = export_sft(sample_repo, include_tests=True)
+        rows = [
+            json.loads(line)
+            for line in Path(result.output_path).read_text().splitlines()
+            if line.strip()
+        ]
+        assert rows
+        assert any(row["metadata"]["filepath"].startswith("tests/") for row in rows)
+
 
 # ---------------------------------------------------------------------------
 # NVIDIA client tests (mocked HTTP)

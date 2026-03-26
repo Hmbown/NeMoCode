@@ -103,7 +103,7 @@ endpoints:
   nim-rerank:
     name: "Nemotron Rerank 1B v2"
     tier: dev-hosted
-    base_url: "https://integrate.api.nvidia.com/v1"
+    base_url: "https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2"
     api_key_env: NVIDIA_API_KEY
     model_id: "nvidia/llama-nemotron-rerank-1b-v2"
     capabilities: [rerank]
@@ -272,16 +272,25 @@ endpoints:
     name: "Local vLLM Super NVFP4 (DGX Spark)"
     tier: local-vllm
     base_url: "http://localhost:8000/v1"
-    model_id: "/home/hmbown/HF_Models/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
-  # ── Nano 9B via vLLM on Spark (port 8001) ──────────────────────
+  # ── Nano 9B via vLLM on Spark (optional legacy worker, port 8002) ─────────
   spark-vllm-nano9b:
     name: "Local vLLM Nano 9B (DGX Spark)"
     tier: local-vllm
-    base_url: "http://localhost:8001/v1"
+    base_url: "http://localhost:8002/v1"
     model_id: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ── Nano 4B FP8 via vLLM on Spark (official Spark path, port 8001) ──────
+  spark-vllm-nano4b:
+    name: "Local vLLM Nano 4B FP8 (DGX Spark)"
+    tier: local-vllm
+    base_url: "http://localhost:8001/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8"
     capabilities: [chat, code]
     max_tokens: 8192
 
@@ -295,7 +304,7 @@ endpoints:
     name: "Local SGLang Super NVFP4 (DGX Spark)"
     tier: local-sglang
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
@@ -315,10 +324,10 @@ endpoints:
 
   # ── Super via TensorRT-LLM on Spark (port 8000) ────────────────
   spark-trt-llm-super:
-    name: "Local TensorRT-LLM Super 120B (DGX Spark)"
+    name: "Local TensorRT-LLM Super 120B NVFP4 (DGX Spark)"
     tier: local-trt-llm
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
@@ -328,6 +337,19 @@ endpoints:
     tier: local-trt-llm
     base_url: "http://localhost:8001/v1"
     model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DGX SPARK LLAMA.CPP / GGUF DEPLOYMENT
+  # Official Nano 4B Q4_K_M serving artifact. Use BF16/FP8 for training bases.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  spark-llama-cpp-nano4b:
+    name: "Local llama.cpp Nano 4B Q4_K_M (DGX Spark)"
+    tier: local-llama-cpp
+    base_url: "http://localhost:8001/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M"
     capabilities: [chat, code]
     max_tokens: 8192
 
@@ -352,58 +374,50 @@ endpoints:
     max_tokens: 16384
 
   local-vllm-super:
-    name: "Local vLLM (Super)"
+    name: "Local vLLM (Super NVFP4)"
     tier: local-vllm
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
   local-vllm-nano:
-    name: "Local vLLM (Nano 30B)"
+    name: "Local vLLM (Nano 30B NVFP4)"
     tier: local-vllm
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
-  local-vllm-nano9b:
-    name: "Local vLLM (Nano 9B)"
+  local-vllm-nano4b:
+    name: "Local vLLM (Nano 4B BF16)"
     tier: local-vllm
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
     capabilities: [chat, code]
     max_tokens: 8192
 
   local-sglang-super:
-    name: "Local SGLang (Super)"
+    name: "Local SGLang (Super NVFP4)"
     tier: local-sglang
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
-  local-sglang-nano9b:
-    name: "Local SGLang (Nano 9B)"
-    tier: local-sglang
-    base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/nemotron-nano-9b-v2"
-    capabilities: [chat, code]
-    max_tokens: 8192
-
   local-sglang-nano4b:
-    name: "Local SGLang (Nano 4B)"
+    name: "Local SGLang (Nano 4B BF16)"
     tier: local-sglang
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/llama-3.1-nemotron-nano-4b-v1.1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
     capabilities: [chat, code]
     max_tokens: 8192
 
   local-trt-llm-super:
-    name: "Local TensorRT-LLM (Super 120B)"
+    name: "Local TensorRT-LLM (Super 120B NVFP4)"
     tier: local-trt-llm
     base_url: "http://localhost:8000/v1"
-    model_id: "nvidia/nemotron-3-super-120b-a12b"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
     capabilities: [chat, code]
     max_tokens: 16384
 
@@ -412,6 +426,14 @@ endpoints:
     tier: local-trt-llm
     base_url: "http://localhost:8000/v1"
     model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  local-llama-cpp-nano4b:
+    name: "Local llama.cpp (Nano 4B Q4_K_M)"
+    tier: local-llama-cpp
+    base_url: "http://localhost:8000/v1"
+    model_id: "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M"
     capabilities: [chat, code]
     max_tokens: 8192
 
@@ -455,6 +477,37 @@ manifests:
     min_gpu_memory_gb: 80
     min_gpus: 1
 
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    display_name: "Nemotron 3 Super NVFP4"
+    arch: nemotron-3
+    tier_in_family: super
+    capabilities: [chat, code]
+    context_window: 1048576
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 120
+      active_params_b: 12
+      uses_latent_moe: true
+      uses_mtp: true
+      uses_mamba: true
+      precision: "nvfp4"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      thinking_budget_param: "reasoning_budget"
+      no_think_tag: "/no_think"
+      supports_budget_control: true
+    structured:
+      json_schema: true
+      regex: true
+      choices: true
+    supports_tools: true
+    supports_parallel_tools: false
+    supports_lora: true
+    recommended_gpu: "DGX Spark / B200 / H100"
+    min_gpu_memory_gb: 80
+    min_gpus: 1
+
   nvidia/nemotron-3-nano-30b-a3b:
     display_name: "Nemotron 3 Nano 30B"
     arch: nemotron-3
@@ -480,6 +533,34 @@ manifests:
     supports_tools: true
     supports_lora: true
     recommended_gpu: "DGX Spark / H100 / B200"
+    min_gpu_memory_gb: 24
+    min_gpus: 1
+
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    display_name: "Nemotron 3 Nano 30B NVFP4"
+    arch: nemotron-3
+    tier_in_family: nano
+    capabilities: [chat, code]
+    context_window: 1048576
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 31.6
+      active_params_b: 3.2
+      uses_latent_moe: false
+      uses_mtp: false
+      uses_mamba: true
+      precision: "nvfp4"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      thinking_budget_param: "reasoning_budget"
+      supports_budget_control: true
+    structured:
+      json_schema: true
+      regex: true
+    supports_tools: true
+    supports_lora: true
+    recommended_gpu: "DGX Spark / RTX PRO 6000 / H100 / B200"
     min_gpu_memory_gb: 24
     min_gpus: 1
 
@@ -557,6 +638,51 @@ manifests:
       json_schema: true
     supports_tools: true
     recommended_gpu: "DGX Spark / GeForce RTX / Jetson Thor"
+    min_gpu_memory_gb: 4
+    min_gpus: 1
+
+  nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16:
+    display_name: "Nemotron 3 Nano 4B BF16"
+    arch: nemotron-3
+    tier_in_family: nano-4b
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 4
+      active_params_b: 4
+      precision: "bf16"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+    supports_tools: true
+    supports_lora: true
+    recommended_gpu: "DGX Spark / RTX 4090 / workstation-class GPU"
+    min_gpu_memory_gb: 10
+    min_gpus: 1
+
+  "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M":
+    display_name: "Nemotron 3 Nano 4B GGUF Q4_K_M"
+    arch: nemotron-3
+    tier_in_family: nano-4b
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 4
+      active_params_b: 4
+      precision: "q4_k_m"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+      supports_budget_control: false
+    structured:
+      json_schema: true
+    supports_tools: true
+    recommended_gpu: "DGX Spark / GeForce RTX / Jetson Thor/Orin Nano"
     min_gpu_memory_gb: 4
     min_gpus: 1
 
@@ -882,12 +1008,29 @@ formations:
   # Spark vLLM: Same as spark but using vLLM instead of NIM containers.
   spark-vllm:
     name: "DGX Spark (vLLM)"
-    description: "Super + Nano 9B via vLLM on Spark. No Docker required."
+    description: "Super NVFP4 + Nano 4B FP8 via vLLM on Spark. Official Nano 4B Spark settings."
     slots:
       - role: planner
         endpoint: spark-vllm-super
       - role: fast
-        endpoint: spark-vllm-nano9b
+        endpoint: spark-vllm-nano4b
+      - role: executor
+        endpoint: spark-vllm-super
+      - role: reviewer
+        endpoint: spark-vllm-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # Spark llama.cpp: Super via vLLM + official Nano 4B GGUF Q4_K_M fast worker.
+  spark-llama-cpp:
+    name: "DGX Spark (llama.cpp)"
+    description: "Super NVFP4 + Nano 4B GGUF Q4_K_M on Spark."
+    slots:
+      - role: planner
+        endpoint: spark-vllm-super
+      - role: fast
+        endpoint: spark-llama-cpp-nano4b
       - role: executor
         endpoint: spark-vllm-super
       - role: reviewer

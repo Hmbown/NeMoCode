@@ -40,7 +40,7 @@ def _strip_ansi(text: str) -> str:
 
 class TestResolveModelId:
     def test_nano_4b_alias(self):
-        assert _resolve_model_id("nemotron-3-nano-4b") == "nvidia/llama-3.1-nemotron-nano-4b-v1.1"
+        assert _resolve_model_id("nemotron-3-nano-4b") == "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 
     def test_nano_9b_alias(self):
         assert _resolve_model_id("nemotron-3-nano-9b") == "nvidia/nemotron-nano-9b-v2"
@@ -60,9 +60,9 @@ class TestResolveModelId:
 
 class TestPickBackend:
     @patch("nemocode.cli.commands.serve._find_executable")
-    def test_spark_prefers_sglang(self, mock_find):
+    def test_spark_without_vllm_is_unknown(self, mock_find):
         mock_find.side_effect = lambda n: "/usr/bin/sglang" if n == "sglang" else None
-        assert _pick_backend(True) == "sglang"
+        assert _pick_backend(True) == "unknown"
 
     @patch("nemocode.cli.commands.serve._find_executable")
     def test_spark_falls_back_to_vllm(self, mock_find):
@@ -84,11 +84,11 @@ class TestPickBackend:
 class TestBuildVllmCommand:
     def test_basic_command(self):
         cmd = _build_vllm_command(
-            "nvidia/llama-3.1-nemotron-nano-4b-v1.1", Path("/tmp/adapter"), 8010
+            "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16", Path("/tmp/adapter"), 8010
         )
         assert cmd[0] == "vllm"
         assert cmd[1] == "serve"
-        assert "nvidia/llama-3.1-nemotron-nano-4b-v1.1" in cmd
+        assert "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16" in cmd
         assert "--port" in cmd
         assert "8010" in cmd
         assert "--enable-lora" in cmd
@@ -102,7 +102,7 @@ class TestBuildVllmCommand:
 class TestBuildSglangCommand:
     def test_basic_command(self):
         cmd = _build_sglang_command(
-            "nvidia/llama-3.1-nemotron-nano-4b-v1.1", Path("/tmp/adapter"), 8010
+            "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16", Path("/tmp/adapter"), 8010
         )
         assert cmd[0] == "python"
         assert "sglang.launch_server" in cmd
@@ -375,29 +375,10 @@ class TestServeStart:
         assert "ready" in out
         mock_clear.assert_called_once()
 
-    @patch("nemocode.cli.commands.serve._write_state")
-    @patch("nemocode.cli.commands.serve._SERVE_PID_FILE")
-    @patch("nemocode.cli.commands.serve._health_check", return_value=True)
     @patch("nemocode.cli.commands.serve._pick_backend", return_value="sglang")
     @patch("nemocode.cli.commands.serve.detect_hardware")
-    @patch("nemocode.cli.commands.serve.subprocess.Popen")
-    @patch("nemocode.cli.commands.serve.ensure_config_dir")
-    @patch("nemocode.cli.commands.serve._register_endpoint")
-    def test_start_sglang_backend(
-        self,
-        mock_reg,
-        mock_ensure,
-        mock_popen,
-        mock_hw,
-        mock_backend,
-        mock_health,
-        mock_pid,
-        mock_write,
-    ):
+    def test_start_sglang_backend_is_rejected(self, mock_hw, mock_backend):
         mock_hw.return_value = MagicMock(is_dgx_spark=True)
-        mock_proc = MagicMock()
-        mock_proc.pid = 54321
-        mock_popen.return_value = mock_proc
 
         adapter_dir = Path("/tmp/test-adapter")
         with patch.object(Path, "exists", return_value=True):
@@ -407,10 +388,9 @@ class TestServeStart:
                     ["serve", "start", "--adapter", str(adapter_dir)],
                 )
 
-        assert result.exit_code == 0
-        mock_reg.assert_called_once()
-        tier_arg = mock_reg.call_args[0][3]
-        assert tier_arg == "local-sglang"
+        assert result.exit_code == 1
+        out = _strip_ansi(result.stdout)
+        assert "not wired up coherently" in out
 
 
 class TestServeStop:
@@ -466,7 +446,7 @@ class TestServeStatus:
             "backend": "vllm",
             "port": 8010,
             "base_url": "http://localhost:8010/v1",
-            "model_id": "nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+            "model_id": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
             "endpoint_name": "my-lora",
         }
         mock_resp = MagicMock()

@@ -75,6 +75,20 @@ class TestParseConfig:
         cfg = _parse_config(raw)
         assert cfg.endpoints["trt"].tier == EndpointTier.LOCAL_TRT_LLM
 
+    def test_local_llama_cpp_endpoint_parsing(self):
+        raw = {
+            "endpoints": {
+                "llama-cpp": {
+                    "name": "llama.cpp",
+                    "tier": "local-llama-cpp",
+                    "base_url": "http://localhost:8000/v1",
+                    "model_id": "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M",
+                }
+            }
+        }
+        cfg = _parse_config(raw)
+        assert cfg.endpoints["llama-cpp"].tier == EndpointTier.LOCAL_LLAMACPP
+
     def test_manifest_parsing(self):
         raw = {
             "manifests": {

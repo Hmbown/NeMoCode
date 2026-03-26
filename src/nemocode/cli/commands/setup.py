@@ -79,6 +79,11 @@ def setup_default(
             "Spark-tuned TensorRT serving with OpenAI-compatible APIs",
         )
         table.add_row(
+            "llama.cpp",
+            "nemo setup llama-cpp",
+            "Official Nano 4B GGUF Q4_K_M local serving",
+        )
+        table.add_row(
             "Brev (Cloud GPU)",
             "nemo setup brev",
             "Rent an NVIDIA GPU (L40S/A100/H100) in minutes",
@@ -123,7 +128,7 @@ def setup_spark() -> None:
             "  Memory: 128GB unified LPDDR5x (shared CPU/GPU)\n"
             "  Compute: 1 PFLOP FP4 / 1000 TOPS\n"
             "  CUDA: SM 12.1 (Blackwell desktop)\n\n"
-            "  Can run Super (120B) + Nano (9B) + Embed + Rerank concurrently!",
+            "  Can run Super (120B) + Nano + Embed + Rerank concurrently!",
             border_style="bright_green",
             expand=False,
         )
@@ -247,9 +252,31 @@ def setup_spark() -> None:
     console.print(table)
 
     console.print(
+        Panel(
+            "[bold]Alternative Spark Fast Workers[/bold]\n"
+            "  vLLM NVFP4/FP8: [cyan]nemo setup vllm[/cyan] → Super NVFP4, Nano 4B FP8\n"
+            "  TRT-LLM NVFP4/FP8: [cyan]nemo setup trt-llm[/cyan] → native NVIDIA optimized serving\n"
+            "  llama.cpp GGUF: [cyan]nemo setup llama-cpp[/cyan] → official Q4_K_M 4-bit server",
+            border_style="bright_green",
+            expand=False,
+        )
+    )
+    console.print(
+        Panel(
+            "[bold]Spark-specific Notes[/bold]\n"
+            "  Treat Spark as UMA ARM64 hardware, not a discrete-GPU workstation.\n"
+            "  `cudaMemGetInfo` can under-report allocatable memory on Spark.\n"
+            "  GPUDirect RDMA is not supported on DGX Spark.\n"
+            "  Prefer Spark/aarch64-tested wheels and containers for local backends.",
+            border_style="yellow",
+            expand=False,
+        )
+    )
+
+    console.print(
         "\n[dim]Prefer an alternate local backend? Run"
         " [bold]nemo setup sglang[/bold], [bold]nemo setup trt-llm[/bold],"
-        " or [bold]nemo setup vllm[/bold].[/dim]"
+        " [bold]nemo setup vllm[/bold], or [bold]nemo setup llama-cpp[/bold].[/dim]"
     )
     console.print("\n[dim]Docs: https://docs.nvidia.com/dgx/dgx-spark/[/dim]")
     console.print("[dim]NIM on Spark: https://build.nvidia.com/spark/nim-llm[/dim]")
@@ -375,28 +402,53 @@ def setup_vllm() -> None:
     console.print("[bold bright_green]DGX Spark — vLLM (Recommended)[/bold bright_green]\n")
     console.print(
         "DGX Spark's 128GB unified memory runs Super + Nano concurrently\n"
-        "with [bold]no tensor parallel[/bold] and [bold]no Docker required[/bold].\n"
+        "with [bold]no tensor parallel[/bold]. For Nano 4B on Spark, follow the\n"
+        "official FP8 vLLM path rather than generic workstation flags.\n"
     )
     console.print(
         Panel(
-            "# Install vLLM\n"
-            "pip install vllm\n"
+            "# Install the Spark-tested vLLM runtime (official Nano 4B card requires vLLM >= 0.15.1)\n"
+            "pip install 'vllm>=0.15.1'\n"
+            "\n"
+            "# If NVIDIA publishes nano_v3_reasoning_parser.py separately, place it in this directory.\n"
+            "# The Nano 4B FP8 Spark launch below will pick it up automatically when present.\n"
             "\n"
             "# ── Terminal 1: Nemotron 3 Super NVFP4 (main brain, port 8000) ──\n"
-            "# Use local path if downloaded, or HF hub ID to pull on first run.\n"
-            "vllm serve /home/hmbown/HF_Models/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \\\n"
+            "# NVIDIA's current Spark recipe uses the vllm/vllm-openai:v0.17.1-cu130 image.\n"
+            "wget https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/raw/main/super_v3_reasoning_parser.py\n"
+            "export MODEL_CKPT=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4\n"
+            "VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \\\n"
+            "VLLM_FLASHINFER_ALLREDUCE_BACKEND=trtllm \\\n"
+            "vllm serve $MODEL_CKPT \\\n"
+            "  --served-model-name nemotron-3-super \\\n"
+            "  --host 0.0.0.0 \\\n"
             "  --port 8000 \\\n"
-            "  --max-model-len 131072 \\\n"
-            "  --enable-auto-tool-choice \\\n"
-            "  --tool-call-parser hermes \\\n"
-            "  --trust-remote-code\n"
+            "  --async-scheduling \\\n"
+            "  --dtype auto \\\n"
+            "  --kv-cache-dtype fp8 \\\n"
+            "  --tensor-parallel-size 1 \\\n"
+            "  --pipeline-parallel-size 1 \\\n"
+            "  --data-parallel-size 1 \\\n"
+            "  --trust-remote-code \\\n"
+            "  --gpu-memory-utilization 0.90 \\\n"
+            "  --enable-chunked-prefill \\\n"
+            "  --max-num-seqs 4 \\\n"
+            "  --max-model-len 394000 \\\n"
+            "  --attention-backend TRITON_ATTN \\\n"
+            "  --mamba_ssm_cache_dtype float32 \\\n"
+            "  --moe-backend marlin\n"
             "\n"
-            "# ── Terminal 2: Nemotron Nano 9B (mini-agent, port 8001) ──\n"
-            "vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \\\n"
+            "# ── Terminal 2: Nemotron 3 Nano 4B FP8 (fast worker, port 8001) ──\n"
+            "# If nano_v3_reasoning_parser.py is unavailable, omit the two reasoning-parser flags below.\n"
+            "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8 \\\n"
             "  --port 8001 \\\n"
-            "  --max-model-len 32768 \\\n"
+            "  --max-model-len 262144 \\\n"
+            "  --mamba_ssm_cache_dtype float32 \\\n"
             "  --enable-auto-tool-choice \\\n"
-            "  --tool-call-parser hermes \\\n"
+            "  --tool-call-parser qwen3_coder \\\n"
+            "  --reasoning-parser nano_v3 \\\n"
+            "  --reasoning-parser-plugin ./nano_v3_reasoning_parser.py \\\n"
+            "  --kv-cache-dtype fp8 \\\n"
             "  --trust-remote-code",
             title="[bold]DGX Spark — Shell Commands[/bold]",
             border_style="bright_green",
@@ -404,17 +456,15 @@ def setup_vllm() -> None:
     )
 
     # Memory budget for Spark + vLLM
-    console.print("[bold]Memory Budget (128GB unified):[/bold]")
+    console.print("[bold]Deployment Shape (128GB unified):[/bold]")
     table = Table(show_header=True, box=None, padding=(0, 2))
     table.add_column("Process", style="cyan")
     table.add_column("Model", style="dim")
-    table.add_column("Memory", justify="right")
+    table.add_column("Notes")
     table.add_column("Port", justify="right")
 
-    table.add_row("vLLM (Super)", "Nemotron 3 Super 120B", "~80 GB", "8000")
-    table.add_row("vLLM (Nano)", "Nemotron Nano 9B v2", "~10 GB", "8001")
-    table.add_row("[dim]Total[/dim]", "", "[bold]~90 GB[/bold]", "")
-    table.add_row("[dim]Remaining[/dim]", "[dim]OS + apps[/dim]", "[green]~38 GB[/green]", "")
+    table.add_row("vLLM (Super)", "Nemotron 3 Super 120B NVFP4", "Planner / executor", "8000")
+    table.add_row("vLLM (Nano)", "Nemotron 3 Nano 4B FP8", "Fast worker, 262K ctx", "8001")
 
     console.print(table)
 
@@ -423,8 +473,8 @@ def setup_vllm() -> None:
             "# Use the spark-vllm formation:\n"
             "nemo code -f spark-vllm\n"
             "\n"
-            "# Or use Super directly:\n"
-            "nemo code -e spark-vllm-super\n"
+            "# Or target the Spark Nano 4B worker directly:\n"
+            "nemo code -e spark-vllm-nano4b\n"
             "\n"
             "# Verify endpoints:\n"
             "curl -s localhost:8000/v1/models | python3 -m json.tool\n"
@@ -441,12 +491,14 @@ def setup_vllm() -> None:
             "# Install vLLM\n"
             "pip install vllm\n"
             "\n"
-            "# Serve Nemotron 3 Nano (FP8, ~24GB VRAM)\n"
-            "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 \\\n"
+            "# Serve Nemotron 3 Nano 30B NVFP4\n"
+            "VLLM_USE_FLASHINFER_MOE_FP4=1 VLLM_FLASHINFER_MOE_BACKEND=throughput \\\n"
+            "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 \\\n"
             "  --port 8000 \\\n"
-            "  --max-model-len 32768 \\\n"
+            "  --max-model-len 262144 \\\n"
             "  --enable-auto-tool-choice \\\n"
-            "  --tool-call-parser hermes\n"
+            "  --tool-call-parser qwen3_coder \\\n"
+            "  --kv-cache-dtype fp8\n"
             "\n"
             "# Test it:\n"
             "nemo code -e local-vllm-nano",
@@ -455,15 +507,26 @@ def setup_vllm() -> None:
         )
     )
 
-    console.print("\n[bold]For Nemotron 3 Super (FP8, ~80GB VRAM, multi-GPU):[/bold]")
+    console.print("\n[bold]For Nemotron 3 Super NVFP4 (~80GB VRAM, multi-GPU):[/bold]")
     console.print(
         Panel(
-            "vllm serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 \\\n"
+            "wget https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/raw/main/super_v3_reasoning_parser.py\n"
+            "export MODEL_CKPT=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4\n"
+            "vllm serve $MODEL_CKPT \\\n"
+            "  --served-model-name nvidia/nemotron-3-super \\\n"
             "  --port 8000 \\\n"
-            "  --tensor-parallel-size 2 \\\n"
-            "  --max-model-len 131072 \\\n"
+            "  --async-scheduling \\\n"
+            "  --dtype auto \\\n"
+            "  --max-model-len 262144 \\\n"
+            "  --swap-space 0 \\\n"
+            "  --trust-remote-code \\\n"
+            "  --gpu-memory-utilization 0.9 \\\n"
+            "  --max-cudagraph-capture-size 128 \\\n"
+            "  --enable-chunked-prefill \\\n"
+            "  --mamba-ssm-cache-dtype float16 \\\n"
+            "  --reasoning-parser nemotron_v3 \\\n"
             "  --enable-auto-tool-choice \\\n"
-            "  --tool-call-parser hermes",
+            "  --tool-call-parser qwen3_coder",
             title="[bold]Shell Commands[/bold]",
             border_style="green",
         )
@@ -471,7 +534,22 @@ def setup_vllm() -> None:
 
     console.print(
         "\n[dim]vLLM supports tool calling via --enable-auto-tool-choice. "
-        "Use --tool-call-parser hermes for Nemotron models.[/dim]"
+        "On Spark Nano 4B, use the model-card settings: 262144 context, "
+        "float32 Mamba cache, qwen3_coder tool parser, and FP8 KV cache.[/dim]"
+    )
+    console.print(
+        "[dim]If a Nemotron checkpoint does not have an official NVFP4 artifact yet, "
+        "quantize the BF16/FP8 checkpoint to a unified Hugging Face export with TensorRT "
+        "Model Optimizer or LLM Compressor, then deploy that export on vLLM or TRT-LLM.[/dim]"
+    )
+    console.print(
+        "[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8[/dim]"
+    )
+    console.print(
+        "[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4[/dim]"
+    )
+    console.print(
+        "[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4[/dim]"
     )
     console.print("[dim]Docs: https://docs.vllm.ai/en/latest/[/dim]")
 
@@ -636,14 +714,87 @@ def setup_trt_llm() -> None:
     console.print(
         "[dim]Exact TensorRT-LLM launch flags may vary by container release and whether"
         " the model needs a prebuilt engine. NVIDIA's official March 16, 2026"
-        " Nemotron 3 Nano 4B model cards show TRT-LLM examples for both BF16 and FP8;"
-        " these repo examples now track the FP8 path for the fast Nano endpoint.[/dim]"
+        " Nemotron model cards now include NVFP4-ready Super / Nano 30B artifacts and"
+        " FP8 Nano 4B examples; these repo defaults now prefer NVFP4 whenever NVIDIA"
+        " ships an official checkpoint.[/dim]"
     )
     console.print("[dim]Spark playbook: https://build.nvidia.com/spark/trt-llm/instructions[/dim]")
     console.print(
         "[dim]CLI docs: https://nvidia.github.io/TensorRT-LLM/commands/trtllm-serve.html[/dim]"
     )
 
+
+@setup_app.command("llama-cpp")
+def setup_llama_cpp() -> None:
+    """Set up llama.cpp for official Nano 4B GGUF serving."""
+    console.print("[bold]llama.cpp Setup for Nemotron 3 Nano 4B[/bold]\n")
+
+    llama_server = shutil.which("llama-server")
+    if llama_server:
+        console.print(f"[green]llama-server found:[/green] {llama_server}\n")
+    else:
+        console.print(
+            "[yellow]llama-server not found.[/yellow] Install a current llama.cpp build "
+            "with CUDA support, then re-run this command.\n"
+        )
+
+    console.print("[bold bright_green]DGX Spark — Official GGUF Q4_K_M[/bold bright_green]\n")
+    console.print(
+        "Use the official Nano 4B GGUF Q4_K_M artifact for the lightest Spark fast-worker path. "
+        "Keep BF16 or FP8 for training/customization; use GGUF for local serving.\n"
+    )
+    console.print(
+        Panel(
+            "# Terminal 1: Super planner / executor (reuse the official Spark vLLM path)\n"
+            "nemo setup vllm\n"
+            "\n"
+            "# Terminal 2: Nano 4B GGUF Q4_K_M OpenAI-compatible server on port 8001\n"
+            "llama-server -hf nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M \\\n"
+            "  -c 0 --alias nemotron3-nano-4b-q4km --ngl 999 \\\n"
+            "  --host 0.0.0.0 --port 8001",
+            title="[bold]DGX Spark — Shell Commands[/bold]",
+            border_style="bright_green",
+        )
+    )
+
+    console.print("[bold]Use with NeMoCode:[/bold]")
+    console.print(
+        Panel(
+            "# Hybrid Spark formation: Super on vLLM + Nano 4B Q4_K_M on llama.cpp\n"
+            "nemo code -f spark-llama-cpp\n"
+            "\n"
+            "# Or target the Nano worker directly:\n"
+            "nemo code -e spark-llama-cpp-nano4b\n"
+            "\n"
+            "# Verify the server:\n"
+            "curl -s localhost:8001/v1/models | python3 -m json.tool",
+            title="[bold]Use with NeMoCode[/bold]",
+            border_style="bright_green",
+        )
+    )
+
+    console.print("\n[bold]Other Workstations[/bold]\n")
+    console.print(
+        Panel(
+            "llama-server -hf nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M \\\n"
+            "  -c 0 --alias nemotron3-nano-4b-q4km --ngl 999 \\\n"
+            "  --host 0.0.0.0 --port 8000\n"
+            "\n"
+            "nemo code -e local-llama-cpp-nano4b",
+            title="[bold]Shell Commands[/bold]",
+            border_style="green",
+        )
+    )
+
+    console.print(
+        "\n[dim]Quantized serving artifacts are deployment targets, not customization bases. "
+        "For post-training optimization beyond GGUF, NVIDIA's quantization stack covers FP8, "
+        "INT4, and NVFP4 / FP4 paths on Blackwell-class systems.[/dim]"
+    )
+    console.print(
+        "[dim]Model card: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF[/dim]"
+    )
+    console.print("[dim]llama.cpp: https://github.com/ggml-org/llama.cpp[/dim]")
 
 @setup_app.command("brev")
 def setup_brev() -> None:
@@ -661,10 +812,10 @@ def setup_brev() -> None:
     table.add_column("From", justify="right")
     table.add_column("Good For")
 
-    table.add_row("L40S", "48 GB", "$1.03/hr", "Nano 9B, Nano 30B")
-    table.add_row("A100", "80 GB", "$2.21/hr", "Super 120B")
-    table.add_row("H100", "80 GB", "$3.19/hr", "Super 120B (fastest)")
-    table.add_row("2x L40S", "96 GB", "$2.06/hr", "Super with tensor parallel")
+    table.add_row("L40S", "48 GB", "$1.03/hr", "Nano 30B NVFP4")
+    table.add_row("A100", "80 GB", "$2.21/hr", "Super 120B NVFP4")
+    table.add_row("H100", "80 GB", "$3.19/hr", "Super 120B NVFP4 (fastest)")
+    table.add_row("2x L40S", "96 GB", "$2.06/hr", "Super NVFP4 with tensor parallel")
 
     console.print(table)
 
@@ -682,15 +833,16 @@ def setup_brev() -> None:
             "# 4. SSH in and start vLLM\n"
             "brev shell my-nemotron\n"
             "pip install vllm nemocode\n"
-            "vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \\\n"
+            "VLLM_USE_FLASHINFER_MOE_FP4=1 VLLM_FLASHINFER_MOE_BACKEND=throughput \\\n"
+            "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 \\\n"
             "  --trust-remote-code \\\n"
-            "  --mamba_ssm_cache_dtype float32 \\\n"
+            "  --max-model-len 262144 \\\n"
             "  --enable-auto-tool-choice \\\n"
-            "  --tool-parser-plugin nemotron_toolcall_parser.py \\\n"
-            "  --tool-call-parser nemotron_json &\n"
+            "  --tool-call-parser qwen3_coder \\\n"
+            "  --kv-cache-dtype fp8 &\n"
             "\n"
             "# 5. Use NeMoCode with your local endpoint\n"
-            "nemo code -e local-vllm-nano9b",
+            "nemo code -e local-vllm-nano",
             title="[bold]Shell Commands[/bold]",
             border_style="green",
         )

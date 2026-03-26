@@ -308,6 +308,98 @@ class TestGetAutoEndpoint:
             == "spark-trt-llm"
         )
 
+    def test_prefers_vllm_nano4b_when_only_vllm_is_available(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-vllm-super",
+            endpoints={
+                "spark-vllm-super": Endpoint(
+                    name="Spark vLLM Super",
+                    tier=EndpointTier.LOCAL_VLLM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+                "spark-vllm-nano4b": Endpoint(
+                    name="Spark vLLM Nano 4B FP8",
+                    tier=EndpointTier.LOCAL_VLLM,
+                    base_url="http://localhost:8001/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+            },
+            formations={
+                "spark-vllm": Formation(
+                    name="DGX Spark (vLLM)",
+                    description="vLLM local",
+                    slots=[
+                        FormationSlot(
+                            endpoint="spark-vllm-super",
+                            role=FormationRole.EXECUTOR,
+                        ),
+                    ],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert get_auto_endpoint("what is this?", config) == "spark-vllm-nano4b"
+        assert (
+            get_auto_endpoint(
+                "refactor the authentication module across all services",
+                config,
+            )
+            == "spark-vllm-super"
+        )
+        assert (
+            route_to_formation("refactor the authentication module across all services", config)
+            == "spark-vllm"
+        )
+
+    def test_prefers_llama_cpp_hybrid_when_only_llama_cpp_fast_worker_is_available(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-llama-cpp-nano4b",
+            endpoints={
+                "spark-vllm-super": Endpoint(
+                    name="Spark vLLM Super",
+                    tier=EndpointTier.LOCAL_VLLM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+                "spark-llama-cpp-nano4b": Endpoint(
+                    name="Spark llama.cpp Nano 4B",
+                    tier=EndpointTier.LOCAL_LLAMACPP,
+                    base_url="http://localhost:8001/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M",
+                    capabilities=[Capability.CHAT, Capability.CODE],
+                ),
+            },
+            formations={
+                "spark-llama-cpp": Formation(
+                    name="DGX Spark (llama.cpp)",
+                    description="vLLM Super + llama.cpp Nano 4B",
+                    slots=[
+                        FormationSlot(
+                            endpoint="spark-vllm-super",
+                            role=FormationRole.EXECUTOR,
+                        ),
+                    ],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert get_auto_endpoint("what is this?", config) == "spark-llama-cpp-nano4b"
+        assert (
+            get_auto_endpoint(
+                "refactor the authentication module across all services",
+                config,
+            )
+            == "spark-vllm-super"
+        )
+        assert (
+            route_to_formation("refactor the authentication module across all services", config)
+            == "spark-llama-cpp"
+        )
+
     def test_prefers_default_spark_family_when_multiple_backends_exist(self):
         config = NeMoCodeConfig(
             default_endpoint="spark-trt-llm-super",

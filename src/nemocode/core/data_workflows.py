@@ -31,6 +31,16 @@ _IGNORE_DIRS = {
     "venv",
 }
 
+# Prefixes that also indicate directories to skip (e.g., .venv-spark, .venv-sglang)
+_IGNORE_DIR_PREFIXES = (".venv-", "venv-", ".venv_", "venv_")
+
+
+def _is_ignored_dir(part: str) -> bool:
+    """Check if a path component should be ignored."""
+    if part in _IGNORE_DIRS:
+        return True
+    return part.startswith(_IGNORE_DIR_PREFIXES)
+
 _SECRETS_PATTERNS = {
     ".env",
     ".env.local",
@@ -172,7 +182,7 @@ def analyze_repo(root: Path) -> RepoProfile:
         except ValueError:
             continue
 
-        if any(part in _IGNORE_DIRS for part in rel.parts):
+        if any(_is_ignored_dir(part) for part in rel.parts):
             continue
 
         total_files += 1
@@ -623,7 +633,7 @@ def export_seeds(root: Path, output_dir: Path | None = None) -> SeedExportResult
             rel = path.relative_to(root)
         except ValueError:
             continue
-        if any(part in _IGNORE_DIRS for part in rel.parts):
+        if any(_is_ignored_dir(part) for part in rel.parts):
             continue
         if _should_exclude(rel):
             continue
@@ -714,119 +724,385 @@ class SFTExportResult:
     record_count: int
 
 
+def _extract_python_definitions(source: str) -> list[dict[str, str]]:
+    """Extract function and class definitions with their docstrings from Python source."""
+    import ast
+
+    defs: list[dict[str, str]] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return defs
+
+    lines = source.splitlines()
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            kind = "function"
+            name = node.name
+            if name.startswith("_") and not name.startswith("__"):
+                continue  # skip private helpers for cleaner data
+            docstring = ast.get_docstring(node) or ""
+            start = node.lineno - 1
+            end = min(node.end_lineno or start + 30, len(lines))
+            body = "\n".join(lines[start:end])
+            if len(body) > 2000:
+                body = body[:2000] + "\n    # ... (truncated)"
+            defs.append({"kind": kind, "name": name, "docstring": docstring, "code": body})
+        elif isinstance(node, ast.ClassDef):
+            docstring = ast.get_docstring(node) or ""
+            start = node.lineno - 1
+            end = min(node.end_lineno or start + 50, len(lines))
+            body = "\n".join(lines[start:end])
+            if len(body) > 2500:
+                body = body[:2500] + "\n    # ... (truncated)"
+            defs.append({"kind": "class", "name": node.name, "docstring": docstring, "code": body})
+
+    return defs
+
+
+# High-signal templates only. These are grounded in the actual implementation and
+# avoid synthetic "gold answers" that are mostly boilerplate.
+_SFT_TEMPLATES = [
+    {
+        "task_type": "implementation_reconstruction",
+        "user": (
+            "Implement the `{name}` {kind} in `{filepath}` for NeMoCode.\n\n"
+            "Required signature:\n```python\n{signature}\n```\n\n"
+            "Behavior to preserve:\n{behavior_hint}"
+        ),
+        "assistant": "```python\n{code}\n```",
+    },
+    {
+        "task_type": "code_explanation",
+        "user": "Explain what the `{name}` {kind} does in `{filepath}`. Walk through the logic step by step.",
+        "assistant": (
+            "The `{name}` {kind} lives in `{filepath}` and belongs to NeMoCode's {module_area} layer.\n\n"
+            "Signature:\n```python\n{signature}\n```\n\n"
+            "What it does:\n"
+            "- {behavior_hint}\n"
+            "- {feature_summary}\n"
+            "- It fits into the {module_area} layer, which handles {area_description}.\n\n"
+            "Implementation:\n```python\n{code}\n```"
+        ),
+    },
+    {
+        "task_type": "repo_qa",
+        "user": "What is the purpose of `{filepath}` in the NeMoCode project? Specifically, what does `{name}` do?",
+        "assistant": (
+            "`{filepath}` is part of NeMoCode's {module_area} layer.\n\n"
+            "The `{name}` {kind} {behavior_hint}\n\n"
+            "Signature:\n```python\n{signature}\n```\n\n"
+            "Implementation:\n```python\n{code}\n```\n\n"
+            "This area of the project is responsible for {area_description}."
+        ),
+    },
+]
+
+_DEFAULT_SFT_TASK_TYPES = {template["task_type"] for template in _SFT_TEMPLATES}
+
+_EXTENSION_IDEAS = [
+    "custom error messages",
+    "a timeout parameter",
+    "retry logic with exponential backoff",
+    "a dry-run mode",
+    "JSON output format",
+    "streaming results",
+    "batch processing multiple inputs",
+    "caching for repeated calls",
+    "progress reporting via callbacks",
+    "configurable logging levels",
+]
+
+
+def _definition_line_count(code: str) -> int:
+    return len([line for line in code.splitlines() if line.strip()])
+
+
+def _definition_signature(code: str) -> str:
+    for line in code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("def ", "async def ", "class ")):
+            return stripped
+    return code.splitlines()[0].strip() if code.splitlines() else ""
+
+
+def _behavior_hint(docstring: str, kind: str) -> str:
+    if docstring:
+        sentence = docstring.split(".")[0].strip()
+        if sentence:
+            return sentence[0].upper() + sentence[1:] + "."
+    return f"implements repo-specific {kind}-level behavior."
+
+
+def _feature_summary(code: str) -> str:
+    features: list[str] = []
+    first_line = _definition_signature(code)
+    if first_line.startswith("async def"):
+        features.append("It is asynchronous.")
+    if "httpx." in code or "requests." in code:
+        features.append("It performs HTTP client work.")
+    if "subprocess." in code or "Popen(" in code:
+        features.append("It launches or manages subprocesses.")
+    if "typer." in code:
+        features.append("It is wired into the CLI surface.")
+    if "Path(" in code or ".read_text(" in code or ".write_text(" in code:
+        features.append("It reads or writes repository files.")
+    if "yield " in code:
+        features.append("It produces values incrementally.")
+    if "return " in code and "yield " not in code:
+        features.append("It returns a computed value to its caller.")
+    if "try:" in code:
+        features.append("It includes explicit error handling.")
+    if not features:
+        features.append("Its behavior is primarily encoded directly in the implementation.")
+    return " ".join(features)
+
+
+def _pick_context_pack(
+    filepath: str,
+    module_area: str,
+    context_packs: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not context_packs:
+        return None
+
+    target_name = Path(filepath).name
+    target_stem = Path(filepath).stem
+    target_parts = filepath.split("/")
+
+    for pack in context_packs:
+        pack_path = str(pack.get("path", ""))
+        if not pack_path:
+            continue
+        if Path(pack_path).name == target_name:
+            return pack
+
+    for pack in context_packs:
+        pack_path = str(pack.get("path", ""))
+        if target_stem and target_stem in Path(pack_path).stem:
+            return pack
+
+    for pack in context_packs:
+        pack_path = str(pack.get("path", ""))
+        pack_parts = pack_path.split("/")
+        if target_parts and pack_parts and target_parts[0] == pack_parts[0]:
+            return pack
+
+    for pack in context_packs:
+        pack_path = str(pack.get("path", ""))
+        if module_area and module_area in pack_path.split("/"):
+            return pack
+
+    return context_packs[0]
+
+_AREA_DESCRIPTIONS = {
+    "providers": "communication with LLM backends (NIM, Ollama, vLLM, etc.)",
+    "cli": "the command-line interface and user-facing commands",
+    "core": "the central business logic, registry, and orchestration",
+    "tools": "the agent tool implementations (filesystem, git, bash, etc.)",
+    "config": "configuration loading, schema validation, and defaults",
+    "workflows": "high-level agent workflows and multi-step tasks",
+    "skills": "slash-command skills like /commit and /review",
+    "tests": "the automated regression and behavioral verification suite",
+    "scripts": "supporting scripts for training, deployment, and maintenance workflows",
+}
+
+
 def export_sft(
     root: Path,
     output_path: Path | None = None,
     seed_dir: Path | None = None,
     max_records: int = 0,
+    *,
+    include_tests: bool = False,
+    task_types: set[str] | None = None,
 ) -> SFTExportResult:
-    """Export a JSONL dataset suitable for SFT / instruction tuning.
+    """Export a code-grounded JSONL dataset for SFT / instruction tuning.
 
-    Each record contains:
-    - system: grounding context
-    - user: a realistic repo-specific request
-    - assistant: acceptance criteria + context
-    - metadata: repo area, language, task type, difficulty
+    Scans real implementation files, extracts function and class definitions, then
+    generates grounded Q&A pairs from those definitions. By default, test files are
+    excluded because they tend to dominate the repo and produce lower-signal SFT
+    targets than the implementation itself.
 
-    If ``seed_dir`` exists and contains context_packs.jsonl, file snippets
-    are woven into the prompts for grounding. Otherwise falls back to
-    profile-level context.
-
-    This is for repo-specific assistant tuning, not raw code dumping.
+    This produces training data suitable for fine-tuning a coding assistant
+    that understands this specific codebase, with a bias toward implementation-
+    reconstruction and repo-grounded explanation tasks.
     """
+    import random
+
     root = root.resolve()
     if output_path is None:
         output_path = root / ".nemocode" / "data" / "sft_dataset.jsonl"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if seed_dir is None:
-        seed_dir = root / ".nemocode" / "data"
+        default_seed_dir = root / ".nemocode" / "data"
+        if default_seed_dir.exists():
+            seed_dir = default_seed_dir
 
     profile = analyze_repo(root)
-    task_types = _suggest_task_types(profile)
     repo_summary = _repo_summary(profile)
-    areas = profile.top_directories or ["src", "tests", "docs"]
-    languages = profile.primary_languages or ["python"]
-    difficulties = ["easy", "medium", "hard"]
 
-    # Load context packs if available
-    context_packs: list[dict[str, Any]] = []
-    packs_path = seed_dir / "context_packs.jsonl"
-    if packs_path.exists():
-        for line in packs_path.read_text().splitlines():
-            if line.strip():
+    selected_task_types = task_types or _DEFAULT_SFT_TASK_TYPES
+
+    def _candidate_python_files() -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+
+        for py_file in sorted(root.glob("*.py")):
+            if py_file not in seen:
+                seen.add(py_file)
+                candidates.append(py_file)
+
+        candidate_dirs = [root / "src", root / "scripts"]
+        if include_tests:
+            candidate_dirs.append(root / "tests")
+
+        for src_dir in candidate_dirs:
+            if not src_dir.exists():
+                continue
+            for py_file in sorted(src_dir.rglob("*.py")):
+                if py_file not in seen:
+                    seen.add(py_file)
+                    candidates.append(py_file)
+
+        return candidates
+
+    def _load_context_packs(seed_root: Path | None) -> list[dict[str, Any]]:
+        if seed_root is None:
+            return []
+        context_path = seed_root / "context_packs.jsonl"
+        if not context_path.exists():
+            return []
+
+        packs: list[dict[str, Any]] = []
+        try:
+            for line in context_path.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    context_packs.append(json.loads(line))
+                    pack = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if pack.get("path") and pack.get("snippet"):
+                    packs.append(pack)
+        except OSError:
+            return []
+        return packs
+
+    # Scan actual implementation files (not venvs, not generated)
+    source_files: list[tuple[str, str]] = []  # (relative_path, content)
+    for py_file in _candidate_python_files():
+        rel = py_file.relative_to(root)
+        if any(_is_ignored_dir(part) for part in rel.parts):
+            continue
+        if py_file.name == "__init__.py" and py_file.stat().st_size < 50:
+            continue
+        try:
+            content = py_file.read_text(errors="replace")
+            if content.strip():
+                source_files.append((str(rel), content))
+        except OSError:
+            continue
+
+    context_packs = _load_context_packs(seed_dir)
+
+    # Extract definitions from all source files
+    all_defs: list[dict[str, Any]] = []
+    for filepath, content in source_files:
+        defs = _extract_python_definitions(content)
+        for d in defs:
+            if not include_tests and filepath.startswith("tests/"):
+                continue
+            if not include_tests and (d["name"].startswith("test_") or d["name"].startswith("Test")):
+                continue
+            if _definition_line_count(d["code"]) < 2:
+                continue
+            d["filepath"] = filepath
+            # Determine module area
+            parts = filepath.split("/")
+            module_area = "core"
+            if parts and parts[0] == "tests":
+                module_area = "tests"
+            for part in parts:
+                if part in _AREA_DESCRIPTIONS:
+                    module_area = part
+                    break
+            d["module_area"] = module_area
+            all_defs.append(d)
+
+    # Shuffle and generate records
+    random.seed(42)
+    random.shuffle(all_defs)
 
     records: list[dict[str, Any]] = []
-    pack_idx = 0
-
-    for task_type in task_types:
-        for area in areas:
-            for lang in languages:
-                for difficulty in difficulties:
-                    # Pick a context pack if available
-                    context_snippet = ""
-                    if context_packs:
-                        pack = context_packs[pack_idx % len(context_packs)]
-                        pack_idx += 1
-                        context_snippet = (
-                            f"\n\nRelevant file: {pack['path']}\n"
-                            f"```{pack.get('language', '')}\n"
-                            f"{pack['snippet'][:500]}\n```"
-                        )
-
-                    system_msg = (
-                        f"You are a coding assistant for a {lang} repository. "
-                        f"Repository context: {repo_summary}{context_snippet}"
-                    )
-
-                    user_msg = (
-                        f"I need help with a {difficulty} {task_type.replace('_', ' ')} "
-                        f"in the {area} area of the repository. "
-                        f"The project uses {lang}."
-                    )
-
-                    assistant_msg = (
-                        f"I'll help with this {task_type.replace('_', ' ')}. "
-                        f"Based on the repository structure, here's my approach:\n\n"
-                        f"1. Identify the relevant files in {area}/\n"
-                        f"2. Analyze the current implementation\n"
-                        f"3. Implement the changes with proper {lang} conventions\n"
-                        f"4. Add or update tests to verify the changes\n"
-                        f"5. Ensure documentation is consistent\n\n"
-                        f"Acceptance criteria:\n"
-                        f"- Changes are scoped to {area}/\n"
-                        f"- All existing tests continue to pass\n"
-                        f"- New behavior has test coverage\n"
-                        f"- Code follows project conventions"
-                    )
-
-                    record = {
-                        "messages": [
-                            {"role": "system", "content": system_msg},
-                            {"role": "user", "content": user_msg},
-                            {"role": "assistant", "content": assistant_msg},
-                        ],
-                        "metadata": {
-                            "repo_root": str(root),
-                            "task_type": task_type,
-                            "area": area,
-                            "language": lang,
-                            "difficulty": difficulty,
-                            "source": "nemocode-export-sft",
-                        },
-                    }
-                    records.append(record)
-
-                    if max_records and len(records) >= max_records:
-                        break
-                if max_records and len(records) >= max_records:
-                    break
+    for defn in all_defs:
+        # Generate one record per template for each definition
+        for template in _SFT_TEMPLATES:
             if max_records and len(records) >= max_records:
                 break
+            if template["task_type"] not in selected_task_types:
+                continue
+
+            name = defn["name"]
+            kind = defn["kind"]
+            filepath = defn["filepath"]
+            code = defn["code"]
+            docstring = defn["docstring"]
+            module_area = defn["module_area"]
+            signature = _definition_signature(code)
+
+            # Build template variables
+            area_description = _AREA_DESCRIPTIONS.get(
+                module_area, "project functionality"
+            )
+            behavior_hint = _behavior_hint(docstring, kind)
+            feature_summary = _feature_summary(code)
+
+            fmt = {
+                "name": name, "kind": kind, "filepath": filepath,
+                "code": code, "signature": signature,
+                "behavior_hint": behavior_hint,
+                "feature_summary": feature_summary,
+                "module_area": module_area, "area_description": area_description,
+            }
+
+            try:
+                user_msg = template["user"].format(**fmt)
+                assistant_msg = template["assistant"].format(**fmt)
+            except (KeyError, IndexError):
+                continue
+
+            system_msg = (
+                f"You are a senior software engineer working on NeMoCode, "
+                f"a terminal-first agentic coding CLI for NVIDIA Nemotron models. "
+                f"Repository context: {repo_summary}"
+            )
+            pack = _pick_context_pack(filepath, module_area, context_packs)
+            if pack:
+                system_msg += (
+                    f"\n\nRelevant file: {pack['path']}\n"
+                    f"```\n{pack['snippet']}\n```"
+                )
+
+            record = {
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                    {"role": "assistant", "content": assistant_msg},
+                ],
+                "metadata": {
+                    "task_type": template["task_type"],
+                    "definition": name,
+                    "filepath": filepath,
+                    "module_area": module_area,
+                    "source": "nemocode-export-sft-v2",
+                },
+            }
+            records.append(record)
+
         if max_records and len(records) >= max_records:
             break
 
@@ -847,3 +1123,237 @@ def build_preview_config(profile: RepoProfile) -> dict[str, Any]:
     """
     plan = build_repo_data_plan(profile)
     return plan["data_designer_starter"]["starter_preview_request"]["config"]
+
+
+# ---------------------------------------------------------------------------
+# NIM API-based synthetic data generation
+# ---------------------------------------------------------------------------
+
+_DEFAULT_NIM_ENDPOINT = "https://integrate.api.nvidia.com/v1"
+_DEFAULT_NIM_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+
+_GENERATE_SYSTEM_PROMPT = (
+    "You are a synthetic training-data generator for a coding assistant. "
+    "Given a real code snippet from a repository and a task description, "
+    "generate a realistic instruction-tuning example.\n\n"
+    "Output ONLY valid JSON with exactly two keys:\n"
+    '  "user_request": a natural developer question or task request about the code\n'
+    '  "assistant_response": a detailed, expert response that demonstrates understanding '
+    "of the actual code shown\n\n"
+    "Do not include markdown fences around the JSON. Output raw JSON only."
+)
+
+_GENERATE_USER_TEMPLATE = (
+    "Repository context: {repo_summary}\n\n"
+    "Code snippet from `{path}` ({language}):\n"
+    "```\n{snippet}\n```\n\n"
+    "Task type: {task_type}\n"
+    "Difficulty: {difficulty}\n\n"
+    "Generate a realistic training example based on this code."
+)
+
+
+@dataclass
+class GenerateResult:
+    output_path: str
+    record_count: int
+    skipped: int
+    endpoint: str
+    model: str
+
+
+def _resolve_nim_api_key() -> str | None:
+    """Resolve an API key for the NIM endpoint."""
+    try:
+        from nemocode.core.credentials import get_credential
+
+        for name in ("NVIDIA_API_KEY", "NGC_CLI_API_KEY", "NIM_API_KEY"):
+            key = get_credential(name)
+            if key:
+                return key
+    except Exception:
+        pass
+    import os
+    for name in ("NVIDIA_API_KEY", "NGC_CLI_API_KEY", "NIM_API_KEY"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def generate_sft_via_nim(
+    seed_dir: Path,
+    output_path: Path | None = None,
+    num_records: int = 100,
+    endpoint: str = _DEFAULT_NIM_ENDPOINT,
+    model: str = _DEFAULT_NIM_MODEL,
+    *,
+    progress_callback: Any | None = None,
+) -> GenerateResult:
+    """Generate synthetic SFT data by calling the NIM API (Nemotron Super).
+
+    This is the lightweight "CLI-to-API proxy" path — no Docker or Data Designer
+    service needed. Just an NVIDIA_API_KEY for build.nvidia.com (or a local endpoint).
+
+    Reads seed artifacts from *seed_dir* (context_packs.jsonl, task_taxonomy.yaml),
+    calls the model to generate realistic Q&A pairs, and writes Customizer-ready JSONL.
+    """
+    import random
+    import time
+
+    import httpx
+    import yaml
+
+    seed_dir = Path(seed_dir).resolve()
+
+    # Load seed artifacts
+    context_packs_path = seed_dir / "context_packs.jsonl"
+    taxonomy_path = seed_dir / "task_taxonomy.yaml"
+
+    if not context_packs_path.exists():
+        raise FileNotFoundError(
+            f"context_packs.jsonl not found in {seed_dir}. "
+            "Run `nemo data export-seeds` first."
+        )
+
+    context_packs: list[dict[str, Any]] = []
+    with context_packs_path.open() as f:
+        for line in f:
+            if line.strip():
+                context_packs.append(json.loads(line))
+
+    if not context_packs:
+        raise ValueError("context_packs.jsonl is empty. Run `nemo data export-seeds` first.")
+
+    # Load taxonomy (optional — use defaults if missing)
+    task_types = ["bugfix_request", "feature_request", "code_explanation", "refactor_request"]
+    difficulties = ["easy", "medium", "hard"]
+    repo_summary = ""
+
+    if taxonomy_path.exists():
+        taxonomy = yaml.safe_load(taxonomy_path.read_text()) or {}
+        task_types = taxonomy.get("task_families", task_types)
+        difficulties = taxonomy.get("difficulty_levels", difficulties)
+
+    # Try to load repo_profile for summary
+    profile_path = seed_dir / "repo_profile.yaml"
+    if profile_path.exists():
+        profile_data = yaml.safe_load(profile_path.read_text()) or {}
+        langs = ", ".join(profile_data.get("primary_languages", []))
+        frameworks = ", ".join(profile_data.get("frameworks", []))
+        repo_summary = f"Languages: {langs}. Frameworks: {frameworks}."
+
+    # Resolve output path
+    if output_path is None:
+        output_path = seed_dir / "sft_generated.jsonl"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resolve API key
+    api_key = _resolve_nim_api_key()
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # Generate records
+    records: list[dict[str, Any]] = []
+    skipped = 0
+
+    with httpx.Client(timeout=120.0) as client:
+        for i in range(num_records):
+            pack = context_packs[i % len(context_packs)]
+            task_type = random.choice(task_types)
+            difficulty = random.choice(difficulties)
+
+            user_prompt = _GENERATE_USER_TEMPLATE.format(
+                repo_summary=repo_summary,
+                path=pack.get("path", "unknown"),
+                language=pack.get("language", "unknown"),
+                snippet=pack.get("snippet", "")[:2000],
+                task_type=task_type,
+                difficulty=difficulty,
+            )
+
+            body = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.7,
+                "max_tokens": 2048,
+            }
+
+            try:
+                resp = client.post(
+                    f"{endpoint.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=body,
+                )
+
+                if resp.status_code == 429:
+                    # Rate limited — wait and retry once
+                    time.sleep(5)
+                    resp = client.post(
+                        f"{endpoint.rstrip('/')}/chat/completions",
+                        headers=headers,
+                        json=body,
+                    )
+
+                resp.raise_for_status()
+                content = resp.json()["choices"][0]["message"]["content"]
+
+                # Strip markdown fences if present
+                content = content.strip()
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[-1]
+                if content.endswith("```"):
+                    content = content.rsplit("```", 1)[0]
+                content = content.strip()
+
+                parsed = json.loads(content)
+                user_request = parsed.get("user_request", "")
+                assistant_response = parsed.get("assistant_response", "")
+
+                if not user_request or not assistant_response:
+                    skipped += 1
+                    continue
+
+                record = {
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert coding assistant with deep knowledge of "
+                                "this repository's codebase, architecture, and conventions."
+                            ),
+                        },
+                        {"role": "user", "content": user_request},
+                        {"role": "assistant", "content": assistant_response},
+                    ],
+                    "metadata": {
+                        "task_type": task_type,
+                        "difficulty": difficulty,
+                        "source_file": pack.get("path", ""),
+                        "source": "nemocode-generate-nim-v1",
+                    },
+                }
+                records.append(record)
+
+            except (httpx.HTTPError, json.JSONDecodeError, KeyError):
+                skipped += 1
+                continue
+
+            if progress_callback is not None:
+                progress_callback(i + 1, num_records)
+
+    with output_path.open("w") as f:
+        for record in records:
+            f.write(json.dumps(record) + "\n")
+
+    return GenerateResult(
+        output_path=str(output_path),
+        record_count=len(records),
+        skipped=skipped,
+        endpoint=endpoint,
+        model=model,
+    )

@@ -3,7 +3,7 @@
 
 """NeMoCode CLI — main entry point.
 
-Commands: nemo chat | code | customize | data | serve | endpoint | model | formation | auth | hardware | init | session
+Commands: nemo chat | code | customize | data | embed | rerank | speech | serve | endpoint | model | formation | auth | hardware | init | session
 """
 
 from __future__ import annotations
@@ -27,21 +27,27 @@ def _register_commands() -> None:
     from nemocode.cli.commands.customize import customize_app
     from nemocode.cli.commands.data import data_app
     from nemocode.cli.commands.doctor import doctor_app
+    from nemocode.cli.commands.embed import embed_app
     from nemocode.cli.commands.endpoint import endpoint_app
     from nemocode.cli.commands.formation import formation_app
     from nemocode.cli.commands.hardware import hardware_app
     from nemocode.cli.commands.init_cmd import init_cmd
     from nemocode.cli.commands.model import model_app
     from nemocode.cli.commands.obs import obs_app
+    from nemocode.cli.commands.rerank import rerank_app
     from nemocode.cli.commands.session import session_app
     from nemocode.cli.commands.setup import setup_app
     from nemocode.cli.commands.serve import serve_app
+    from nemocode.cli.commands.speech import speech_app
 
     app.command("chat")(chat_cmd)
     app.command("code")(code_cmd)
     app.add_typer(agent_app, name="agent")
     app.add_typer(customize_app, name="customize")
     app.add_typer(data_app, name="data")
+    app.add_typer(embed_app, name="embed")
+    app.add_typer(rerank_app, name="rerank")
+    app.add_typer(speech_app, name="speech")
     app.add_typer(serve_app, name="serve")
     app.add_typer(endpoint_app, name="endpoint")
     app.add_typer(model_app, name="model")

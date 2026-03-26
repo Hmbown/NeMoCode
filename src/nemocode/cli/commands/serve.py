@@ -34,10 +34,13 @@ _HEALTH_CHECK_INTERVAL = 2
 _HEALTH_CHECK_TIMEOUT = 300
 
 _MODEL_BACKEND_MAP = {
-    "nemotron-3-nano-4b": "nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+    "nemotron-3-nano-4b": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    "nemotron-3-nano-4b-bf16": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    "nemotron-3-nano-4b-fp8": "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8",
     "nemotron-3-nano-9b": "nvidia/nemotron-nano-9b-v2",
     "nemotron-3-nano-30b": "nvidia/nemotron-3-nano-30b-a3b",
     "nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b",
+    "nemotron-3-super-nvfp4": "/home/hmbown/HF_Models/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
 }
 
 
@@ -46,11 +49,7 @@ def _resolve_model_id(model_alias: str) -> str:
 
 
 def _pick_backend(is_spark: bool) -> str:
-    if is_spark:
-        if _find_executable("sglang"):
-            return "sglang"
-        if _find_executable("vllm"):
-            return "vllm"
+    del is_spark  # auto-pick is based on adapter-serving support, not host family
     if _find_executable("vllm"):
         return "vllm"
     return "unknown"
@@ -62,12 +61,34 @@ def _find_executable(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _default_max_model_len(model_id: str) -> int:
+    try:
+        cfg = load_config()
+        manifest = cfg.manifests.get(model_id)
+        if manifest and manifest.context_window:
+            return manifest.context_window
+    except Exception:
+        pass
+    return 32768
+
+
+def _default_reasoning_parser_plugin(model_id: str) -> Path | None:
+    if "NVIDIA-Nemotron-3-Nano-4B" not in model_id:
+        return None
+    local_plugin = Path.cwd() / "nano_v3_reasoning_parser.py"
+    if local_plugin.exists():
+        return local_plugin
+    return None
+
+
 def _build_vllm_command(
     model_id: str,
     adapter_path: Path,
     port: int,
-    max_model_len: int = 32768,
+    max_model_len: int | None = None,
+    reasoning_parser_plugin: Path | None = None,
 ) -> list[str]:
+    resolved_max_model_len = max_model_len or _default_max_model_len(model_id)
     cmd = [
         "vllm",
         "serve",
@@ -75,12 +96,33 @@ def _build_vllm_command(
         "--port",
         str(port),
         "--max-model-len",
-        str(max_model_len),
+        str(resolved_max_model_len),
         "--enable-lora",
         "--lora-modules",
         f"my-lora={adapter_path}",
         "--trust-remote-code",
     ]
+    if "NVIDIA-Nemotron-3-Nano-4B" in model_id:
+        cmd.extend(
+            [
+                "--mamba_ssm_cache_dtype",
+                "float32",
+                "--enable-auto-tool-choice",
+                "--tool-call-parser",
+                "qwen3_coder",
+            ]
+        )
+        if reasoning_parser_plugin is not None:
+            cmd.extend(
+                [
+                    "--reasoning-parser-plugin",
+                    str(reasoning_parser_plugin),
+                    "--reasoning-parser",
+                    "nano_v3",
+                ]
+            )
+    if model_id.endswith("-FP8"):
+        cmd.extend(["--kv-cache-dtype", "fp8"])
     return cmd
 
 
@@ -206,10 +248,15 @@ def start(
         "-b",
         help="Backend to use (vllm, sglang). Auto-detects if omitted.",
     ),
-    max_model_len: int = typer.Option(
-        32768,
+    max_model_len: Optional[int] = typer.Option(
+        None,
         "--max-model-len",
-        help="Maximum model context length.",
+        help="Maximum model context length (defaults to the model manifest context window).",
+    ),
+    reasoning_parser_plugin: Optional[str] = typer.Option(
+        None,
+        "--reasoning-parser-plugin",
+        help="Path to nano_v3_reasoning_parser.py for Nemotron Nano 4B.",
     ),
 ) -> None:
     """Launch a local inference backend with a LoRA adapter."""
@@ -227,8 +274,14 @@ def start(
     if backend == "unknown":
         console.print(
             "[red]No supported backend found.[/red]\n"
-            "Install vLLM: [bold]pip install vllm[/bold]\n"
-            "Or SGLang:   [bold]pip install sglang[/bold]"
+            "Install vLLM: [bold]pip install vllm[/bold]"
+        )
+        raise typer.Exit(1)
+
+    if backend == "sglang":
+        console.print(
+            "[red]SGLang adapter serving is not wired up coherently here yet.[/red]\n"
+            "Use [bold]--backend vllm[/bold] or let auto-detect choose vLLM so the LoRA adapter is actually loaded."
         )
         raise typer.Exit(1)
 
@@ -237,14 +290,32 @@ def start(
             f"[bold]Model:[/bold]    {model_id}\n"
             f"[bold]Adapter:[/bold]  {adapter_path}\n"
             f"[bold]Backend:[/bold]  {backend}\n"
-            f"[bold]Port:[/bold]     {port}",
+            f"[bold]Port:[/bold]     {port}\n"
+            f"[bold]Ctx len:[/bold]  {max_model_len or _default_max_model_len(model_id)}",
             title="[bold green]nemo serve[/bold green]",
             border_style="green",
         )
     )
 
+    parser_plugin_path = (
+        Path(reasoning_parser_plugin).resolve()
+        if reasoning_parser_plugin
+        else _default_reasoning_parser_plugin(model_id)
+    )
+    if "NVIDIA-Nemotron-3-Nano-4B" in model_id and parser_plugin_path is None:
+        console.print(
+            "[dim]Nemotron Nano 4B reasoning parser not found locally. "
+            "Tool calling will still work, but the dedicated nano_v3 parser is recommended when available.[/dim]"
+        )
+
     if backend == "vllm":
-        cmd = _build_vllm_command(model_id, adapter_path, port, max_model_len)
+        cmd = _build_vllm_command(
+            model_id,
+            adapter_path,
+            port,
+            max_model_len,
+            parser_plugin_path,
+        )
     elif backend == "sglang":
         cmd = _build_sglang_command(model_id, adapter_path, port, max_model_len)
     else:

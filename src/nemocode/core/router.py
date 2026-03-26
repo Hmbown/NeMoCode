@@ -96,6 +96,7 @@ def _has_spark_endpoints(config: NeMoCodeConfig) -> bool:
     """Check if Spark-local endpoints are configured."""
     return any(
         name.startswith("spark-nim-")
+        or name.startswith("spark-llama-cpp-")
         or name.startswith("spark-sglang-")
         or name.startswith("spark-trt-llm-")
         or name.startswith("spark-vllm-")
@@ -104,7 +105,7 @@ def _has_spark_endpoints(config: NeMoCodeConfig) -> bool:
 
 
 def _preferred_spark_formations(config: NeMoCodeConfig) -> list[str]:
-    order = ["spark", "spark-sglang", "spark-trt-llm", "spark-vllm"]
+    order = ["spark", "spark-sglang", "spark-trt-llm", "spark-vllm", "spark-llama-cpp"]
     preferred: list[str] = []
 
     if config.active_formation in order:
@@ -117,6 +118,8 @@ def _preferred_spark_formations(config: NeMoCodeConfig) -> list[str]:
         preferred.append("spark-trt-llm")
     elif default_endpoint.startswith("spark-vllm-"):
         preferred.append("spark-vllm")
+    elif default_endpoint.startswith("spark-llama-cpp-"):
+        preferred.append("spark-llama-cpp")
     elif default_endpoint.startswith("spark-nim-"):
         preferred.append("spark")
 
@@ -129,13 +132,15 @@ def _preferred_spark_endpoints(config: NeMoCodeConfig, kind: str) -> list[str]:
             "spark": "spark-nim-nano9b",
             "spark-sglang": "spark-sglang-nano9b",
             "spark-trt-llm": "spark-trt-llm-nano4b",
-            "spark-vllm": "spark-vllm-nano9b",
+            "spark-vllm": "spark-vllm-nano4b",
+            "spark-llama-cpp": "spark-llama-cpp-nano4b",
         },
         "super": {
             "spark": "spark-nim-super",
             "spark-sglang": "spark-sglang-super",
             "spark-trt-llm": "spark-trt-llm-super",
             "spark-vllm": "spark-vllm-super",
+            "spark-llama-cpp": "spark-vllm-super",
         },
     }
 

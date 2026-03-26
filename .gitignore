@@ -36,6 +36,10 @@ htmlcov/
 
 # NeMoCode local config
 .nemocode.yaml
+.nemocode/data/
+.nemocode/adapters/
+.nemocode/logs/
+.nemocode/models/
 
 # Sessions
 ~/.local/share/nemocode/

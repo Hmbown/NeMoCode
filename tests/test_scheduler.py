@@ -30,7 +30,7 @@ def mock_provider():
     """Create a mock chat provider that returns a simple text response."""
     provider = AsyncMock()
 
-    async def mock_stream(messages, tools=None, extra_body=None):
+    async def mock_stream(messages, tools=None, extra_body=None, response_format=None):
         yield StreamChunk(text="Hello, I can help with that.")
         yield StreamChunk(
             finish_reason="stop",
@@ -113,7 +113,7 @@ class TestScheduler:
         registry = Registry(scheduler_config)
         tools = load_tools(["fs"])
 
-        async def slow_stream(messages, tools=None, extra_body=None):
+        async def slow_stream(messages, tools=None, extra_body=None, response_format=None):
             await asyncio.sleep(0.1)
             yield StreamChunk(text="Done.")
             yield StreamChunk(
@@ -154,7 +154,7 @@ class TestParallelExecution:
         tools = load_tools(["fs"])
 
         # Mock provider that returns two tool calls at once
-        async def mock_stream_with_tools(messages, tools=None, extra_body=None):
+        async def mock_stream_with_tools(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(text="Let me read both files.")
             yield StreamChunk(
                 tool_calls=[
@@ -173,7 +173,7 @@ class TestParallelExecution:
         # Second call: provider returns text only (no more tools)
         call_count = 0
 
-        async def counting_stream(messages, tools=None, extra_body=None):
+        async def counting_stream(messages, tools=None, extra_body=None, response_format=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -227,7 +227,7 @@ class TestAgentLoopWithTools:
 
         call_count = 0
 
-        async def mock_stream(messages, tools=None, extra_body=None):
+        async def mock_stream(messages, tools=None, extra_body=None, response_format=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -323,7 +323,7 @@ class TestRunFormation:
             return_value=CompletionResult(content="Plan: step 1, step 2", finish_reason="stop")
         )
 
-        async def executor_stream(messages, tools=None, extra_body=None):
+        async def executor_stream(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(text="Executing step 1...")
             yield StreamChunk(text="Executing step 2...")
             yield StreamChunk(
@@ -337,7 +337,7 @@ class TestRunFormation:
             return_value=CompletionResult(content="Executed all steps", finish_reason="stop")
         )
 
-        async def reviewer_stream(messages, tools=None, extra_body=None):
+        async def reviewer_stream(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(text="APPROVE")
             yield StreamChunk(
                 finish_reason="stop",

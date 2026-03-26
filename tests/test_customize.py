@@ -47,7 +47,7 @@ class TestCustomizerClient:
 
     @patch("nemocode.providers.nvidia_client.httpx.Client")
     def test_create_job_success(self, mock_client_cls):
-        resp_data = {"id": "job-001", "status": "pending", "model": "nvidia/nemotron-3-nano-4b-v1.1"}
+        resp_data = {"id": "job-001", "status": "pending", "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"}
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
@@ -76,6 +76,32 @@ class TestCustomizerClient:
         with pytest.raises(CustomizerAPIError) as exc_info:
             client.create_job("/bad/path.jsonl")
         assert exc_info.value.status_code == 422
+
+    @patch("nemocode.providers.nvidia_client.httpx.Client")
+    def test_create_job_platform_config_mode(self, mock_client_cls):
+        resp_data = {"id": "job-platform", "status": "created"}
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = self._mock_response(200, resp_data)
+        mock_client_cls.return_value = mock_client
+
+        client = CustomizerClient(base_url="http://test:8000", api_key="test-key")
+        result = client.create_job(
+            config="default/nvidia-nemotron-nano-4b@v1.0.0+80GB",
+            dataset_name="nemocode-train",
+            dataset_namespace="default",
+            finetuning_type="all_weights",
+            max_seq_length=4096,
+        )
+
+        assert result["id"] == "job-platform"
+        call_args = mock_client.post.call_args
+        assert "/v1/customization/jobs" in call_args[0][0]
+        payload = call_args[1]["json"]
+        assert payload["config"] == "default/nvidia-nemotron-nano-4b@v1.0.0+80GB"
+        assert payload["dataset"]["name"] == "nemocode-train"
+        assert payload["hyperparameters"]["finetuning_type"] == "all_weights"
 
     # -- list_jobs --
 
@@ -119,7 +145,7 @@ class TestCustomizerClient:
         resp_data = {
             "id": "job-001",
             "status": "running",
-            "model": "nvidia/nemotron-3-nano-4b-v1.1",
+            "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
             "progress": 42,
             "created_at": "2026-01-01T00:00:00Z",
         }
@@ -252,6 +278,10 @@ class TestCustomizeCLIHelp:
         result = runner.invoke(app, ["customize", "ls", "--help"])
         assert result.exit_code == 0
 
+    def test_customize_configs_help(self):
+        result = runner.invoke(app, ["customize", "configs", "--help"])
+        assert result.exit_code == 0
+
 
 class TestCustomizeCreate:
     @patch("nemocode.cli.commands.customize.CustomizerClient")
@@ -300,12 +330,55 @@ class TestCustomizeCreate:
         assert result.exit_code == 0
         mock_client.create_job.assert_called_once_with(
             dataset_path="/data/sft.jsonl",
-            model="nvidia/nemotron-3-nano-4b-v1.1",
+            model="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
             lora_rank=32,
             epochs=5,
             batch_size=8,
             learning_rate=5e-5,
             output_model="my-model",
+        )
+
+    @patch("nemocode.cli.commands.customize.CustomizerClient")
+    def test_create_platform_full_sft(self, mock_cls):
+        mock_client = MagicMock()
+        mock_client.create_job.return_value = {"id": "job-full", "status": "created"}
+        mock_cls.return_value = mock_client
+
+        result = runner.invoke(
+            app,
+            [
+                "customize",
+                "create",
+                "--config",
+                "default/nvidia-nemotron-nano-4b@v1.0.0+80GB",
+                "--dataset-name",
+                "nemocode-train",
+                "--dataset-namespace",
+                "default",
+                "--finetuning-type",
+                "full-sft",
+                "--epochs",
+                "4",
+                "--batch-size",
+                "2",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_client.create_job.assert_called_once_with(
+            dataset_path=None,
+            model="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+            lora_rank=16,
+            epochs=4,
+            batch_size=2,
+            learning_rate=1e-4,
+            output_model=None,
+            config="default/nvidia-nemotron-nano-4b@v1.0.0+80GB",
+            dataset_name="nemocode-train",
+            dataset_namespace="default",
+            training_type="sft",
+            finetuning_type="all_weights",
+            max_seq_length=None,
+            wandb_api_key=None,
         )
 
     @patch("nemocode.cli.commands.customize.CustomizerClient")
@@ -336,7 +409,7 @@ class TestCustomizeStatus:
         mock_client.get_status.return_value = {
             "id": "job-001",
             "status": "running",
-            "model": "nvidia/nemotron-3-nano-4b-v1.1",
+            "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
             "created_at": "2026-01-01T00:00:00Z",
             "progress": 55,
             "hyperparameters": {"lora_rank": 16, "epochs": 3},
@@ -435,14 +508,14 @@ class TestCustomizeLs:
         mock_client.list_jobs.return_value = [
             {
                 "id": "job-001",
-                "model": "nvidia/nemotron-3-nano-4b-v1.1",
+                "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
                 "status": "completed",
                 "created_at": "2026-01-01",
                 "progress": 100,
             },
             {
                 "id": "job-002",
-                "model": "nvidia/nemotron-3-nano-4b-v1.1",
+                "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
                 "status": "running",
                 "created_at": "2026-01-02",
                 "progress": 42,
@@ -477,6 +550,32 @@ class TestCustomizeLs:
         result = runner.invoke(app, ["customize", "ls"])
         assert result.exit_code == 1
         assert "Could not connect" in _strip_ansi(result.stdout)
+
+
+class TestCustomizeConfigs:
+    @patch("nemocode.cli.commands.customize.CustomizerClient")
+    def test_configs_success(self, mock_cls):
+        mock_client = MagicMock()
+        mock_client.list_configs.return_value = [
+            {
+                "name": "nvidia-nemotron-nano-4b@v1.0.0+80GB",
+                "namespace": "default",
+                "target": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+                "training_precision": "bf16",
+                "max_seq_length": 4096,
+                "training_options": [
+                    {"training_type": "sft", "finetuning_type": "lora"}
+                ],
+            }
+        ]
+        mock_cls.return_value = mock_client
+
+        result = runner.invoke(app, ["customize", "configs"])
+        assert result.exit_code == 0
+        out = _strip_ansi(result.stdout)
+        assert "Customization Configs" in out
+        assert "4096" in out
+        mock_client.list_configs.assert_called_once()
 
 
 class TestCustomizerAPIError:

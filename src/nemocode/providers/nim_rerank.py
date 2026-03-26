@@ -18,15 +18,14 @@ class NIMRerankProvider(NIMProviderBase):
     """NVIDIA NIM reranking provider."""
 
     async def rerank(
-        self, query: str, passages: list[str], top_n: int = 5
+        self, query: str, passages: list[str], top_n: int = 0
     ) -> list[tuple[int, float]]:
-        """Rerank passages by relevance to query. Returns (index, score) pairs."""
-        url = f"{self._base_url}/ranking"
-        body = {
+        """Rerank passages by relevance to query. Returns (index, score) pairs sorted by score."""
+        url = f"{self._base_url}/reranking"
+        body: dict = {
             "model": self.endpoint.model_id,
             "query": {"text": query},
             "passages": [{"text": p} for p in passages],
-            "top_n": max(1, min(top_n, len(passages))),
         }
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(url, json=body, headers=self._headers())
@@ -34,4 +33,9 @@ class NIMRerankProvider(NIMProviderBase):
             data = resp.json()
 
         rankings = data.get("rankings", [])
-        return [(r["index"], r.get("logit", r.get("score", 0.0))) for r in rankings]
+        results = [(r["index"], r.get("logit", r.get("score", 0.0))) for r in rankings]
+        # Sort by score descending
+        results.sort(key=lambda x: x[1], reverse=True)
+        if top_n > 0:
+            results = results[:top_n]
+        return results

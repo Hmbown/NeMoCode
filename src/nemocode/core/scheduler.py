@@ -28,6 +28,7 @@ from nemocode.core.context import ContextManager
 from nemocode.core.registry import Registry
 from nemocode.core.sessions import Session
 from nemocode.core.streaming import ChatProvider, Message, Role, ToolCall
+from nemocode.core.structured_output import check_structured_output_support
 from nemocode.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,7 @@ class Scheduler:
         single_prompt: str | None = None,
         single_session_id: str = "main",
         status_interval_s: float = 30.0,
+        response_format: dict[str, Any] | None = None,
     ) -> None:
         self._reg = registry
         self._tools = tool_registry
@@ -310,6 +312,7 @@ class Scheduler:
         self._single_prompt = single_prompt
         self._single_session_id = single_session_id
         self._status_interval_s = max(status_interval_s, 0.0)
+        self._response_format = response_format
 
     def _build_executor_prompt(self) -> str:
         tool_lines = []
@@ -327,8 +330,24 @@ class Scheduler:
     # Single-model mode
     # ------------------------------------------------------------------
 
-    async def run_single(self, endpoint_name: str, user_input: str) -> AsyncIterator[AgentEvent]:
+    async def run_single(
+        self,
+        endpoint_name: str,
+        user_input: str,
+        *,
+        response_format: dict[str, Any] | None = None,
+    ) -> AsyncIterator[AgentEvent]:
         provider = self._reg.get_chat_provider(endpoint_name)
+        effective_fmt = response_format or self._response_format
+
+        # Capability gating: warn if the model doesn't support the requested mode
+        if effective_fmt:
+            manifest = self._reg.get_manifest_for_endpoint(endpoint_name)
+            warning = check_structured_output_support(manifest, effective_fmt)
+            if warning:
+                logger.warning(warning)
+                yield AgentEvent(kind="status", text=f"Warning: {warning}")
+
         session_role = self._single_role
         if session_role not in self._sessions:
             s = Session(id=self._single_session_id, endpoint_name=endpoint_name)
@@ -342,7 +361,9 @@ class Scheduler:
         session = self._sessions[session_role]
         session.endpoint_name = endpoint_name
         session.add_user(user_input)
-        async for ev in self._agent_loop(provider, session, session_role):
+        async for ev in self._agent_loop(
+            provider, session, session_role, response_format=effective_fmt
+        ):
             yield ev
 
     # ------------------------------------------------------------------
@@ -350,7 +371,11 @@ class Scheduler:
     # ------------------------------------------------------------------
 
     async def run_formation(
-        self, formation_name: str, user_input: str
+        self,
+        formation_name: str,
+        user_input: str,
+        *,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         form = self._reg.get_formation(formation_name)
         by_role: dict[FormationRole, FormationSlot] = {s.role: s for s in form.slots}
@@ -388,8 +413,11 @@ class Scheduler:
             if plan:
                 inp = f"## User Request\n{user_input}\n\n## Plan\n{plan}\n\nFollow the plan."
             session.add_user(inp)
+            effective_fmt = response_format or self._response_format
             exec_failed = False
-            async for ev in self._agent_loop(provider, session, exec_role):
+            async for ev in self._agent_loop(
+                provider, session, exec_role, response_format=effective_fmt
+            ):
                 if ev.kind == "error":
                     exec_failed = True
                 yield ev
@@ -472,6 +500,7 @@ class Scheduler:
         role: FormationRole,
         *,
         use_tools: bool = True,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         schemas = self._tools.get_schemas() if use_tools else []
         self._stagnation.reset()
@@ -503,7 +532,11 @@ class Scheduler:
 
             async def _pump_stream() -> None:
                 try:
-                    async for chunk in provider.stream(session.messages, tools=schemas or None):
+                    async for chunk in provider.stream(
+                        session.messages,
+                        tools=schemas or None,
+                        response_format=response_format,
+                    ):
                         await stream_queue.put(chunk)
                 except BaseException as exc:  # pragma: no cover - defensive pass-through
                     await stream_queue.put(_StreamFailure(exc))
@@ -778,6 +811,15 @@ class Scheduler:
     def compact_all(self, keep: int = 20) -> None:
         for s in self._sessions.values():
             s.compact(keep)
+
+    @property
+    def response_format(self) -> dict[str, Any] | None:
+        """The default response_format applied to all provider calls."""
+        return self._response_format
+
+    @response_format.setter
+    def response_format(self, value: dict[str, Any] | None) -> None:
+        self._response_format = value
 
     def inject_system_context(self, context: str) -> None:
         """Store project context to be injected when sessions are created."""

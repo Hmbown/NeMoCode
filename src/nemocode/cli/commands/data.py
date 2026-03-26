@@ -23,6 +23,7 @@ from nemocode.core.data_workflows import (
     build_repo_data_plan,
     export_seeds,
     export_sft,
+    generate_sft_via_nim,
     render_plan,
 )
 
@@ -128,11 +129,20 @@ def _build_steps(
     skip_finetune: bool,
     output_dir: str,
     model: str,
+    continue_on_error: bool = False,
+    skip_generate: bool = False,
 ) -> list[PipelineStep]:
     steps: list[PipelineStep] = [
         PipelineStep(
             name="Analyze repository",
-            command=["nemo", "data", "analyze", "--repo", repo_path, "--output-dir", output_dir],
+            command=[
+                "nemo",
+                "data",
+                "analyze",
+                repo_path,
+                "--output",
+                f"{output_dir}/repo-data-plan.yaml",
+            ],
             required=True,
         ),
         PipelineStep(
@@ -141,37 +151,59 @@ def _build_steps(
                 "nemo",
                 "data",
                 "export-seeds",
-                "--repo",
                 repo_path,
                 "--output-dir",
                 output_dir,
-            ],
-            required=True,
-        ),
-        PipelineStep(
-            name="Preview dataset",
-            command=["nemo", "data", "preview", "--repo", repo_path, "--output-dir", output_dir],
-            required=False,
-        ),
-        PipelineStep(
-            name="Export SFT dataset",
-            command=[
-                "nemo",
-                "data",
-                "export-sft",
-                "--repo",
-                repo_path,
-                "--output-dir",
-                output_dir,
-                "--max-records",
-                str(max_records),
             ],
             required=True,
         ),
     ]
 
+    if not skip_generate:
+        # NIM API path: use Nemotron Super to generate high-quality synthetic data
+        steps.append(
+            PipelineStep(
+                name="Generate SFT data (NIM API)",
+                command=[
+                    "nemo",
+                    "data",
+                    "generate",
+                    "--seed-dir",
+                    output_dir,
+                    "--output",
+                    f"{output_dir}/sft_generated.jsonl",
+                    "--num-records",
+                    str(max_records),
+                ],
+                required=True,
+            ),
+        )
+
+    # Template-based fallback (always available, optional when generate is used)
+    steps.append(
+        PipelineStep(
+            name="Export SFT dataset (template)",
+            command=[
+                "nemo",
+                "data",
+                "export-sft",
+                repo_path,
+                "--output",
+                f"{output_dir}/sft_dataset.jsonl",
+                "--max-records",
+                str(max_records),
+            ],
+            required=skip_generate,
+        ),
+    )
+
     if not skip_finetune:
-        dataset_path = f"{output_dir}/sft_dataset.jsonl"
+        # Use generated data if available, fall back to template-based
+        dataset_path = (
+            f"{output_dir}/sft_generated.jsonl"
+            if not skip_generate
+            else f"{output_dir}/sft_dataset.jsonl"
+        )
         steps.append(
             PipelineStep(
                 name="Submit fine-tuning job",
@@ -200,7 +232,7 @@ def data_pipeline(
         help="Path to the repository to analyze.",
     ),
     output_dir: str = typer.Option(
-        ".nemo/data",
+        ".nemocode/data",
         "--output-dir",
         "-o",
         help="Directory for pipeline artifacts.",
@@ -212,7 +244,7 @@ def data_pipeline(
         help="Maximum records for the SFT dataset.",
     ),
     model: str = typer.Option(
-        "nvidia/nemotron-3-nano-4b-v1.1",
+        "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
         "--model",
         "-m",
         help="Base model for fine-tuning.",
@@ -227,9 +259,27 @@ def data_pipeline(
         "--skip-finetune",
         help="Skip the fine-tuning step.",
     ),
+    skip_generate: bool = typer.Option(
+        False,
+        "--skip-generate",
+        help="Skip NIM API generation; use template-based export-sft only.",
+    ),
+    continue_on_error: bool = typer.Option(
+        False,
+        "--continue-on-error",
+        help="Continue past required step failures instead of stopping the pipeline.",
+    ),
 ) -> None:
     """Run the full repo-to-fine-tuned-model pipeline."""
-    steps = _build_steps(repo_path, max_records, skip_finetune, output_dir, model)
+    steps = _build_steps(
+        repo_path,
+        max_records,
+        skip_finetune,
+        output_dir,
+        model,
+        continue_on_error=continue_on_error,
+        skip_generate=skip_generate,
+    )
     result = PipelineResult(dry_run=dry_run)
 
     for step in steps:
@@ -243,7 +293,8 @@ def data_pipeline(
             f"  Max records: {max_records}\n"
             f"  Model:       {model}\n"
             f"  Dry run:     {dry_run}\n"
-            f"  Skip ftune:  {skip_finetune}",
+            f"  Skip ftune:  {skip_finetune}\n"
+            f"  Continue:    {continue_on_error}",
             title="Pipeline Configuration",
             border_style="blue",
         )
@@ -267,7 +318,12 @@ def data_pipeline(
 
             if step.status == StepStatus.FAILED and step.required:
                 console.print(f"[yellow]Warning:[/yellow] {step.name} failed: {step.message}")
-                console.print("[yellow]Continuing with remaining steps...[/yellow]")
+                if continue_on_error:
+                    console.print("[yellow]Continuing with remaining steps...[/yellow]")
+                else:
+                    console.print("[red]Stopping after required step failure.[/red]")
+                    progress.stop()
+                    break
 
             progress.stop()
 
@@ -513,25 +569,173 @@ def data_export_sft(
         "--max-records",
         help="Maximum records to generate (0 = all combinations).",
     ),
+    include_tests: bool = typer.Option(
+        False,
+        "--include-tests/--no-include-tests",
+        help="Include definitions from tests/. Disabled by default for higher-signal SFT data.",
+    ),
+    task_type: list[str] | None = typer.Option(
+        None,
+        "--task-type",
+        help="Restrict output to one or more task types. Repeat the flag to include multiple types.",
+    ),
 ) -> None:
     """Export a JSONL dataset suitable for SFT / instruction tuning.
 
     Each record has system/user/assistant messages grounded in the repo's
-    structure, languages, and task taxonomy. This is for repo-specific
-    assistant tuning, not raw code dumping.
+    implementation. The default export prefers implementation-heavy records
+    and excludes tests for a higher-signal repo-specific tuning set.
     """
     seed_dir = path / ".nemocode" / "data" if (path / ".nemocode" / "data").exists() else None
-    result = export_sft(path, output_path=output, seed_dir=seed_dir, max_records=max_records)
+    task_types = set(task_type) if task_type else None
+    result = export_sft(
+        path,
+        output_path=output,
+        seed_dir=seed_dir,
+        max_records=max_records,
+        include_tests=include_tests,
+        task_types=task_types,
+    )
 
     console.print(
         Panel(
-            f"[bold]Output[/bold] {result.output_path}\n[bold]Records[/bold] {result.record_count}",
+            f"[bold]Output[/bold] {result.output_path}\n"
+            f"[bold]Records[/bold] {result.record_count}\n"
+            f"[bold]Include tests[/bold] {'yes' if include_tests else 'no'}\n"
+            f"[bold]Task types[/bold] {', '.join(sorted(task_types)) if task_types else 'default high-signal set'}",
             title="[bold]SFT Dataset Export[/bold]",
             border_style="bright_green",
             expand=False,
         )
     )
     console.print("\n[dim]Use this dataset for repo-specific coding assistant fine-tuning.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# nemo data generate  (NIM API — no Data Designer Docker needed)
+# ---------------------------------------------------------------------------
+
+
+@data_app.command("generate")
+def data_generate(
+    seed_dir: Path = typer.Option(
+        Path(".nemocode/data"),
+        "--seed-dir",
+        "-s",
+        help="Directory containing seed artifacts from `nemo data export-seeds`.",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output JSONL path (default: .nemocode/data/sft_generated.jsonl).",
+    ),
+    num_records: int = typer.Option(
+        100,
+        "--num-records",
+        "-n",
+        help="Number of SFT records to generate.",
+    ),
+    endpoint: str = typer.Option(
+        "https://integrate.api.nvidia.com/v1",
+        "--endpoint",
+        "-e",
+        envvar="NEMOCODE_NIM_ENDPOINT",
+        help="NIM API endpoint (build.nvidia.com or local vLLM/NIM).",
+    ),
+    model: str = typer.Option(
+        "nvidia/nemotron-3-super-120b-a12b",
+        "--model",
+        "-m",
+        help="Model to use for generation (default: Nemotron 3 Super).",
+    ),
+) -> None:
+    """Generate synthetic SFT training data via the NIM API.
+
+    Uses Nemotron 3 Super (hosted on build.nvidia.com or running locally) to
+    produce high-quality instruction-tuning data from your repo's seed artifacts.
+    No Docker or Data Designer service required — just NVIDIA_API_KEY.
+
+    \b
+    Quick start:
+      1. nemo data export-seeds          # scan repo, write seed artifacts
+      2. nemo data generate              # call NIM API → sft_generated.jsonl
+      3. nemo customize create --dataset .nemocode/data/sft_generated.jsonl
+
+    For the full Data Designer experience with evaluation and quality scoring,
+    use `nemo data preview` / `nemo data job create` with Docker instead.
+    """
+    seed_path = Path(seed_dir).resolve()
+    if not seed_path.exists():
+        console.print(
+            f"[red]Seed directory not found: {seed_path}[/red]\n"
+            "Run [bold]nemo data export-seeds[/bold] first."
+        )
+        raise typer.Exit(1)
+
+    if not (seed_path / "context_packs.jsonl").exists():
+        console.print(
+            "[red]context_packs.jsonl not found in seed directory.[/red]\n"
+            "Run [bold]nemo data export-seeds[/bold] first."
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        Panel(
+            f"[bold]Seed dir:[/bold]   {seed_path}\n"
+            f"[bold]Records:[/bold]    {num_records}\n"
+            f"[bold]Endpoint:[/bold]   {endpoint}\n"
+            f"[bold]Model:[/bold]      {model}",
+            title="[bold]nemo data generate[/bold]",
+            border_style="blue",
+            expand=False,
+        )
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            f"[bold]Generating {num_records} records via NIM...[/bold]", total=num_records
+        )
+
+        def on_progress(done: int, total: int) -> None:
+            progress.update(task, completed=done)
+
+        try:
+            result = generate_sft_via_nim(
+                seed_dir=seed_path,
+                output_path=output,
+                num_records=num_records,
+                endpoint=endpoint,
+                model=model,
+                progress_callback=on_progress,
+            )
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+        except Exception as exc:
+            console.print(f"[red]Generation failed:[/red] {exc}")
+            raise typer.Exit(1)
+
+    console.print(
+        Panel(
+            f"[bold]Output[/bold]    {result.output_path}\n"
+            f"[bold]Records[/bold]   {result.record_count}\n"
+            f"[bold]Skipped[/bold]   {result.skipped}\n"
+            f"[bold]Model[/bold]     {result.model}",
+            title="[bold green]Generation Complete[/bold green]",
+            border_style="bright_green",
+            expand=False,
+        )
+    )
+    console.print(
+        f"\n[dim]Next: fine-tune with "
+        f"[bold]nemo customize create --dataset {result.output_path}[/bold][/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------

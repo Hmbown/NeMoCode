@@ -65,6 +65,7 @@ class ChatProvider(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]: ...
 
     async def complete(
@@ -73,6 +74,7 @@ class ChatProvider(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> CompletionResult: ...
 
 

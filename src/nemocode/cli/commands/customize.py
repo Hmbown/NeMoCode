@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: MIT
 
-"""nemo customize — LoRA fine-tuning for Nemotron models."""
+"""nemo customize — customization workflows for Nemotron models."""
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import typer
@@ -15,12 +16,23 @@ from rich.table import Table
 from nemocode.providers.nvidia_client import (
     CustomizerAPIError,
     CustomizerClient,
+    DEFAULT_FINETUNING_TYPE,
     DEFAULT_LORA_RANK,
     DEFAULT_MODEL,
+    DEFAULT_TRAINING_TYPE,
 )
 
 console = Console()
-customize_app = typer.Typer(help="LoRA fine-tuning for Nemotron models.")
+customize_app = typer.Typer(help="Customizer workflows for Nemotron models (LoRA and full SFT).")
+
+
+def _normalize_finetuning_type(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"full-sft", "full_sft", "all-weights", "all_weights"}:
+        return "all_weights"
+    if normalized == "lora":
+        return "lora"
+    raise typer.BadParameter("finetuning type must be one of: lora, full-sft")
 
 
 def _get_client() -> CustomizerClient:
@@ -59,11 +71,11 @@ def _handle_connection_error() -> None:
 
 @customize_app.command("create")
 def customize_create(
-    dataset: str = typer.Option(
-        ...,
+    dataset: Optional[str] = typer.Option(
+        None,
         "--dataset",
         "-d",
-        help="Path to SFT dataset (JSONL).",
+        help="Path to SFT dataset (JSONL) for the legacy local-file workflow.",
     ),
     model: str = typer.Option(
         DEFAULT_MODEL,
@@ -85,19 +97,78 @@ def customize_create(
         "--output-model",
         help="Name for the output fine-tuned model.",
     ),
+    config: Optional[str] = typer.Option(
+        None,
+        "--config",
+        help="Customizer config URN (preferred platform workflow).",
+    ),
+    dataset_name: Optional[str] = typer.Option(
+        None,
+        "--dataset-name",
+        help="Dataset name in NeMo Data Store for platform workflow.",
+    ),
+    dataset_namespace: str = typer.Option(
+        "default",
+        "--dataset-namespace",
+        help="Dataset namespace for platform workflow.",
+    ),
+    training_type: str = typer.Option(
+        DEFAULT_TRAINING_TYPE,
+        "--training-type",
+        help="Training type for platform workflow.",
+    ),
+    finetuning_type: str = typer.Option(
+        DEFAULT_FINETUNING_TYPE,
+        "--finetuning-type",
+        help="Finetuning type: lora or full-sft.",
+    ),
+    max_seq_length: Optional[int] = typer.Option(
+        None,
+        "--max-seq-length",
+        help="Override max sequence length for platform workflow.",
+    ),
 ) -> None:
-    """Submit a LoRA fine-tuning job."""
+    """Submit a customization job.
+
+    Preferred path is config-driven NeMo Customizer:
+      nemo customize create --config <config-urn> --dataset-name <dataset>
+
+    Legacy local-dev fallback still accepts --dataset with a JSONL path.
+    """
     client = _get_client()
-    try:
-        result = client.create_job(
-            dataset_path=dataset,
-            model=model,
-            lora_rank=lora_rank,
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            output_model=output_model,
+    normalized_ft_type = _normalize_finetuning_type(finetuning_type)
+
+    if config and not dataset_name:
+        raise typer.BadParameter("--dataset-name is required when --config is used.")
+    if dataset_name and not config:
+        raise typer.BadParameter("--config is required when --dataset-name is used.")
+    if normalized_ft_type == "all_weights" and not config:
+        raise typer.BadParameter("full-sft requires --config and --dataset-name platform inputs.")
+
+    create_kwargs = {
+        "dataset_path": dataset,
+        "model": model,
+        "lora_rank": lora_rank,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "learning_rate": learning_rate,
+        "output_model": output_model,
+    }
+    if config:
+        create_kwargs.update(
+            {
+                "config": config,
+                "dataset_name": dataset_name,
+                "dataset_namespace": dataset_namespace,
+                "training_type": training_type,
+                "finetuning_type": normalized_ft_type,
+                "max_seq_length": max_seq_length,
+                "wandb_api_key": os.environ.get("WANDB_API_KEY"),
+            }
         )
+
+    try:
+        result = client.create_job(**create_kwargs)
     except CustomizerAPIError as err:
         _handle_api_error(err)
     except Exception:
@@ -105,15 +176,22 @@ def customize_create(
 
     job_id = result.get("id", "unknown")
     status = result.get("status", "unknown")
+    dataset_ref = (
+        f"{dataset_namespace}/{dataset_name}" if config and dataset_name else dataset
+    )
+    workflow = "platform config" if config else "local file"
 
     console.print(
         Panel(
             f"[bold green]Job created[/bold green]\n\n"
             f"  Job ID:  {job_id}\n"
+            f"  Mode:    {workflow}\n"
             f"  Model:   {model}\n"
-            f"  Dataset: {dataset}\n"
+            f"  Config:  {config or '-'}\n"
+            f"  Dataset: {dataset_ref}\n"
             f"  Status:  {status}\n"
-            f"  LoRA rank: {lora_rank}\n"
+            f"  Finetune: {normalized_ft_type}\n"
+            f"  LoRA rank: {lora_rank if normalized_ft_type == 'lora' else '-'}\n"
             f"  Epochs:  {epochs}",
             title="Customization Job",
             border_style="green",
@@ -274,6 +352,74 @@ def customize_ls() -> None:
             job.get("status", ""),
             job.get("created_at", ""),
             progress_str,
+        )
+
+    console.print(table)
+
+
+@customize_app.command("configs")
+def customize_configs(
+    base_model: Optional[str] = typer.Option(
+        None,
+        "--base-model",
+        help="Filter configs by base model.",
+    ),
+    training_type: str = typer.Option(
+        DEFAULT_TRAINING_TYPE,
+        "--training-type",
+        help="Filter configs by training type.",
+    ),
+    finetuning_type: str = typer.Option(
+        DEFAULT_FINETUNING_TYPE,
+        "--finetuning-type",
+        help="Filter configs by finetuning type: lora or full-sft.",
+    ),
+    show_disabled: bool = typer.Option(
+        False,
+        "--show-disabled",
+        help="Include disabled configs.",
+    ),
+) -> None:
+    """List available Customizer configs from the NeMo platform."""
+    client = _get_client()
+    normalized_ft_type = _normalize_finetuning_type(finetuning_type)
+    try:
+        configs = client.list_configs(
+            base_model=base_model,
+            training_type=training_type,
+            finetuning_type=normalized_ft_type,
+            enabled=not show_disabled,
+        )
+    except CustomizerAPIError as err:
+        _handle_api_error(err)
+    except Exception:
+        _handle_connection_error()
+
+    if not configs:
+        console.print("[dim]No customization configs found.[/dim]")
+        return
+
+    table = Table(title="Customization Configs")
+    table.add_column("Config", style="cyan")
+    table.add_column("Base Model")
+    table.add_column("Precision")
+    table.add_column("Seq Len", justify="right")
+    table.add_column("Training")
+    table.add_column("FT Type")
+
+    for cfg in configs:
+        training_options = cfg.get("training_options", [])
+        option = training_options[0] if training_options else {}
+        config_name = cfg.get("name", "unknown")
+        namespace = cfg.get("namespace")
+        config_urn = f"{namespace}/{config_name}" if namespace else config_name
+        table.add_row(
+            config_urn,
+            cfg.get("target", cfg.get("base_model", "-")),
+            str(cfg.get("training_precision", cfg.get("precision", "-"))),
+            str(cfg.get("max_seq_length", "-")),
+            str(option.get("training_type", training_type)),
+            str(option.get("finetuning_type", normalized_ft_type)),
         )
 
     console.print(table)

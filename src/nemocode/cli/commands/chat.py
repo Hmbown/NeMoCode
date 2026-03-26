@@ -14,6 +14,11 @@ from rich.console import Console
 from nemocode.config import load_config
 from nemocode.core.registry import Registry
 from nemocode.core.streaming import Message, Role
+from nemocode.core.structured_output import (
+    StructuredOutputError,
+    build_json_schema_response_format,
+    check_structured_output_support,
+)
 
 console = Console()
 
@@ -23,6 +28,9 @@ def chat_cmd(
     endpoint: str = typer.Option(None, "-e", "--endpoint", help="Endpoint to use"),
     think: bool = typer.Option(True, "--think/--no-think", help="Show/hide thinking trace"),
     output_format: str = typer.Option(None, "--output-format", help="Output format: json, text"),
+    json_schema: str = typer.Option(
+        None, "--json-schema", help="JSON schema file or inline JSON for structured output"
+    ),
     guardrails: bool | None = typer.Option(
         None, "--guardrails/--no-guardrails", help="Enable/disable content safety"
     ),
@@ -35,7 +43,11 @@ def chat_cmd(
             console.print("[yellow]Usage: nemo chat 'your message here'[/yellow]")
             raise typer.Exit(1)
 
-    asyncio.run(_chat(prompt, endpoint, think, output_format, guardrails))
+    if json_schema and output_format:
+        console.print("[red]Cannot use --json-schema and --output-format together.[/red]")
+        raise typer.Exit(1)
+
+    asyncio.run(_chat(prompt, endpoint, think, output_format, json_schema, guardrails))
 
 
 async def _chat(
@@ -43,6 +55,7 @@ async def _chat(
     endpoint_name: str | None,
     show_thinking: bool,
     output_format: str | None = None,
+    json_schema_input: str | None = None,
     guardrails_flag: bool | None = None,
 ) -> None:
     cfg = load_config()
@@ -51,6 +64,7 @@ async def _chat(
     provider = registry.get_chat_provider(ep_name)
 
     ep = registry.get_endpoint(ep_name)
+    manifest = registry.get_manifest(ep.model_id)
     console.print(f"[dim]{ep.name} ({ep.model_id})[/dim]\n")
 
     use_guardrails = guardrails_flag if guardrails_flag is not None else cfg.guardrails.enabled
@@ -62,9 +76,21 @@ async def _chat(
         Message(role=Role.USER, content=prompt),
     ]
 
-    response_format: dict[str, str] | None = None
-    if output_format and output_format.lower() == "json":
+    response_format: dict[str, Any] | None = None
+    if json_schema_input:
+        try:
+            response_format = build_json_schema_response_format(json_schema_input)
+        except StructuredOutputError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return
+    elif output_format and output_format.lower() == "json":
         response_format = {"type": "json_object"}
+
+    # Capability gating: warn if the model doesn't support the requested mode
+    if response_format:
+        warning = check_structured_output_support(manifest, response_format)
+        if warning:
+            console.print(f"[yellow]Warning: {warning}[/yellow]")
 
     text_buf = ""
     think_buf = ""

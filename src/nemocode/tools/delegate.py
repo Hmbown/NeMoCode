@@ -57,6 +57,7 @@ _READ_ONLY_SAFE_CATEGORIES = {
 }
 
 _LOCAL_TIERS = {
+    EndpointTier.LOCAL_LLAMACPP,
     EndpointTier.LOCAL_NIM,
     EndpointTier.LOCAL_OLLAMA,
     EndpointTier.LOCAL_SGLANG,
@@ -182,7 +183,8 @@ def _endpoint_rank(
         EndpointTier.LOCAL_TRT_LLM: 1,
         EndpointTier.LOCAL_NIM: 2,
         EndpointTier.LOCAL_VLLM: 3,
-        EndpointTier.LOCAL_OLLAMA: 4,
+        EndpointTier.LOCAL_LLAMACPP: 4,
+        EndpointTier.LOCAL_OLLAMA: 5,
         EndpointTier.DEV_HOSTED: 5,
         EndpointTier.PROD_HOSTED: 5,
         EndpointTier.INFERENCE_PARTNER: 6,

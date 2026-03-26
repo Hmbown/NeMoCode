@@ -65,7 +65,7 @@ def _make_text_provider(text: str) -> AsyncMock:
     """Create a mock provider that streams a simple text response."""
     provider = AsyncMock()
 
-    async def mock_stream(messages, tools=None, extra_body=None):
+    async def mock_stream(messages, tools=None, extra_body=None, response_format=None):
         yield StreamChunk(text=text)
         yield StreamChunk(
             finish_reason="stop",
@@ -82,7 +82,7 @@ def _make_reject_provider(reject_count: int) -> AsyncMock:
     provider = AsyncMock()
     call_count = 0
 
-    async def mock_stream(messages, tools=None, extra_body=None):
+    async def mock_stream(messages, tools=None, extra_body=None, response_format=None):
         nonlocal call_count
         call_count += 1
         # Check if any message mentions "Review" to distinguish reviewer from executor
@@ -174,7 +174,7 @@ class TestExecutorStagnation:
         # Provider that always emits the same tool call — triggers repeat detection
         stagnant_provider = AsyncMock()
 
-        async def stagnant_stream(messages, tools=None, extra_body=None):
+        async def stagnant_stream(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(text="Let me check.")
             yield StreamChunk(
                 tool_calls=[ToolCall(id="tc_loop", name="read_file", arguments={"path": "same.py"})]
@@ -229,7 +229,7 @@ class TestFormationPhaseEvents:
 
         provider = AsyncMock()
 
-        async def approve_stream(messages, tools=None, extra_body=None):
+        async def approve_stream(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(text="APPROVE: All good.")
             yield StreamChunk(
                 finish_reason="stop",
@@ -260,7 +260,7 @@ class TestFormationPhaseEvents:
 
         provider = AsyncMock()
 
-        async def approve_stream(messages, tools=None, extra_body=None):
+        async def approve_stream(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(text="APPROVE: Fine.")
             yield StreamChunk(
                 finish_reason="stop",
@@ -326,7 +326,7 @@ class TestFormationBackendFailures:
             return_value=CompletionResult(content="Plan here", finish_reason="stop")
         )
 
-        async def failing_stream(messages, tools=None, extra_body=None):
+        async def failing_stream(messages, tools=None, extra_body=None, response_format=None):
             yield StreamChunk(
                 text="Local SGLang endpoint test-ep is not reachable.",
                 finish_reason="error",

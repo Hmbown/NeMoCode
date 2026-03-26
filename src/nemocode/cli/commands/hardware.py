@@ -108,6 +108,7 @@ def hardware_recommend() -> None:
         console.print("\n[bold]Also available on your Spark:[/bold]")
         spark_formations = [
             "spark",
+            "spark-llama-cpp",
             "spark-sglang",
             "spark-trt-llm",
             "spark-vllm",

@@ -157,6 +157,13 @@ class TestPickEndpointVllm:
                     model_id="nvidia/nemotron-nano-9b-v2",
                     capabilities=[Capability.CHAT],
                 ),
+                "spark-vllm-nano4b": Endpoint(
+                    name="Spark vLLM Nano 4B FP8",
+                    tier=EndpointTier.LOCAL_VLLM,
+                    base_url="http://localhost:8002/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8",
+                    capabilities=[Capability.CHAT],
+                ),
                 "nim-super": Endpoint(
                     name="Hosted Super",
                     tier=EndpointTier.DEV_HOSTED,
@@ -169,6 +176,7 @@ class TestPickEndpointVllm:
         )
         assert _pick_endpoint(config, "super") == "spark-vllm-super"
         assert _pick_endpoint(config, "nano-9b") == "spark-vllm-nano9b"
+        assert _pick_endpoint(config, "nano-4b") == "spark-vllm-nano4b"
 
 
 class TestPickEndpointSGLang:
@@ -212,14 +220,14 @@ class TestPickEndpointSGLang:
                     name="Local SGLang Nano 4B",
                     tier=EndpointTier.LOCAL_SGLANG,
                     base_url="http://localhost:9001/v1",
-                    model_id="nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
                     capabilities=[Capability.CHAT],
                 ),
                 "nim-nano-4b": Endpoint(
                     name="Hosted Nano 4B",
                     tier=EndpointTier.DEV_HOSTED,
                     base_url="https://integrate.api.nvidia.com/v1",
-                    model_id="nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
                     capabilities=[Capability.CHAT],
                 ),
                 "nim-super": Endpoint(
@@ -266,6 +274,38 @@ class TestPickEndpointTrtLlm:
         )
         assert _pick_endpoint(config, "super") == "spark-trt-llm-super"
         assert _pick_endpoint(config, ["nano-4b", "super"]) == "spark-trt-llm-nano4b"
+
+
+class TestPickEndpointLlamaCpp:
+    def test_llama_cpp_spark_nano4b_is_preferred(self):
+        config = NeMoCodeConfig(
+            default_endpoint="spark-llama-cpp-nano4b",
+            endpoints={
+                "spark-vllm-super": Endpoint(
+                    name="Spark vLLM Super",
+                    tier=EndpointTier.LOCAL_VLLM,
+                    base_url="http://localhost:8000/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+                "spark-llama-cpp-nano4b": Endpoint(
+                    name="Spark llama.cpp Nano 4B",
+                    tier=EndpointTier.LOCAL_LLAMACPP,
+                    base_url="http://localhost:8001/v1",
+                    model_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M",
+                    capabilities=[Capability.CHAT],
+                ),
+                "nim-super": Endpoint(
+                    name="Hosted Super",
+                    tier=EndpointTier.DEV_HOSTED,
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    model_id="nvidia/nemotron-3-super-120b-a12b",
+                    capabilities=[Capability.CHAT],
+                ),
+            },
+            permissions=ToolPermissions(),
+        )
+        assert _pick_endpoint(config, "nano-4b") == "spark-llama-cpp-nano4b"
 
     def test_default_local_family_prefers_trt_llm_over_other_local_backends(self):
         config = NeMoCodeConfig(

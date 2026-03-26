@@ -38,7 +38,7 @@ class TestSetupWizard:
             patch("nemocode.config._USER_CONFIG_DIR", tmp_path),
             patch("nemocode.core.setup_wizard._USER_CONFIG_PATH", user_config),
         ):
-            result = runner.invoke(app, ["setup", "wizard"], input="3\n3\n")
+            result = runner.invoke(app, ["setup", "wizard"], input="3\n2\n")
 
         assert result.exit_code == 0
         raw = yaml.safe_load(user_config.read_text())
@@ -56,3 +56,16 @@ class TestSetupWizard:
         assert result.exit_code == 0
         raw = yaml.safe_load(user_config.read_text())
         assert raw["default_endpoint"] == "local-trt-llm-nano4b"
+
+    def test_setup_wizard_configures_llama_cpp_nano4b(self, tmp_path):
+        user_config = tmp_path / "config.yaml"
+
+        with (
+            patch("nemocode.config._USER_CONFIG_DIR", tmp_path),
+            patch("nemocode.core.setup_wizard._USER_CONFIG_PATH", user_config),
+        ):
+            result = runner.invoke(app, ["setup", "wizard"], input="5\n1\n")
+
+        assert result.exit_code == 0
+        raw = yaml.safe_load(user_config.read_text())
+        assert raw["default_endpoint"] == "local-llama-cpp-nano4b"

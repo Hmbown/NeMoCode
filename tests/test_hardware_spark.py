@@ -100,7 +100,8 @@ class TestSparkRecommendations:
 
     def test_spark_local_models_include_nano4b(self, spark_profile):
         models = spark_profile.recommend_local_models()
-        assert "nvidia/nemotron-3-super-120b-a12b" in models
+        assert "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4" in models
+        assert "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4" in models
         assert "nvidia/NVIDIA-Nemotron-3-Nano-4B-FP8" in models
         assert "nvidia/nemotron-nano-9b-v2" in models
         assert "nvidia/llama-nemotron-reasoning-super-49b" not in models
@@ -109,8 +110,8 @@ class TestSparkRecommendations:
 
     def test_rtx4090_local_models(self, rtx4090_profile):
         models = rtx4090_profile.recommend_local_models()
-        assert "nvidia/nemotron-3-nano-30b-a3b" in models
-        assert "nvidia/nemotron-3-super-120b-a12b" not in models
+        assert "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4" in models
+        assert "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4" not in models
 
 
 class TestSparkConcurrentConfigs:
@@ -118,7 +119,7 @@ class TestSparkConcurrentConfigs:
         configs = spark_profile.spark_concurrent_configs()
         assert len(configs) == 4
         models = [c["model_id"] for c in configs]
-        assert "nvidia/nemotron-3-super-120b-a12b" in models
+        assert "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4" in models
         assert "nvidia/nemotron-nano-9b-v2" in models
 
     def test_non_spark_empty(self, rtx4090_profile):

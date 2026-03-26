@@ -289,7 +289,7 @@ class TestAgentLoopWithTools:
         # First response: tool call. Second response: text.
         call_count = 0
 
-        async def mock_stream(messages, tools=None, extra_body=None):
+        async def mock_stream(messages, tools=None, extra_body=None, response_format=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -358,7 +358,7 @@ class TestRunFormation:
 
         call_count = 0
 
-        async def mock_stream(messages, tools=None, extra_body=None):
+        async def mock_stream(messages, tools=None, extra_body=None, response_format=None):
             nonlocal call_count
             call_count += 1
             # Both executor and reviewer just produce text

@@ -42,6 +42,7 @@ class Capability(str, Enum):
 class EndpointTier(str, Enum):
     DEV_HOSTED = "dev-hosted"
     PROD_HOSTED = "prod-hosted"
+    LOCAL_LLAMACPP = "local-llama-cpp"
     LOCAL_NIM = "local-nim"
     LOCAL_OLLAMA = "local-ollama"
     LOCAL_SGLANG = "local-sglang"

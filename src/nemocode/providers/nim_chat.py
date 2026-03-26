@@ -35,6 +35,7 @@ _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _LOCAL_BACKEND_LABELS = {
+    EndpointTier.LOCAL_LLAMACPP: "llama.cpp",
     EndpointTier.LOCAL_NIM: "Local NIM",
     EndpointTier.LOCAL_OLLAMA: "Ollama",
     EndpointTier.LOCAL_SGLANG: "SGLang",
@@ -42,7 +43,9 @@ _LOCAL_BACKEND_LABELS = {
     EndpointTier.LOCAL_VLLM: "vLLM",
 }
 _LOCAL_SETUP_COMMANDS = {
+    EndpointTier.LOCAL_LLAMACPP: "nemo setup llama-cpp",
     EndpointTier.LOCAL_NIM: "nemo setup nim",
+    EndpointTier.LOCAL_OLLAMA: "nemo setup ollama",
     EndpointTier.LOCAL_SGLANG: "nemo setup sglang",
     EndpointTier.LOCAL_TRT_LLM: "nemo setup trt-llm",
     EndpointTier.LOCAL_VLLM: "nemo setup vllm",

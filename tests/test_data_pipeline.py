@@ -54,8 +54,8 @@ class TestBuildSteps:
         names = [s.name for s in steps]
         assert "Analyze repository" in names
         assert "Export seed artifacts" in names
-        assert "Preview dataset" in names
-        assert "Export SFT dataset" in names
+        assert "Generate SFT data (NIM API)" in names
+        assert "Export SFT dataset (template)" in names
         assert "Submit fine-tuning job" in names
         assert len(steps) == 5
 
@@ -71,16 +71,35 @@ class TestBuildSteps:
         assert "Submit fine-tuning job" not in names
         assert len(steps) == 4
 
-    def test_preview_is_optional(self):
-        steps = _build_steps(".", 500, False, ".nemo/data", "m")
-        preview = [s for s in steps if s.name == "Preview dataset"][0]
-        assert preview.required is False
+    def test_skip_generate_falls_back_to_template(self):
+        steps = _build_steps(".", 100, False, ".nemo/data", "m", skip_generate=True)
+        names = [s.name for s in steps]
+        assert "Generate SFT data (NIM API)" not in names
+        assert "Export SFT dataset (template)" in names
+        # Template step should be required when generate is skipped
+        sft = [s for s in steps if s.name == "Export SFT dataset (template)"][0]
+        assert sft.required is True
 
-    def test_max_records_in_sft_command(self):
+    def test_generate_present_makes_template_optional(self):
+        steps = _build_steps(".", 100, False, ".nemo/data", "m")
+        sft = [s for s in steps if s.name == "Export SFT dataset (template)"][0]
+        assert sft.required is False
+
+    def test_finetune_uses_generated_data(self):
+        steps = _build_steps(".", 100, False, ".nemo/data", "m")
+        ft = [s for s in steps if s.name == "Submit fine-tuning job"][0]
+        assert "sft_generated.jsonl" in " ".join(ft.command)
+
+    def test_finetune_uses_template_data_when_generate_skipped(self):
+        steps = _build_steps(".", 100, False, ".nemo/data", "m", skip_generate=True)
+        ft = [s for s in steps if s.name == "Submit fine-tuning job"][0]
+        assert "sft_dataset.jsonl" in " ".join(ft.command)
+
+    def test_max_records_in_generate_command(self):
         steps = _build_steps(".", 200, False, ".nemo/data", "m")
-        sft = [s for s in steps if s.name == "Export SFT dataset"][0]
-        assert "--max-records" in sft.command
-        assert "200" in sft.command
+        gen = [s for s in steps if s.name == "Generate SFT data (NIM API)"][0]
+        assert "--num-records" in gen.command
+        assert "200" in gen.command
 
 
 class TestRunStep:
@@ -215,6 +234,24 @@ class TestDataPipelineExecution:
         )
         out = _strip(result.stdout)
         assert "Warning" in out or "failed" in out.lower()
+        assert "Stopping after required step failure" in out
+
+    @patch("nemocode.cli.commands.data.subprocess.run")
+    def test_continue_on_error_keeps_running(self, mock_run):
+        from nemocode.cli.main import app
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if "export-seeds" in cmd:
+                return _make_completed_process(returncode=1, stderr="service unavailable")
+            return _make_completed_process()
+
+        mock_run.side_effect = side_effect
+        result = runner.invoke(
+            app,
+            ["data", "pipeline", "--repo", "/tmp/test", "--skip-finetune", "--continue-on-error"],
+        )
+        out = _strip(result.stdout)
         assert "Continuing" in out
 
     @patch("nemocode.cli.commands.data.subprocess.run")
@@ -250,5 +287,5 @@ class TestDataPipelineExecution:
         from nemocode.cli.commands.data import _build_steps
 
         steps = _build_steps(".", 1000, True, ".nemo/data", "m")
-        sft = [s for s in steps if s.name == "Export SFT dataset"][0]
+        sft = [s for s in steps if s.name == "Export SFT dataset (template)"][0]
         assert "1000" in sft.command

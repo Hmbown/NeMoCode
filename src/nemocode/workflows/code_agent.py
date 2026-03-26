@@ -187,6 +187,7 @@ class CodeAgent:
         auto_route: bool = False,
         read_only: bool = False,
         agent_name: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> None:
         self._config = config or load_config(project_dir)
         self._project_dir = (project_dir or Path.cwd()).resolve()
@@ -235,6 +236,7 @@ class CodeAgent:
             max_tool_rounds=self._config.max_tool_rounds,
             single_role=self._agent_profile.role if self._agent_profile else FormationRole.EXECUTOR,
             single_prompt=self._single_prompt_for_agent(),
+            response_format=response_format,
         )
         self._inject_project_context()
 

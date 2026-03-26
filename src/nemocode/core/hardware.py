@@ -121,9 +121,9 @@ class HardwareProfile:
         if available >= 640:
             models.append("nvidia/nemotron-3-ultra")
         if available >= 80:
-            models.append("nvidia/nemotron-3-super-120b-a12b")
+            models.append("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
         if available >= 24:
-            models.append("nvidia/nemotron-3-nano-30b-a3b")
+            models.append("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4")
         if available >= 16:
             models.append("nvidia/nemotron-nano-12b-v2-vl")
         if available >= 10:
@@ -152,7 +152,7 @@ class HardwareProfile:
         # Super ~80GB + Nano 9B ~10GB + Embed ~2GB + Rerank ~2GB = ~94GB
         return [
             {
-                "model_id": "nvidia/nemotron-3-super-120b-a12b",
+                "model_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
                 "port": "8000",
                 "memory": "~80GB",
                 "role": "Main brain",

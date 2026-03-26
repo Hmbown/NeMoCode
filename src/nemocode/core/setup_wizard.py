@@ -41,6 +41,7 @@ _BACKEND_OPTIONS = [
     ("vllm", "Local vLLM server"),
     ("sglang", "Local SGLang server"),
     ("trt-llm", "Local TensorRT-LLM server"),
+    ("llama-cpp", "Local llama.cpp server"),
 ]
 
 _BACKEND_LABELS = {
@@ -48,6 +49,7 @@ _BACKEND_LABELS = {
     "vllm": "vLLM",
     "sglang": "SGLang",
     "trt-llm": "TensorRT-LLM",
+    "llama-cpp": "llama.cpp",
 }
 
 _HOSTED_PRESETS = [
@@ -61,25 +63,45 @@ _LOCAL_PRESETS: dict[str, list[PresetChoice]] = {
     "vllm": [
         PresetChoice(
             "local-vllm-super",
-            "Nemotron 3 Super",
+            "Nemotron 3 Super NVFP4",
             startup_command=(
-                "vllm serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 \\\n"
-                "  --host 0.0.0.0 --port 8000"
+                "wget https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/raw/main/super_v3_reasoning_parser.py\n"
+                "export MODEL_CKPT=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4\n"
+                "vllm serve $MODEL_CKPT \\\n"
+                "  --served-model-name nvidia/nemotron-3-super \\\n"
+                "  --host 0.0.0.0 --port 8000 \\\n"
+                "  --async-scheduling \\\n"
+                "  --dtype auto \\\n"
+                "  --max-model-len 262144 \\\n"
+                "  --swap-space 0 \\\n"
+                "  --trust-remote-code \\\n"
+                "  --gpu-memory-utilization 0.9 \\\n"
+                "  --max-cudagraph-capture-size 128 \\\n"
+                "  --enable-chunked-prefill \\\n"
+                "  --mamba-ssm-cache-dtype float16 \\\n"
+                "  --reasoning-parser nemotron_v3 \\\n"
+                "  --enable-auto-tool-choice \\\n"
+                "  --tool-call-parser qwen3_coder"
             ),
         ),
         PresetChoice(
             "local-vllm-nano",
-            "Nemotron 3 Nano 30B",
+            "Nemotron 3 Nano 30B NVFP4",
             startup_command=(
-                "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 \\\n"
+                "wget https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4/resolve/main/nano_v3_reasoning_parser.py\n"
+                "VLLM_USE_FLASHINFER_MOE_FP4=1 VLLM_FLASHINFER_MOE_BACKEND=throughput \\\n"
+                "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 \\\n"
+                "  --reasoning-parser-plugin nano_v3_reasoning_parser.py \\\n"
+                "  --reasoning-parser nano_v3 \\\n"
+                "  --kv-cache-dtype fp8 \\\n"
                 "  --host 0.0.0.0 --port 8000"
             ),
         ),
         PresetChoice(
-            "local-vllm-nano9b",
-            "Nemotron Nano 9B v2",
+            "local-vllm-nano4b",
+            "Nemotron 3 Nano 4B BF16",
             startup_command=(
-                "vllm serve nvidia/NVIDIA-Nemotron-Nano-9B-v2 \\\n  --host 0.0.0.0 --port 8000"
+                "vllm serve nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 \\\n  --host 0.0.0.0 --port 8000"
             ),
         ),
         PresetChoice("__custom__", "Custom OpenAI-compatible vLLM model"),
@@ -87,28 +109,19 @@ _LOCAL_PRESETS: dict[str, list[PresetChoice]] = {
     "sglang": [
         PresetChoice(
             "local-sglang-super",
-            "Nemotron 3 Super",
+            "Nemotron 3 Super NVFP4",
             startup_command=(
                 "python -m sglang.launch_server \\\n"
-                "  --model nvidia/nemotron-3-super-120b-a12b \\\n"
-                "  --host 0.0.0.0 --port 8000"
-            ),
-        ),
-        PresetChoice(
-            "local-sglang-nano9b",
-            "Nemotron Nano 9B v2",
-            startup_command=(
-                "python -m sglang.launch_server \\\n"
-                "  --model nvidia/nemotron-nano-9b-v2 \\\n"
+                "  --model nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \\\n"
                 "  --host 0.0.0.0 --port 8000"
             ),
         ),
         PresetChoice(
             "local-sglang-nano4b",
-            "Nemotron Nano 4B v1.1",
+            "Nemotron 3 Nano 4B BF16",
             startup_command=(
                 "python -m sglang.launch_server \\\n"
-                "  --model nvidia/llama-3.1-nemotron-nano-4b-v1.1 \\\n"
+                "  --model nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 \\\n"
                 "  --host 0.0.0.0 --port 8000"
             ),
         ),
@@ -117,13 +130,13 @@ _LOCAL_PRESETS: dict[str, list[PresetChoice]] = {
     "trt-llm": [
         PresetChoice(
             "local-trt-llm-super",
-            "Nemotron 3 Super 120B",
+            "Nemotron 3 Super 120B NVFP4",
             startup_command=(
                 "docker run --rm -it --gpus all --ipc host --network host \\\n"
                 "  -e HF_TOKEN=$HF_TOKEN \\\n"
                 "  -v $HOME/.cache/huggingface/:/root/.cache/huggingface/ \\\n"
                 "  nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc6 \\\n"
-                "  trtllm-serve nvidia/nemotron-3-super-120b-a12b \\\n"
+                "  trtllm-serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \\\n"
                 "  --trust_remote_code --port 8000"
             ),
         ),
@@ -140,6 +153,18 @@ _LOCAL_PRESETS: dict[str, list[PresetChoice]] = {
             ),
         ),
         PresetChoice("__custom__", "Custom OpenAI-compatible TensorRT-LLM model"),
+    ],
+    "llama-cpp": [
+        PresetChoice(
+            "local-llama-cpp-nano4b",
+            "Nemotron 3 Nano 4B GGUF Q4_K_M",
+            startup_command=(
+                "llama-server -hf nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M \\\n"
+                "  -c 0 --alias nemotron3-nano-4b-q4km --ngl 999 \\\n"
+                "  --host 0.0.0.0 --port 8000"
+            ),
+        ),
+        PresetChoice("__custom__", "Custom OpenAI-compatible llama.cpp model"),
     ],
 }
 
@@ -246,6 +271,7 @@ def _prompt_custom_local_preset(backend: str) -> PresetChoice:
         "vllm": "local-vllm",
         "sglang": "local-sglang",
         "trt-llm": "local-trt-llm",
+        "llama-cpp": "local-llama-cpp",
     }[backend]
     startup = (
         f"# Start your server separately, then verify it with:\nnemo endpoint test {endpoint_name}"

@@ -20,6 +20,7 @@ app = typer.Typer(
 
 def _register_commands() -> None:
     from nemocode.cli.commands.agent import agent_app
+    from nemocode.cli.commands.auditor import auditor_app
     from nemocode.cli.commands.auth import auth_app
     from nemocode.cli.commands.chat import chat_cmd
     from nemocode.cli.commands.code import code_cmd
@@ -29,12 +30,16 @@ def _register_commands() -> None:
     from nemocode.cli.commands.doctor import doctor_app
     from nemocode.cli.commands.embed import embed_app
     from nemocode.cli.commands.endpoint import endpoint_app
+    from nemocode.cli.commands.entity import entity_app
+    from nemocode.cli.commands.evaluator import evaluator_app
     from nemocode.cli.commands.formation import formation_app
+    from nemocode.cli.commands.guardrails import guardrails_app
     from nemocode.cli.commands.hardware import hardware_app
     from nemocode.cli.commands.init_cmd import init_cmd
     from nemocode.cli.commands.model import model_app
     from nemocode.cli.commands.obs import obs_app
     from nemocode.cli.commands.rerank import rerank_app
+    from nemocode.cli.commands.safe_synth import safe_synth_app
     from nemocode.cli.commands.session import session_app
     from nemocode.cli.commands.setup import setup_app
     from nemocode.cli.commands.serve import serve_app
@@ -43,10 +48,15 @@ def _register_commands() -> None:
     app.command("chat")(chat_cmd)
     app.command("code")(code_cmd)
     app.add_typer(agent_app, name="agent")
+    app.add_typer(auditor_app, name="auditor")
     app.add_typer(customize_app, name="customize")
     app.add_typer(data_app, name="data")
     app.add_typer(embed_app, name="embed")
+    app.add_typer(entity_app, name="entity")
+    app.add_typer(evaluator_app, name="evaluator")
+    app.add_typer(guardrails_app, name="guardrails")
     app.add_typer(rerank_app, name="rerank")
+    app.add_typer(safe_synth_app, name="safe-synth")
     app.add_typer(speech_app, name="speech")
     app.add_typer(serve_app, name="serve")
     app.add_typer(endpoint_app, name="endpoint")

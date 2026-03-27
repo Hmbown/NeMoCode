@@ -367,6 +367,54 @@ class TestSafeSynthesizerClient:
                 assert client.base_url == "http://custom:9090"
 
 
+class TestAuditorClient:
+    def test_create_job(self):
+        from nemocode.core.nvidia_client import AuditorClient
+
+        with patch("nemocode.core.nvidia_client.httpx.Client") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"id": "audit-123", "status": "pending"}
+            mock_client.post.return_value = mock_resp
+
+            client = AuditorClient(base_url="http://test:8080")
+            result = client.create_job({"target_id": "t-1", "config_id": "c-1"})
+            assert result["id"] == "audit-123"
+
+    def test_env_var_override(self):
+        from nemocode.core.nvidia_client import AuditorClient
+
+        with patch.dict(os.environ, {"NEMOCODE_AUDITOR_BASE_URL": "http://audit:9090"}):
+            with patch("nemocode.core.nvidia_client.httpx.Client"):
+                client = AuditorClient()
+                assert client.base_url == "http://audit:9090"
+
+
+class TestEntityStoreClient:
+    def test_list_namespaces(self):
+        from nemocode.core.nvidia_client import EntityStoreClient
+
+        with patch("nemocode.core.nvidia_client.httpx.Client") as mock_cls:
+            mock_client = MagicMock()
+            mock_cls.return_value = mock_client
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"data": [{"name": "default"}]}
+            mock_client.get.return_value = mock_resp
+
+            client = EntityStoreClient(base_url="http://test:8080")
+            result = client.list_resources("namespace")
+            assert result["data"][0]["name"] == "default"
+
+    def test_env_var_override(self):
+        from nemocode.core.nvidia_client import EntityStoreClient
+
+        with patch.dict(os.environ, {"NEMOCODE_ENTITY_BASE_URL": "http://entity:9090"}):
+            with patch("nemocode.core.nvidia_client.httpx.Client"):
+                client = EntityStoreClient()
+                assert client.base_url == "http://entity:9090"
+
+
 # ---------------------------------------------------------------------------
 # CLI tests for new subcommands
 # ---------------------------------------------------------------------------

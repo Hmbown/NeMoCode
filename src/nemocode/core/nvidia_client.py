@@ -305,3 +305,133 @@ class SafeSynthesizerClient(_BaseClient):
         return self.get(
             f"/v1beta1/safe-synthesizer/jobs/{job_id}/results/synthetic_data/download"
         ).content
+
+
+# ---------------------------------------------------------------------------
+# Auditor client
+# ---------------------------------------------------------------------------
+
+
+class AuditorClient(_BaseClient):
+    """Client for NeMo Auditor REST API."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float = 120.0,
+    ) -> None:
+        url = (
+            base_url
+            or _env("NEMOCODE_AUDITOR_BASE_URL", "")
+            or _env("AUDITOR_BASE_URL", "http://localhost:8080")
+        )
+        super().__init__(base_url=url, timeout=timeout)
+
+    # -- Targets -----------------------------------------------------------
+
+    def list_targets(self, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        return self.get(
+            "/v1beta1/audit/targets",
+            params={"page": page, "page_size": page_size},
+        ).json()
+
+    def create_target(self, spec: dict[str, Any]) -> dict[str, Any]:
+        return self.post("/v1beta1/audit/targets", json=spec).json()
+
+    def get_target(self, target_id: str) -> dict[str, Any]:
+        return self.get(f"/v1beta1/audit/targets/{target_id}").json()
+
+    def delete_target(self, target_id: str) -> dict[str, Any]:
+        return self.delete(f"/v1beta1/audit/targets/{target_id}").json()
+
+    # -- Configs -----------------------------------------------------------
+
+    def list_configs(self, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        return self.get(
+            "/v1beta1/audit/configs",
+            params={"page": page, "page_size": page_size},
+        ).json()
+
+    def create_config(self, spec: dict[str, Any]) -> dict[str, Any]:
+        return self.post("/v1beta1/audit/configs", json=spec).json()
+
+    def get_config(self, config_id: str) -> dict[str, Any]:
+        return self.get(f"/v1beta1/audit/configs/{config_id}").json()
+
+    def delete_config(self, config_id: str) -> dict[str, Any]:
+        return self.delete(f"/v1beta1/audit/configs/{config_id}").json()
+
+    # -- Jobs --------------------------------------------------------------
+
+    def create_job(self, spec: dict[str, Any]) -> dict[str, Any]:
+        return self.post("/v1beta1/audit/jobs", json=spec).json()
+
+    def list_jobs(self, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        return self.get(
+            "/v1beta1/audit/jobs",
+            params={"page": page, "page_size": page_size},
+        ).json()
+
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        return self.get(f"/v1beta1/audit/jobs/{job_id}").json()
+
+    def get_job_status(self, job_id: str) -> dict[str, Any]:
+        return self.get(f"/v1beta1/audit/jobs/{job_id}/status").json()
+
+    def get_job_logs(self, job_id: str, limit: int = 100) -> dict[str, Any]:
+        return self.get(
+            f"/v1beta1/audit/jobs/{job_id}/logs",
+            params={"limit": limit},
+        ).json()
+
+    def get_job_results(self, job_id: str) -> dict[str, Any]:
+        return self.get(f"/v1beta1/audit/jobs/{job_id}/results").json()
+
+    def download_report(self, job_id: str) -> bytes:
+        return self.get(f"/v1beta1/audit/jobs/{job_id}/results/report/download").content
+
+    def delete_job(self, job_id: str) -> dict[str, Any]:
+        return self.delete(f"/v1beta1/audit/jobs/{job_id}").json()
+
+
+# ---------------------------------------------------------------------------
+# Entity Store client
+# ---------------------------------------------------------------------------
+
+
+class EntityStoreClient(_BaseClient):
+    """Client for NeMo Entity Store REST API."""
+
+    _RESOURCE_PATHS = {
+        "namespace": "/v1/namespaces",
+        "project": "/v1/projects",
+        "dataset": "/v1/datasets",
+        "model": "/v1/models",
+    }
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float = 120.0,
+    ) -> None:
+        url = (
+            base_url
+            or _env("NEMOCODE_ENTITY_BASE_URL", "")
+            or _env("ENTITY_STORE_BASE_URL", "http://localhost:8080")
+        )
+        super().__init__(base_url=url, timeout=timeout)
+
+    def list_resources(self, resource: str, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        return self.get(
+            self._RESOURCE_PATHS[resource],
+            params={"page": page, "page_size": page_size},
+        ).json()
+
+    def create_resource(self, resource: str, spec: dict[str, Any]) -> dict[str, Any]:
+        return self.post(self._RESOURCE_PATHS[resource], json=spec).json()
+
+    def get_resource(self, resource: str, resource_id: str) -> dict[str, Any]:
+        return self.get(f"{self._RESOURCE_PATHS[resource]}/{resource_id}").json()
+
+    def delete_resource(self, resource: str, resource_id: str) -> dict[str, Any]:
+        return self.delete(f"{self._RESOURCE_PATHS[resource]}/{resource_id}").json()

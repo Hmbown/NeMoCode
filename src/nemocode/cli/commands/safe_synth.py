@@ -50,7 +50,9 @@ def _iter_rows(payload: Any) -> list[dict[str, Any]]:
 
 @safe_synth_app.command("create")
 def safe_synth_create(
-    spec: Path = typer.Argument(..., exists=True, dir_okay=False, help="Path to safe-synth spec JSON."),
+    spec: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, help="Path to safe-synth spec JSON."
+    ),
     base_url: str | None = typer.Option(
         None,
         "--base-url",

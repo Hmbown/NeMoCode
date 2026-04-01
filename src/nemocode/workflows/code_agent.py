@@ -510,7 +510,7 @@ class CodeAgent:
         self._scheduler.compact_all(keep)
 
     @property
-    def sessions(self) -> dict:
+    def sessions(self) -> dict[FormationRole, Session]:
         """Access to scheduler sessions for context tracking."""
         return self._scheduler._sessions
 

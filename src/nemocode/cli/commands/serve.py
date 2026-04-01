@@ -6,10 +6,9 @@
 from __future__ import annotations
 
 import json
-import os
+import os  # noqa: F401 — used by test mocks (serve.os.killpg)
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,11 +17,10 @@ import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 from nemocode.config import _USER_CONFIG_DIR, _USER_CONFIG_PATH, ensure_config_dir, load_config
-from nemocode.config.schema import Capability, Endpoint, EndpointTier
 from nemocode.core.hardware import detect_hardware
+from nemocode.core.validators import validate_file_path
 
 console = Console()
 serve_app = typer.Typer(help="Serve fine-tuned LoRA adapters locally.")
@@ -151,7 +149,7 @@ def _build_sglang_command(
 def _health_check(base_url: str, timeout: int = _HEALTH_CHECK_TIMEOUT) -> bool:
     url = f"{base_url.rstrip('/')}/models"
     elapsed = 0
-    console.print(f"[dim]Waiting for endpoint to become ready...[/dim]")
+    console.print("[dim]Waiting for endpoint to become ready...[/dim]")
     with console.status("[bold green]Starting server...", spinner="dots"):
         while elapsed < timeout:
             try:
@@ -260,6 +258,12 @@ def start(
     ),
 ) -> None:
     """Launch a local inference backend with a LoRA adapter."""
+    try:
+        validate_file_path(adapter)
+    except ValueError as exc:
+        console.print(f"[red]Invalid adapter path: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
     adapter_path = Path(adapter).resolve()
     if not adapter_path.exists():
         console.print(f"[red]Adapter path not found: {adapter_path}[/red]")
@@ -273,8 +277,7 @@ def start(
 
     if backend == "unknown":
         console.print(
-            "[red]No supported backend found.[/red]\n"
-            "Install vLLM: [bold]pip install vllm[/bold]"
+            "[red]No supported backend found.[/red]\nInstall vLLM: [bold]pip install vllm[/bold]"
         )
         raise typer.Exit(1)
 

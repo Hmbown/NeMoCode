@@ -11,6 +11,8 @@ import os
 import signal
 import sys
 
+from nemocode.core.sandbox import Sandbox
+from nemocode.core.secrets import scanner
 from nemocode.tools import tool
 
 _MAX_OUTPUT = 100_000  # chars
@@ -32,9 +34,23 @@ _SENSITIVE_VARS = {
     "GITLAB_TOKEN",
     "DATABASE_URL",
     "DB_PASSWORD",
+    "PRIVATE_KEY",
+    "CREDENTIALS",
+    "AUTH_TOKEN",
+    "ACCESS_TOKEN",
+    "SECRET_KEY",
 }
 # Suffix patterns for dynamic key names (e.g., CUSTOM_API_KEY)
-_SENSITIVE_SUFFIXES = ("_API_KEY", "_SECRET_KEY", "_SECRET", "_PASSWORD", "_TOKEN")
+_SENSITIVE_SUFFIXES = (
+    "_API_KEY",
+    "_SECRET_KEY",
+    "_SECRET",
+    "_PASSWORD",
+    "_TOKEN",
+    "_PRIVATE_KEY",
+    "_CREDENTIALS",
+    "_AUTH",
+)
 
 
 def _sanitized_env() -> dict[str, str]:
@@ -50,6 +66,9 @@ def _sanitized_env() -> dict[str, str]:
     return env
 
 
+_sandbox = Sandbox.from_env()
+
+
 @tool(
     name="bash_exec",
     description="Execute a shell command and return its output.",
@@ -62,7 +81,13 @@ async def bash_exec(command: str, timeout: int = 120, cwd: str = "") -> str:
     timeout: Timeout in seconds (default 120).
     cwd: Working directory (default: current directory).
     """
-    work_dir = cwd or os.getcwd()
+    if not _sandbox.can_execute_command(command):
+        return json.dumps({"error": "Command execution blocked by sandbox policy"})
+
+    try:
+        work_dir = _sandbox.validate_cwd(cwd)
+    except PermissionError as e:
+        return json.dumps({"error": str(e)})
     try:
         # Use start_new_session so we can kill the entire process group on timeout
         proc = await asyncio.create_subprocess_shell(
@@ -89,9 +114,9 @@ async def bash_exec(command: str, timeout: int = 120, cwd: str = "") -> str:
 
         result: dict = {"exit_code": proc.returncode}
         if stdout_str.strip():
-            result["stdout"] = stdout_str
+            result["stdout"] = scanner.scan_and_redact(stdout_str)
         if stderr_str.strip():
-            result["stderr"] = stderr_str
+            result["stderr"] = scanner.scan_and_redact(stderr_str)
         return json.dumps(result)
     except asyncio.TimeoutError:
         # Kill the entire process group (shell + all children)

@@ -27,21 +27,19 @@ class TestPathSandbox:
 
     def test_path_outside_project(self, tmp_path):
         set_project_root(tmp_path)
-        p = _resolve_path("/etc/passwd")
-        assert not _is_within_project(p)
+        with pytest.raises(PermissionError, match="outside project"):
+            _resolve_path("/etc/passwd")
 
     def test_path_traversal_blocked(self, tmp_path):
         set_project_root(tmp_path)
-        p = _resolve_path(str(tmp_path / ".." / ".." / "etc" / "passwd"))
-        assert not _is_within_project(p)
+        with pytest.raises(PermissionError, match="outside project"):
+            _resolve_path(str(tmp_path / ".." / ".." / "etc" / "passwd"))
 
     @pytest.mark.asyncio
     async def test_write_outside_project_rejected(self, tmp_path):
         set_project_root(tmp_path)
-        result = await write_file("/tmp/nemocode_test_escape.txt", "pwned")
-        data = json.loads(result)
-        assert "error" in data
-        assert "outside project" in data["error"].lower()
+        with pytest.raises(PermissionError, match="outside project"):
+            await write_file("/tmp/nemocode_test_escape.txt", "pwned")
 
     @pytest.mark.asyncio
     async def test_write_inside_project_allowed(self, tmp_path):
@@ -55,17 +53,5 @@ class TestPathSandbox:
     @pytest.mark.asyncio
     async def test_edit_outside_project_rejected(self, tmp_path):
         set_project_root(tmp_path)
-        # Create a file outside the project
-        import tempfile
-
-        outside = Path(tempfile.gettempdir()) / "nemocode_test_outside.txt"
-        outside.write_text("original")
-        try:
-            result = await edit_file(str(outside), "original", "modified")
-            data = json.loads(result)
-            assert "error" in data
-            assert "outside project" in data["error"].lower()
-            # File should not have been modified
-            assert outside.read_text() == "original"
-        finally:
-            outside.unlink(missing_ok=True)
+        with pytest.raises(PermissionError, match="outside project"):
+            await edit_file("/etc/passwd", "old", "new")

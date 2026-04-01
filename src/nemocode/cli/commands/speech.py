@@ -14,7 +14,6 @@ from rich.panel import Panel
 
 from nemocode.config import load_config
 from nemocode.config.schema import Endpoint
-from nemocode.core.registry import Registry
 
 console = Console()
 speech_app = typer.Typer(help="Speech recognition (ASR) and text-to-speech (TTS).")
@@ -24,8 +23,7 @@ def _get_speech_endpoint(cfg, endpoint_name: str) -> Endpoint:
     """Resolve a speech endpoint from config."""
     if endpoint_name not in cfg.endpoints:
         raise typer.BadParameter(
-            f"Unknown endpoint: {endpoint_name}. "
-            f"Available speech endpoints: nim-asr, nim-tts"
+            f"Unknown endpoint: {endpoint_name}. Available speech endpoints: nim-asr, nim-tts"
         )
     return cfg.endpoints[endpoint_name]
 

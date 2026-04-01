@@ -15,7 +15,9 @@ from rich.table import Table
 from nemocode.core.nvidia_client import EntityStoreClient
 
 console = Console()
-entity_app = typer.Typer(help="Manage NeMo Entity Store namespaces, projects, datasets, and models.")
+entity_app = typer.Typer(
+    help="Manage NeMo Entity Store namespaces, projects, datasets, and models."
+)
 namespace_app = typer.Typer(help="Manage namespaces.")
 project_app = typer.Typer(help="Manage projects.")
 dataset_app = typer.Typer(help="Manage datasets.")
@@ -129,7 +131,14 @@ def namespace_ls(
     page_size: int = typer.Option(20, "--page-size", min=1),
     base_url: str | None = typer.Option(None, "--base-url", envvar="NEMOCODE_ENTITY_BASE_URL"),
 ) -> None:
-    _list_resource("namespace", base_url, page, page_size, "Namespaces", [("Name", "name"), ("Description", "description")])
+    _list_resource(
+        "namespace",
+        base_url,
+        page,
+        page_size,
+        "Namespaces",
+        [("Name", "name"), ("Description", "description")],
+    )
 
 
 @namespace_app.command("create")
@@ -170,7 +179,14 @@ def project_ls(
     page_size: int = typer.Option(20, "--page-size", min=1),
     base_url: str | None = typer.Option(None, "--base-url", envvar="NEMOCODE_ENTITY_BASE_URL"),
 ) -> None:
-    _list_resource("project", base_url, page, page_size, "Projects", [("Name", "name"), ("Namespace", "namespace"), ("Description", "description")])
+    _list_resource(
+        "project",
+        base_url,
+        page,
+        page_size,
+        "Projects",
+        [("Name", "name"), ("Namespace", "namespace"), ("Description", "description")],
+    )
 
 
 @project_app.command("create")
@@ -212,7 +228,14 @@ def dataset_ls(
     page_size: int = typer.Option(20, "--page-size", min=1),
     base_url: str | None = typer.Option(None, "--base-url", envvar="NEMOCODE_ENTITY_BASE_URL"),
 ) -> None:
-    _list_resource("dataset", base_url, page, page_size, "Datasets", [("Name", "name"), ("Namespace", "namespace"), ("Project", "project")])
+    _list_resource(
+        "dataset",
+        base_url,
+        page,
+        page_size,
+        "Datasets",
+        [("Name", "name"), ("Namespace", "namespace"), ("Project", "project")],
+    )
 
 
 @dataset_app.command("create")
@@ -260,7 +283,14 @@ def model_ls(
     page_size: int = typer.Option(20, "--page-size", min=1),
     base_url: str | None = typer.Option(None, "--base-url", envvar="NEMOCODE_ENTITY_BASE_URL"),
 ) -> None:
-    _list_resource("model", base_url, page, page_size, "Models", [("Name", "name"), ("Namespace", "namespace"), ("Version", "version")])
+    _list_resource(
+        "model",
+        base_url,
+        page,
+        page_size,
+        "Models",
+        [("Name", "name"), ("Namespace", "namespace"), ("Version", "version")],
+    )
 
 
 @model_app.command("create")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -19,6 +20,7 @@ from nemocode.core.structured_output import (
     build_json_schema_response_format,
     check_structured_output_support,
 )
+from nemocode.core.validators import validate_command_args, validate_json_input
 
 console = Console()
 
@@ -42,6 +44,19 @@ def chat_cmd(
         if not prompt:
             console.print("[yellow]Usage: nemo chat 'your message here'[/yellow]")
             raise typer.Exit(1)
+
+    try:
+        validate_command_args(prompt)
+    except ValueError as exc:
+        console.print(f"[red]Invalid input: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    if json_schema:
+        try:
+            validate_json_input(json_schema)
+        except ValueError as exc:
+            console.print(f"[red]Invalid JSON schema: {exc}[/red]")
+            raise typer.Exit(1) from exc
 
     if json_schema and output_format:
         console.print("[red]Cannot use --json-schema and --output-format together.[/red]")

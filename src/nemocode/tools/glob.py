@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 
+from nemocode.core.tool_cache import get_tool_cache
 from nemocode.tools import tool
 
 _MAX_RESULTS = 500
@@ -36,6 +37,13 @@ async def glob_files(
         return json.dumps({"error": f"Not a directory: {path}"})
 
     max_results = min(max_results, _MAX_RESULTS)
+
+    # Check cache
+    cache = get_tool_cache()
+    cache_key = f"glob:{pattern}:{base}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         matches: list[Path] = []
@@ -71,6 +79,9 @@ async def glob_files(
         result = {"files": files, "count": len(files)}
         if len(matches) >= max_results:
             result["truncated"] = True
-        return json.dumps(result)
+        result_json = json.dumps(result)
+        # Cache the result
+        cache.put(cache_key, result_json, ttl=60.0)
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)})

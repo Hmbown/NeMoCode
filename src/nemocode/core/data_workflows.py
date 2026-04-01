@@ -41,6 +41,7 @@ def _is_ignored_dir(part: str) -> bool:
         return True
     return part.startswith(_IGNORE_DIR_PREFIXES)
 
+
 _SECRETS_PATTERNS = {
     ".env",
     ".env.local",
@@ -896,6 +897,7 @@ def _pick_context_pack(
 
     return context_packs[0]
 
+
 _AREA_DESCRIPTIONS = {
     "providers": "communication with LLM backends (NIM, Ollama, vLLM, etc.)",
     "cli": "the command-line interface and user-facing commands",
@@ -1016,7 +1018,9 @@ def export_sft(
         for d in defs:
             if not include_tests and filepath.startswith("tests/"):
                 continue
-            if not include_tests and (d["name"].startswith("test_") or d["name"].startswith("Test")):
+            if not include_tests and (
+                d["name"].startswith("test_") or d["name"].startswith("Test")
+            ):
                 continue
             if _definition_line_count(d["code"]) < 2:
                 continue
@@ -1055,18 +1059,20 @@ def export_sft(
             signature = _definition_signature(code)
 
             # Build template variables
-            area_description = _AREA_DESCRIPTIONS.get(
-                module_area, "project functionality"
-            )
+            area_description = _AREA_DESCRIPTIONS.get(module_area, "project functionality")
             behavior_hint = _behavior_hint(docstring, kind)
             feature_summary = _feature_summary(code)
 
             fmt = {
-                "name": name, "kind": kind, "filepath": filepath,
-                "code": code, "signature": signature,
+                "name": name,
+                "kind": kind,
+                "filepath": filepath,
+                "code": code,
+                "signature": signature,
                 "behavior_hint": behavior_hint,
                 "feature_summary": feature_summary,
-                "module_area": module_area, "area_description": area_description,
+                "module_area": module_area,
+                "area_description": area_description,
             }
 
             try:
@@ -1082,10 +1088,7 @@ def export_sft(
             )
             pack = _pick_context_pack(filepath, module_area, context_packs)
             if pack:
-                system_msg += (
-                    f"\n\nRelevant file: {pack['path']}\n"
-                    f"```\n{pack['snippet']}\n```"
-                )
+                system_msg += f"\n\nRelevant file: {pack['path']}\n```\n{pack['snippet']}\n```"
 
             record = {
                 "messages": [
@@ -1174,6 +1177,7 @@ def _resolve_nim_api_key() -> str | None:
     except Exception:
         pass
     import os
+
     for name in ("NVIDIA_API_KEY", "NGC_CLI_API_KEY", "NIM_API_KEY"):
         value = os.environ.get(name)
         if value:
@@ -1212,8 +1216,7 @@ def generate_sft_via_nim(
 
     if not context_packs_path.exists():
         raise FileNotFoundError(
-            f"context_packs.jsonl not found in {seed_dir}. "
-            "Run `nemo data export-seeds` first."
+            f"context_packs.jsonl not found in {seed_dir}. Run `nemo data export-seeds` first."
         )
 
     context_packs: list[dict[str, Any]] = []

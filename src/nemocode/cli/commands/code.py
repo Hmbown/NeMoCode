@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 
 from nemocode.cli.render import EventRenderer, format_confirm_summary, render_confirm_detail
+from nemocode.core.validators import validate_command_args
 from nemocode.workflows.code_agent import CodeAgent
 
 console = Console()
@@ -64,6 +65,12 @@ def code_cmd(
                 guardrails=guardrails,
             )
         return
+
+    try:
+        validate_command_args(prompt)
+    except ValueError as exc:
+        console.print(f"[red]Invalid input: {exc}[/red]")
+        raise typer.Exit(1) from exc
 
     asyncio.run(_code(prompt, endpoint, formation, agent, think, yes, guardrails))
 

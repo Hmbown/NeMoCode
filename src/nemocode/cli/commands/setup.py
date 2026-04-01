@@ -796,6 +796,7 @@ def setup_llama_cpp() -> None:
     )
     console.print("[dim]llama.cpp: https://github.com/ggml-org/llama.cpp[/dim]")
 
+
 @setup_app.command("brev")
 def setup_brev() -> None:
     """Rent an NVIDIA GPU via Brev for cloud inference."""
@@ -919,7 +920,7 @@ def setup_data() -> None:
             "export NGC_CLI_API_KEY=<your-ngc-api-key>\n"
             "echo $NGC_CLI_API_KEY | docker login nvcr.io -u '$oauthtoken' --password-stdin\n"
             "ngc registry resource download-version "
-            "\"nvidia/nemo-microservices/nemo-microservices-quickstart:25.12\"\n"
+            '"nvidia/nemo-microservices/nemo-microservices-quickstart:25.12"\n'
             "cd nemo-microservices-quickstart_v25.12\n"
             "export NEMO_MICROSERVICES_IMAGE_REGISTRY=nvcr.io/nvidia/nemo-microservices\n"
             "export NEMO_MICROSERVICES_IMAGE_TAG=25.12\n"
@@ -931,7 +932,7 @@ def setup_data() -> None:
             "localhost:8080/v1/data-designer/preview -d @preview.json\n"
             "\n"
             "# SDK:\n"
-            "pip install \"nemo-microservices[data-designer]\"",
+            'pip install "nemo-microservices[data-designer]"',
             title="[bold]Shell Commands[/bold]",
             border_style="green",
         )
@@ -944,7 +945,7 @@ def setup_data() -> None:
             "export NGC_CLI_API_KEY=<your-ngc-api-key>\n"
             "docker login nvcr.io -u '$oauthtoken' -p $NGC_CLI_API_KEY\n"
             "ngc registry resource download-version "
-            "\"nvidia/nemo-microservices/nemo-microservices-quickstart:25.10\"\n"
+            '"nvidia/nemo-microservices/nemo-microservices-quickstart:25.10"\n'
             "cd nemo-microservices-quickstart_v25.10\n"
             "export NEMO_MICROSERVICES_IMAGE_REGISTRY=nvcr.io/nvidia/nemo-microservices\n"
             "export NEMO_MICROSERVICES_IMAGE_TAG=25.10\n"
@@ -966,7 +967,7 @@ def setup_data() -> None:
             "export NGC_CLI_API_KEY=<your-ngc-api-key>\n"
             "echo $NGC_CLI_API_KEY | docker login nvcr.io -u '$oauthtoken' --password-stdin\n"
             "ngc registry resource download-version "
-            "\"nvidia/nemo-microservices/nemo-microservices-quickstart:25.12\"\n"
+            '"nvidia/nemo-microservices/nemo-microservices-quickstart:25.12"\n'
             "cd nemo-microservices-quickstart_v25.12\n"
             "export NEMO_MICROSERVICES_IMAGE_REGISTRY=nvcr.io/nvidia/nemo-microservices\n"
             "export NEMO_MICROSERVICES_IMAGE_TAG=25.12\n"
@@ -975,7 +976,7 @@ def setup_data() -> None:
             "--profile safe-synthesizer up --detach --quiet-pull --wait\n"
             "\n"
             "# SDK:\n"
-            "pip install \"nemo-microservices[safe-synthesizer]\"",
+            'pip install "nemo-microservices[safe-synthesizer]"',
             title="[bold]Shell Commands[/bold]",
             border_style="yellow",
         )

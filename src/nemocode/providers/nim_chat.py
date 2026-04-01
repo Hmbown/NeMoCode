@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import os
 import uuid
 from typing import Any, AsyncIterator
 
 import httpx
 
 from nemocode.config.schema import EndpointTier, Manifest
+from nemocode.core.circuit_breaker import CircuitBreaker
+from nemocode.core.logging_config import StructuredLogger
 from nemocode.core.streaming import (
     CompletionResult,
     Message,
@@ -28,7 +30,7 @@ from nemocode.core.streaming import (
 )
 from nemocode.providers import NIMProviderBase
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger(__name__)
 
 # Retry configuration
 _MAX_RETRIES = 3
@@ -52,6 +54,11 @@ _LOCAL_SETUP_COMMANDS = {
 }
 
 
+def _is_verbose() -> bool:
+    """Check if verbose debugging mode is enabled."""
+    return os.environ.get("NEMOCODE_VERBOSE", "0") == "1"
+
+
 async def _retry_delay(
     attempt: int, status_code: int | None = None, retry_after: str | None = None
 ) -> float:
@@ -68,7 +75,14 @@ async def _retry_delay(
         delay = _RETRY_BASE_DELAY * (2**attempt)
     # Cap at 30 seconds
     delay = min(delay, 30.0)
-    logger.info("Retrying in %.1fs (attempt %d/%d)", delay, attempt + 1, _MAX_RETRIES)
+    logger.info(
+        "api_retry",
+        extra={
+            "delay_s": delay,
+            "attempt": attempt + 1,
+            "max_retries": _MAX_RETRIES,
+        },
+    )
     await asyncio.sleep(delay)
     return delay
 
@@ -116,6 +130,7 @@ class NIMChatProvider(NIMProviderBase):
         super().__init__(endpoint, api_key)
         self.manifest = manifest
         self.endpoint_name = endpoint_name
+        self._circuit_breaker = CircuitBreaker()
 
     def _endpoint_label(self) -> str:
         return self.endpoint_name or self.endpoint.name or self.endpoint.model_id
@@ -147,11 +162,98 @@ class NIMChatProvider(NIMProviderBase):
             f"Retrying in {delay:.0f}s...]\n"
         )
 
+    def _classify_error(
+        self,
+        detail: str,
+        *,
+        status_code: int | None = None,
+    ) -> dict[str, Any]:
+        """Classify an error into a category with actionable guidance.
+
+        Returns a dict with keys: category, message, suggestion.
+        """
+        lower_detail = detail.lower()
+
+        # Auth errors (401, 403)
+        if (
+            status_code in {401, 403}
+            or "unauthorized" in lower_detail
+            or "forbidden" in lower_detail
+        ):
+            return {
+                "category": "auth",
+                "message": (
+                    f"Authentication failed (HTTP {status_code or 'error'}): {detail}"
+                    if detail
+                    else f"Authentication failed (HTTP {status_code or 'error'}). "
+                ),
+                "suggestion": "Check your API key with: nemo auth",
+            }
+
+        # Quota/rate-limit errors (429)
+        if status_code == 429 or "rate limit" in lower_detail or "quota" in lower_detail:
+            return {
+                "category": "quota",
+                "message": (
+                    f"Rate limited or quota exceeded (HTTP {status_code or '429'}): {detail}"
+                    if detail
+                    else f"Rate limited or quota exceeded (HTTP {status_code or '429'})."
+                ),
+                "suggestion": "Check endpoint status with: nemo endpoint status",
+            }
+
+        # Server errors (5xx)
+        if status_code and 500 <= status_code < 600:
+            return {
+                "category": "server",
+                "message": (
+                    f"Server error (HTTP {status_code}): {detail}"
+                    if detail
+                    else (
+                        f"Server error (HTTP {status_code}). "
+                        "The service may be temporarily unavailable."
+                    )
+                ),
+                "suggestion": "Check service health with: nemo doctor",
+            }
+
+        # Network errors (connection refused, timeout, etc.)
+        network_indicators = [
+            "connection refused",
+            "connect timeout",
+            "read timeout",
+            "timed out",
+            "network is unreachable",
+            "name resolution",
+            "ssl",
+            "certificate",
+        ]
+        if any(indicator in lower_detail for indicator in network_indicators):
+            return {
+                "category": "network",
+                "message": f"Network error: {detail}",
+                "suggestion": "Check your connectivity and endpoint health with: nemo doctor",
+            }
+
+        # Fallback — include status code and detail
+        parts = []
+        if status_code:
+            parts.append(f"HTTP {status_code}")
+        if detail:
+            parts.append(detail)
+        return {
+            "category": "unknown",
+            "message": ": ".join(parts) if parts else "Unknown error",
+            "suggestion": "Run: nemo doctor",
+        }
+
     def _format_final_connection_error(
         self,
         detail: str,
         *,
         status_code: int | None = None,
+        request_url: str | None = None,
+        response_body: str | None = None,
     ) -> str:
         label = self._endpoint_label()
         if self._is_local_backend():
@@ -175,11 +277,30 @@ class NIMChatProvider(NIMProviderBase):
             if detail:
                 lines.append(f"Last error: {detail}")
             return "\n".join(lines)
-        if status_code is not None:
-            return f"API error on {label} ({self._base_url}): HTTP {status_code}. {detail}"
-        return (
-            f"Connection error after {_MAX_RETRIES} retries on {label} ({self._base_url}): {detail}"
-        )
+
+        # Hosted endpoint — classify and provide actionable guidance
+        classification = self._classify_error(detail, status_code=status_code)
+        lines = [
+            f"{classification['message']}",
+            f"Endpoint: {label} ({self._base_url})",
+            classification["suggestion"],
+        ]
+
+        # Verbose mode: include full debugging details
+        if _is_verbose():
+            verbose_lines = ["", "--- Verbose Debug Info ---"]
+            if request_url:
+                verbose_lines.append(f"Request URL: {request_url}")
+            if status_code:
+                verbose_lines.append(f"HTTP Status: {status_code}")
+            if response_body:
+                verbose_lines.append(f"Response Body: {response_body}")
+            if detail:
+                verbose_lines.append(f"Full Error: {detail}")
+            verbose_lines.append("--- End Verbose Debug Info ---")
+            lines.extend(verbose_lines)
+
+        return "\n".join(lines)
 
     def _build_body(
         self,
@@ -209,6 +330,10 @@ class NIMChatProvider(NIMProviderBase):
 
         # Apply structured output response_format
         if response_format:
+            if not isinstance(response_format, dict):
+                raise ValueError("response_format must be a dict")
+            if "type" not in response_format:
+                raise ValueError("response_format must include 'type' key")
             body["response_format"] = response_format
 
         if tools:
@@ -238,7 +363,24 @@ class NIMChatProvider(NIMProviderBase):
         """Stream chat completions, yielding chunks with text, thinking, tool calls, and usage.
 
         Retries on transient errors (429, 5xx, connection errors) with exponential backoff.
+        Uses a circuit breaker for fast-fail when the endpoint is consistently failing.
         """
+        # Fast-fail check via circuit breaker
+        if not await self._circuit_breaker.can_execute():
+            cooldown = self._circuit_breaker.cooldown_remaining
+            logger.warning(
+                "api_circuit_open",
+                extra={
+                    "endpoint_name": self.endpoint_name,
+                    "cooldown_remaining_s": cooldown,
+                },
+            )
+            yield StreamChunk(
+                text=f"\n[Endpoint temporarily unavailable. Retrying in {cooldown:.0f}s...]\n",
+                finish_reason="error",
+            )
+            return
+
         body = self._build_body(
             messages,
             tools=tools,
@@ -249,6 +391,8 @@ class NIMChatProvider(NIMProviderBase):
         url = f"{self._base_url}/chat/completions"
 
         last_error: str = ""
+        last_request_url: str = url
+        last_response_body: str = ""
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
@@ -258,6 +402,7 @@ class NIMChatProvider(NIMProviderBase):
                         if resp.status_code != 200:
                             error_body = await resp.aread()
                             error_text = error_body.decode(errors="replace")
+                            last_response_body = error_text
 
                             # Retry on transient status codes
                             if (
@@ -284,12 +429,35 @@ class NIMChatProvider(NIMProviderBase):
                                 text=self._format_final_connection_error(
                                     error_text,
                                     status_code=resp.status_code,
+                                    request_url=last_request_url,
+                                    response_body=error_text,
                                 ),
                                 finish_reason="error",
                             )
+                            if resp.status_code == 429:
+                                retry_after_hdr = resp.headers.get("retry-after")
+                                if retry_after_hdr:
+                                    try:
+                                        await self._circuit_breaker.record_failure_with_retry_after(
+                                            float(retry_after_hdr)
+                                        )
+                                    except ValueError:
+                                        await self._circuit_breaker.record_failure()
+                                else:
+                                    await self._circuit_breaker.record_failure()
+                            else:
+                                await self._circuit_breaker.record_failure()
                             return
 
                         # Successful connection — stream the response
+                        await self._circuit_breaker.record_success()
+                        logger.info(
+                            "api_request_start",
+                            extra={
+                                "endpoint_name": self.endpoint_name,
+                                "method": "stream",
+                            },
+                        )
                         try:
                             async for chunk in self._process_stream(resp):
                                 yield chunk
@@ -324,8 +492,13 @@ class NIMChatProvider(NIMProviderBase):
                     continue
 
         # All retries exhausted
+        await self._circuit_breaker.record_failure()
         yield StreamChunk(
-            text=self._format_final_connection_error(last_error),
+            text=self._format_final_connection_error(
+                last_error,
+                request_url=last_request_url,
+                response_body=last_response_body,
+            ),
             finish_reason="error",
         )
 
@@ -352,6 +525,15 @@ class NIMChatProvider(NIMProviderBase):
             if not choices:
                 usage = chunk_data.get("usage")
                 if usage:
+                    logger.info(
+                        "api_usage",
+                        extra={
+                            "endpoint_name": self.endpoint_name,
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0),
+                        },
+                    )
                     yield StreamChunk(usage=usage)
                 continue
 
@@ -410,7 +592,25 @@ class NIMChatProvider(NIMProviderBase):
         extra_body: dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> CompletionResult:
-        """Non-streaming completion with retry logic."""
+        """Non-streaming completion with retry logic.
+
+        Uses a circuit breaker for fast-fail when the endpoint is consistently failing.
+        """
+        # Fast-fail check via circuit breaker
+        if not await self._circuit_breaker.can_execute():
+            cooldown = self._circuit_breaker.cooldown_remaining
+            logger.warning(
+                "api_circuit_open",
+                extra={
+                    "endpoint_name": self.endpoint_name,
+                    "cooldown_remaining_s": cooldown,
+                },
+            )
+            return CompletionResult(
+                content=f"Endpoint temporarily unavailable. Retrying in {cooldown:.0f}s.",
+                finish_reason="error",
+            )
+
         body = self._build_body(
             messages,
             tools=tools,
@@ -421,24 +621,44 @@ class NIMChatProvider(NIMProviderBase):
         url = f"{self._base_url}/chat/completions"
 
         last_error = ""
+        last_request_url = url
+        last_response_body = ""
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
                     resp = await client.post(url, json=body, headers=self._headers())
 
                     if resp.status_code != 200:
+                        last_response_body = resp.text
                         if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
                             retry_after = resp.headers.get("retry-after")
                             await _retry_delay(attempt, resp.status_code, retry_after)
                             continue
+                        # Non-retryable or exhausted retries — record failure
+                        if resp.status_code == 429:
+                            retry_after_hdr = resp.headers.get("retry-after")
+                            if retry_after_hdr:
+                                try:
+                                    await self._circuit_breaker.record_failure_with_retry_after(
+                                        float(retry_after_hdr)
+                                    )
+                                except ValueError:
+                                    await self._circuit_breaker.record_failure()
+                            else:
+                                await self._circuit_breaker.record_failure()
+                        else:
+                            await self._circuit_breaker.record_failure()
                         return CompletionResult(
                             content=self._format_final_connection_error(
                                 resp.text,
                                 status_code=resp.status_code,
+                                request_url=last_request_url,
+                                response_body=resp.text,
                             ),
                             finish_reason="error",
                         )
                     data = resp.json()
+                    await self._circuit_breaker.record_success()
                     break  # success
 
             except (
@@ -453,19 +673,42 @@ class NIMChatProvider(NIMProviderBase):
                 if attempt < _MAX_RETRIES:
                     await _retry_delay(attempt)
                     continue
+                await self._circuit_breaker.record_failure()
                 return CompletionResult(
-                    content=self._format_final_connection_error(last_error),
+                    content=self._format_final_connection_error(
+                        last_error,
+                        request_url=last_request_url,
+                        response_body=last_response_body,
+                    ),
                     finish_reason="error",
                 )
         else:
             return CompletionResult(
-                content=self._format_final_connection_error(last_error),
+                content=self._format_final_connection_error(
+                    last_error,
+                    request_url=last_request_url,
+                    response_body=last_response_body,
+                ),
                 finish_reason="error",
             )
 
         choices = data.get("choices", [])
         choice = choices[0] if choices else {}
         message = choice.get("message") or {}
+
+        usage = data.get("usage", {})
+        if usage:
+            logger.info(
+                "api_complete",
+                extra={
+                    "endpoint_name": self.endpoint_name,
+                    "method": "complete",
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                    "finish_reason": choice.get("finish_reason", ""),
+                },
+            )
 
         tool_calls = []
         for tc_data in message.get("tool_calls") or []:
@@ -486,6 +729,6 @@ class NIMChatProvider(NIMProviderBase):
             content=message.get("content") or "",
             thinking=message.get("reasoning_content") or message.get("thinking") or "",
             tool_calls=tool_calls,
-            usage=data.get("usage", {}),
+            usage=usage,
             finish_reason=choice.get("finish_reason", ""),
         )

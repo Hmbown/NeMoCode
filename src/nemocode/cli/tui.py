@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -141,7 +141,7 @@ def _endpoint_summary(endpoint: object) -> str:
     return name or model_id or "-"
 
 
-def _tui_theme(config: NeMoCodeConfig):
+def _tui_theme(config: NeMoCodeConfig) -> object:
     return get_theme(config.theme)
 
 
@@ -1012,7 +1012,7 @@ class NeMoCodeTUI(App):
         """Handle enter key for submission (newline requires Shift+Enter)."""
         pass  # TextArea handles multiline naturally
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         """Intercept Enter in the input area to submit instead of newline."""
         submit_key = canonical_key_spec(self._state.config.keybindings.tui.submit)
         if canonical_key_spec(event.key) != submit_key:

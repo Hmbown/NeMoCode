@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
-import logging
+import time
 from typing import Any, Callable
+
+import httpx
 
 from nemocode.config import get_api_key
 from nemocode.config.schema import (
@@ -17,9 +19,10 @@ from nemocode.config.schema import (
     Manifest,
     NeMoCodeConfig,
 )
+from nemocode.core.logging_config import StructuredLogger
 from nemocode.core.streaming import ChatProvider, EmbeddingProvider
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger(__name__)
 
 ChatProviderFactory = Callable[[Endpoint, Manifest | None, str | None, str], ChatProvider]
 EmbedProviderFactory = Callable[[Endpoint, str | None, str], EmbeddingProvider]
@@ -152,6 +155,14 @@ class Registry:
         factory = self._resolve_chat_factory(ep)
         provider = factory(ep, manifest, api_key, endpoint_name)
         self._chat_cache[endpoint_name] = provider
+        logger.info(
+            "provider_created",
+            extra={
+                "endpoint_name": endpoint_name,
+                "model_id": ep.model_id,
+                "tier": ep.tier.value,
+            },
+        )
         return provider
 
     def get_embedding_provider(self, endpoint_name: str) -> EmbeddingProvider:
@@ -198,3 +209,90 @@ class Registry:
 
     def active_formation_name(self) -> str | None:
         return self._config.active_formation
+
+    async def test_endpoint(self, endpoint_name: str) -> dict[str, Any]:
+        """Test an endpoint for connectivity, auth, and readiness.
+
+        Makes a minimal request to the endpoint's base URL (or models list
+        endpoint) and returns a detailed status dict.
+
+        Returns:
+            A dict with keys:
+                - endpoint: endpoint name
+                - base_url: the endpoint's base URL
+                - connection: "ok" | "failed" | "timeout"
+                - auth: "ok" | "failed" | "unknown"
+                - readiness: "ready" | "loading" | "unknown"
+                - http_status: HTTP status code or None
+                - error: error message or None
+                - response_time_ms: request time in milliseconds or None
+        """
+        ep = self.get_endpoint(endpoint_name)
+        base_url = ep.base_url.rstrip("/")
+        api_key = get_api_key(ep)
+
+        result: dict[str, Any] = {
+            "endpoint": endpoint_name,
+            "base_url": base_url,
+            "connection": "failed",
+            "auth": "unknown",
+            "readiness": "unknown",
+            "http_status": None,
+            "error": None,
+            "response_time_ms": None,
+        }
+
+        # Build headers
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        # Try a lightweight health check: GET the base URL or /v1/models
+        test_urls = [
+            f"{base_url}/models",
+            f"{base_url}/health",
+            base_url,
+        ]
+
+        for test_url in test_urls:
+            try:
+                start = time.monotonic()
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+                    resp = await client.get(test_url, headers=headers)
+                elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+                result["response_time_ms"] = elapsed_ms
+                result["http_status"] = resp.status_code
+                result["connection"] = "ok"
+
+                if resp.status_code == 200:
+                    result["auth"] = "ok"
+                    result["readiness"] = "ready"
+                    return result
+                elif resp.status_code in {401, 403}:
+                    result["auth"] = "failed"
+                    result["error"] = f"Authentication failed (HTTP {resp.status_code})"
+                    return result
+                elif resp.status_code == 503:
+                    result["readiness"] = "loading"
+                    result["error"] = "Service is loading or temporarily unavailable"
+                    return result
+                elif resp.status_code >= 500:
+                    result["error"] = f"Server error (HTTP {resp.status_code})"
+                    return result
+                elif resp.status_code == 404:
+                    # URL not found, try next test URL
+                    continue
+                else:
+                    result["error"] = f"Unexpected status: {resp.status_code}"
+                    return result
+
+            except httpx.ConnectTimeout | httpx.ConnectError:
+                result["connection"] = "failed"
+                result["error"] = "Connection failed"
+                continue
+            except httpx.ReadTimeout:
+                result["connection"] = "timeout"
+                result["error"] = "Request timed out"
+                continue
+
+        return result

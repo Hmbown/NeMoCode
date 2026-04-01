@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 
+from nemocode.core.tool_cache import get_tool_cache
 from nemocode.tools import tool
 
 _MAX_RESULTS = 200
@@ -39,6 +40,13 @@ async def search_files(
     work_dir = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
     max_results = min(max_results, _MAX_RESULTS)
 
+    # Check cache
+    cache = get_tool_cache()
+    cache_key = f"search:{pattern}:{path}:{work_dir}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Try ripgrep first, then grep
     rg = shutil.which("rg")
     if rg:
@@ -65,13 +73,17 @@ async def search_files(
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         output = stdout.decode(errors="replace")
         if not output.strip():
-            return "(no matches)"
-        # Truncate if needed
-        lines = output.splitlines()
-        if len(lines) > max_results:
-            lines = lines[:max_results]
-            lines.append(f"... (truncated to {max_results} results)")
-        return "\n".join(lines)
+            result = "(no matches)"
+        else:
+            # Truncate if needed
+            lines = output.splitlines()
+            if len(lines) > max_results:
+                lines = lines[:max_results]
+                lines.append(f"... (truncated to {max_results} results)")
+            result = "\n".join(lines)
+        # Cache the result
+        cache.put(cache_key, result, ttl=60.0)
+        return result
     except asyncio.TimeoutError:
         return json.dumps({"error": "Search timed out after 30s"})
     except Exception as e:

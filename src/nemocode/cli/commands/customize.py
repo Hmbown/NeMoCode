@@ -13,13 +13,14 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from nemocode.core.validators import validate_file_path, validate_model_id
 from nemocode.providers.nvidia_client import (
-    CustomizerAPIError,
-    CustomizerClient,
     DEFAULT_FINETUNING_TYPE,
     DEFAULT_LORA_RANK,
     DEFAULT_MODEL,
     DEFAULT_TRAINING_TYPE,
+    CustomizerAPIError,
+    CustomizerClient,
 )
 
 console = Console()
@@ -135,6 +136,19 @@ def customize_create(
 
     Legacy local-dev fallback still accepts --dataset with a JSONL path.
     """
+    if dataset:
+        try:
+            validate_file_path(dataset)
+        except ValueError as exc:
+            console.print(f"[red]Invalid dataset path: {exc}[/red]")
+            raise typer.Exit(1) from exc
+
+    try:
+        validate_model_id(model)
+    except ValueError as exc:
+        console.print(f"[red]Invalid model ID: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
     client = _get_client()
     normalized_ft_type = _normalize_finetuning_type(finetuning_type)
 
@@ -176,9 +190,7 @@ def customize_create(
 
     job_id = result.get("id", "unknown")
     status = result.get("status", "unknown")
-    dataset_ref = (
-        f"{dataset_namespace}/{dataset_name}" if config and dataset_name else dataset
-    )
+    dataset_ref = f"{dataset_namespace}/{dataset_name}" if config and dataset_name else dataset
     workflow = "platform config" if config else "local file"
 
     console.print(

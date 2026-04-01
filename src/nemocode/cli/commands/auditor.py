@@ -202,7 +202,9 @@ def job_ls(
     except Exception as exc:
         console.print(f"[red]List failed:[/red] {exc}")
         raise typer.Exit(1) from exc
-    _print_table("Audit Jobs", payload, [("ID", "id"), ("Status", "status"), ("Created", "created_at")])
+    _print_table(
+        "Audit Jobs", payload, [("ID", "id"), ("Status", "status"), ("Created", "created_at")]
+    )
 
 
 @job_app.command("status")

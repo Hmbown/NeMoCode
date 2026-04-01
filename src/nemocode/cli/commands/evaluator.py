@@ -50,7 +50,9 @@ def _iter_rows(payload: Any) -> list[dict[str, Any]]:
 
 @evaluator_app.command("create")
 def evaluator_create(
-    spec: Path = typer.Argument(..., exists=True, dir_okay=False, help="Path to evaluation spec JSON."),
+    spec: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, help="Path to evaluation spec JSON."
+    ),
     base_url: str | None = typer.Option(
         None,
         "--base-url",

@@ -304,8 +304,9 @@ class TestFSTools:
 
     @pytest.mark.asyncio
     async def test_read_nonexistent(self, tmp_path: Path):
-        from nemocode.tools.fs import read_file
+        from nemocode.tools.fs import read_file, set_project_root
 
+        set_project_root(tmp_path)
         result = await read_file(str(tmp_path / "nonexistent.txt"))
         data = json.loads(result)
         assert "error" in data
@@ -336,8 +337,9 @@ class TestFSTools:
 
     @pytest.mark.asyncio
     async def test_edit_file_not_found(self, tmp_path: Path):
-        from nemocode.tools.fs import edit_file
+        from nemocode.tools.fs import edit_file, set_project_root
 
+        set_project_root(tmp_path)
         result = await edit_file(str(tmp_path / "nope.txt"), "a", "b")
         data = json.loads(result)
         assert "error" in data

@@ -43,19 +43,13 @@ def check_structured_output_support(
             )
     elif fmt_type == "json_schema":
         if not structured.json_schema:
-            return (
-                f"Model {manifest.model_id} does not support json_schema structured output."
-            )
+            return f"Model {manifest.model_id} does not support json_schema structured output."
     elif fmt_type == "regex":
         if not structured.regex:
-            return (
-                f"Model {manifest.model_id} does not support regex structured output."
-            )
+            return f"Model {manifest.model_id} does not support regex structured output."
     elif fmt_type == "grammar":
         if not structured.grammar:
-            return (
-                f"Model {manifest.model_id} does not support grammar structured output."
-            )
+            return f"Model {manifest.model_id} does not support grammar structured output."
 
     return None
 
@@ -78,8 +72,7 @@ def build_json_schema_response_format(schema_input: str) -> dict[str, Any]:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise StructuredOutputError(
-            f"Invalid JSON schema: {exc}. "
-            f"Provide a valid JSON string or a path to a .json file."
+            f"Invalid JSON schema: {exc}. Provide a valid JSON string or a path to a .json file."
         ) from exc
 
     # If the parsed object is already a full response_format envelope, use it

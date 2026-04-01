@@ -24,11 +24,14 @@ rerank_app = typer.Typer(help="Rerank passages by relevance to a query.")
 @rerank_app.command("query")
 def rerank_query(
     query: str = typer.Argument(..., help="The query to rank passages against."),
-    passage: Annotated[Optional[list[str]], typer.Option(
-        "--passage",
-        "-p",
-        help="Passages to rerank. Repeat for multiple.",
-    )] = None,
+    passage: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--passage",
+            "-p",
+            help="Passages to rerank. Repeat for multiple.",
+        ),
+    ] = None,
     endpoint: str = typer.Option(
         "nim-rerank",
         "--endpoint",

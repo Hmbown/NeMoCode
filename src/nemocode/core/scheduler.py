@@ -15,29 +15,61 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import os
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from nemocode.config.schema import FormationRole, FormationSlot
+from nemocode.core.audit import get_audit_log
 from nemocode.core.context import ContextManager
+from nemocode.core.errors import (
+    NeMoCodeError,
+    PermissionDeniedError,
+    ProviderError,
+    ToolExecutionError,
+)
+from nemocode.core.logging_config import StructuredLogger
 from nemocode.core.registry import Registry
 from nemocode.core.sessions import Session
 from nemocode.core.streaming import ChatProvider, Message, Role, ToolCall
 from nemocode.core.structured_output import check_structured_output_support
 from nemocode.tools import ToolRegistry
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger(__name__)
 DEFAULT_MAX_TOOL_ROUNDS = 100
 ConfirmFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
 
+
+class AgentEventKind(str, Enum):
+    TEXT = "text"
+    THINKING = "thinking"
+    STATUS = "status"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    ERROR = "error"
+    USAGE = "usage"
+    PHASE = "phase"
+
+
 # Tool output truncation threshold (characters)
 _TRUNCATION_THRESHOLD = 20_000
-_SCRATCH_DIR = Path(os.environ.get("NEMOCODE_SCRATCH_DIR", "/tmp/nemocode-scratch"))
+
+
+def _get_scratch_dir() -> Path:
+    """Resolve and validate the scratch directory from environment."""
+    raw = os.environ.get("NEMOCODE_SCRATCH_DIR", "/tmp/nemocode-scratch")
+    scratch = Path(raw).resolve()
+    # Prevent path traversal via env var
+    if not raw.startswith("/") and not raw.startswith("."):
+        scratch = Path("/tmp/nemocode-scratch")
+    return scratch
+
+
+_SCRATCH_DIR = _get_scratch_dir()
 _STREAM_DONE = object()
 
 
@@ -46,16 +78,12 @@ class _StreamFailure:
     error: BaseException
 
 
-class _ProviderRequestError(RuntimeError):
-    """Backend request failed in a way that should stop the current formation."""
-
-
 # ---------------------------------------------------------------------------
 # Stagnation detection
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class _StagnationTracker:
     """Detects doom loops: repeated identical tool calls or errors.
 
@@ -75,7 +103,7 @@ class _StagnationTracker:
     idle_threshold: int = 15  # 15 rounds with no text AND no tools → stagnation
 
     def record_tool_call(self, name: str, args: dict) -> None:
-        h = hashlib.md5(f"{name}:{json.dumps(args, sort_keys=True)}".encode()).hexdigest()[:12]
+        h = hashlib.sha256(f"{name}:{json.dumps(args, sort_keys=True)}".encode()).hexdigest()[:16]
         self._call_hashes.append(h)
         self._last_tool_name = name
         if len(self._call_hashes) > 50:
@@ -84,7 +112,7 @@ class _StagnationTracker:
         self._idle_count = 0
 
     def record_error(self, error_text: str) -> None:
-        h = hashlib.md5(error_text.encode()).hexdigest()[:12]
+        h = hashlib.sha256(error_text.encode()).hexdigest()[:16]
         self._error_hashes.append(h)
         self._last_error_preview = error_text[:80].replace("\n", " ")
         if len(self._error_hashes) > 50:
@@ -313,6 +341,7 @@ class Scheduler:
         self._single_session_id = single_session_id
         self._status_interval_s = max(status_interval_s, 0.0)
         self._response_format = response_format
+        self._batch_yield_delay_ms = float(os.environ.get("NEMOCODE_STREAM_BATCH_MS", "50.0"))
 
     def _build_executor_prompt(self) -> str:
         tool_lines = []
@@ -389,7 +418,7 @@ class Scheduler:
             )
             try:
                 plan = await self._run_text_only(slot, user_input)
-            except _ProviderRequestError as exc:
+            except ProviderError as exc:
                 yield AgentEvent(
                     kind="error",
                     text=str(exc),
@@ -512,7 +541,7 @@ class Scheduler:
                 yield AgentEvent(
                     kind="error",
                     text=f"Stagnation detected: {reason}. Stopping to avoid a doom loop. "
-                    f"Try rephrasing your request or use /reset.",
+                    f"Try rephrasing your requests or use /reset.",
                     is_error=True,
                     role=role,
                 )
@@ -520,7 +549,13 @@ class Scheduler:
 
             # Auto-compact if context usage exceeds 80% — use smart compaction
             if self._context_mgr.should_compact(session.messages):
-                logger.info("Auto-compacting session %s (context usage > 80%%)", session.id)
+                logger.info(
+                    "session_compacted",
+                    extra={
+                        "session_id": session.id,
+                        "endpoint_name": session.endpoint_name,
+                    },
+                )
                 session.messages = self._context_mgr.smart_compact(session.messages)
 
             text_buf, think_buf = "", ""
@@ -545,6 +580,25 @@ class Scheduler:
 
             pump_task = asyncio.create_task(_pump_stream())
             try:
+                # Batched yielding: collect chunks for ~_batch_yield_delay_ms,
+                # then yield the batch. Reduces UI update frequency for fast models.
+                batch_delay_s = (
+                    self._batch_yield_delay_ms / 1000.0 if self._batch_yield_delay_ms > 0 else 0.0
+                )
+                text_batch: list[str] = []
+                thinking_batch: list[str] = []
+                last_batch_time = time.monotonic()
+
+                async def _flush_batch_gen():
+                    """Generator wrapper for _flush_batch."""
+                    if text_batch:
+                        combined = "".join(text_batch)
+                        yield AgentEvent(kind="text", text=combined, role=role)
+                        text_batch.clear()
+                    if thinking_batch:
+                        combined = "".join(thinking_batch)
+                        yield AgentEvent(kind="thinking", thinking=combined, role=role)
+
                 while True:
                     timeout: float | None = None
                     if self._status_interval_s > 0 and not visible_progress:
@@ -552,22 +606,44 @@ class Scheduler:
                             self._status_interval_s - (time.monotonic() - last_status_at),
                             0.05,
                         )
+
+                    # If batching is enabled, use a short timeout to check for more chunks
+                    if batch_delay_s > 0:
+                        batch_timeout = max(
+                            batch_delay_s - (time.monotonic() - last_batch_time),
+                            0.005,
+                        )
+                        if timeout is not None:
+                            timeout = min(timeout, batch_timeout)
+                        else:
+                            timeout = batch_timeout
+
                     try:
                         item = await asyncio.wait_for(stream_queue.get(), timeout=timeout)
                     except asyncio.TimeoutError:
-                        elapsed = time.monotonic() - round_start
-                        yield AgentEvent(
-                            kind="status",
-                            text=self._format_wait_status(session, role, elapsed),
-                            role=role,
-                            phase="waiting",
-                        )
-                        last_status_at = time.monotonic()
+                        # Check if this is a batch flush timeout (not a status timeout)
+                        if batch_delay_s > 0 and (text_batch or thinking_batch):
+                            async for ev in _flush_batch_gen():
+                                yield ev
+                        # If still no visible progress, emit status
+                        if not visible_progress and self._status_interval_s > 0:
+                            elapsed = time.monotonic() - round_start
+                            if elapsed - (last_status_at - round_start) >= self._status_interval_s:
+                                yield AgentEvent(
+                                    kind="status",
+                                    text=self._format_wait_status(session, role, elapsed),
+                                    role=role,
+                                    phase="waiting",
+                                )
+                                last_status_at = time.monotonic()
                         continue
 
                     if item is _STREAM_DONE:
                         break
                     if isinstance(item, _StreamFailure):
+                        # Flush any pending batch before yielding error
+                        async for ev in _flush_batch_gen():
+                            yield ev
                         err_text = str(item.error)
                         self._stagnation.record_error(err_text)
                         yield AgentEvent(kind="error", text=err_text, is_error=True, role=role)
@@ -575,6 +651,9 @@ class Scheduler:
 
                     chunk = item
                     if chunk.finish_reason == "error":
+                        # Flush any pending batch before yielding error
+                        async for ev in _flush_batch_gen():
+                            yield ev
                         err_text = chunk.text or "Backend request failed."
                         self._stagnation.record_error(err_text)
                         yield AgentEvent(kind="error", text=err_text, is_error=True, role=role)
@@ -582,12 +661,21 @@ class Scheduler:
                     if chunk.text:
                         visible_progress = True
                         text_buf += chunk.text
-                        yield AgentEvent(kind="text", text=chunk.text, role=role)
+                        if batch_delay_s > 0:
+                            text_batch.append(chunk.text)
+                        else:
+                            yield AgentEvent(kind="text", text=chunk.text, role=role)
                     if chunk.thinking:
                         visible_progress = True
                         think_buf += chunk.thinking
-                        yield AgentEvent(kind="thinking", thinking=chunk.thinking, role=role)
+                        if batch_delay_s > 0:
+                            thinking_batch.append(chunk.thinking)
+                        else:
+                            yield AgentEvent(kind="thinking", thinking=chunk.thinking, role=role)
                     if chunk.tool_calls:
+                        # Flush any pending batch before yielding tool calls
+                        async for ev in _flush_batch_gen():
+                            yield ev
                         visible_progress = True
                         tool_calls.extend(chunk.tool_calls)
                     if chunk.usage:
@@ -596,6 +684,10 @@ class Scheduler:
                             chunk.usage.get("completion_tokens", 0),
                         )
                         yield AgentEvent(kind="usage", usage=chunk.usage, role=role)
+
+                # Stream ended — flush any remaining batched content
+                async for ev in _flush_batch_gen():
+                    yield ev
             finally:
                 if not pump_task.done():
                     pump_task.cancel()
@@ -680,7 +772,7 @@ class Scheduler:
                     )
                     continue
 
-            result, is_error = await self._run_tool(tc)
+            result, is_error = await self._run_tool(tc, session_id=session.id)
 
             # Track errors for stagnation detection
             if is_error:
@@ -708,7 +800,7 @@ class Scheduler:
 
         # Execute all tools concurrently
         results = await asyncio.gather(
-            *(self._run_tool(tc) for tc in tool_calls),
+            *(self._run_tool(tc, session_id=session.id) for tc in tool_calls),
             return_exceptions=True,
         )
 
@@ -736,8 +828,22 @@ class Scheduler:
                 role=role,
             )
 
-    async def _run_tool(self, tc: ToolCall) -> tuple[str, bool]:
-        """Execute a single tool call with timeout and hooks. Returns (result, is_error)."""
+    async def _run_tool(self, tc: ToolCall, session_id: str = "") -> tuple[str, bool]:
+        """Execute a single tool call with timeout and hooks. Returns (result, is_error).
+
+        Args:
+            tc: The tool call to execute.
+            session_id: The session identifier for audit logging.
+        """
+        start = time.monotonic()
+        logger.info(
+            "tool_start",
+            extra={
+                "session_id": session_id,
+                "tool_name": tc.name,
+            },
+        )
+
         # Pre-hook
         if self._hook_runner and self._hook_runner.enabled:
             try:
@@ -751,9 +857,38 @@ class Scheduler:
                 timeout=120.0,
             )
         except asyncio.TimeoutError:
-            return json.dumps({"error": f"Tool {tc.name} timed out"}), True
+            duration_ms = round((time.monotonic() - start) * 1000, 1)
+            err = ToolExecutionError(tc.name, f"Tool {tc.name} timed out")
+            logger.warning(
+                "tool_timeout",
+                extra={
+                    "session_id": session_id,
+                    "tool_name": tc.name,
+                    "duration_ms": duration_ms,
+                },
+            )
+            return json.dumps({"error": str(err)}), True
+        except PermissionDeniedError:
+            raise
+        except NeMoCodeError:
+            raise
         except Exception as e:
-            return json.dumps({"error": f"Tool {tc.name} failed: {e}"}), True
+            duration_ms = round((time.monotonic() - start) * 1000, 1)
+            logger.warning(
+                "tool_failed",
+                extra={
+                    "session_id": session_id,
+                    "tool_name": tc.name,
+                    "duration_ms": duration_ms,
+                    "error": str(e),
+                },
+            )
+            err = ToolExecutionError(
+                tc.name, f"Tool {tc.name} failed: {type(e).__name__}: {e}", original_error=e
+            )
+            return json.dumps({"error": str(err)}), True
+
+        duration_ms = round((time.monotonic() - start) * 1000, 1)
 
         is_error = False
         try:
@@ -763,12 +898,35 @@ class Scheduler:
         except (json.JSONDecodeError, ValueError):
             pass
 
+        logger.info(
+            "tool_complete",
+            extra={
+                "session_id": session_id,
+                "tool_name": tc.name,
+                "duration_ms": duration_ms,
+                "result_size": len(result),
+                "is_error": is_error,
+            },
+        )
+
         # Post-hook
         if self._hook_runner and self._hook_runner.enabled:
             try:
                 await self._hook_runner.run_post(tc.name, tc.arguments, result)
             except Exception as e:
                 logger.debug("Post-hook failed for %s: %s", tc.name, e)
+
+        # Audit log
+        try:
+            get_audit_log().log_tool_execution(
+                tool_name=tc.name,
+                args=tc.arguments,
+                result=result[:200],
+                is_error=is_error,
+                session_id=session_id or self._single_session_id,
+            )
+        except Exception:
+            logger.debug("Audit log failed for tool %s", tc.name, exc_info=True)
 
         return result, is_error
 
@@ -792,7 +950,7 @@ class Scheduler:
                 extra = {"chat_template_kwargs": {budget_param: 1024}}
         r = await provider.complete(msgs, extra_body=extra or None)
         if r.finish_reason == "error":
-            raise _ProviderRequestError(r.content)
+            raise ProviderError(r.content or "Backend request failed.", endpoint_name=slot.endpoint)
         return r.content
 
     def _get_session(self, role: FormationRole, slot: FormationSlot) -> Session:
@@ -867,6 +1025,7 @@ class Scheduler:
 
     @staticmethod
     def _format_elapsed_compact(elapsed_s: float) -> str:
+        elapsed_s = max(0.0, elapsed_s)
         if elapsed_s < 60:
             return f"{elapsed_s:.0f}s"
         minutes, seconds = divmod(int(elapsed_s), 60)

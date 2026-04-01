@@ -51,8 +51,7 @@ class CustomizerClient:
         timeout: float = 60.0,
     ) -> None:
         self._base_url = (
-            base_url
-            or os.environ.get("NEMOCODE_CUSTOMIZER_BASE_URL", DEFAULT_CUSTOMIZER_BASE_URL)
+            base_url or os.environ.get("NEMOCODE_CUSTOMIZER_BASE_URL", DEFAULT_CUSTOMIZER_BASE_URL)
         ).rstrip("/")
         self._api_key = _resolve_api_key(api_key)
         self._timeout = timeout

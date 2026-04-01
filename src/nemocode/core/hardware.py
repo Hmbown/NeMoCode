@@ -301,7 +301,7 @@ def _detect_gpus() -> list[GPUInfo]:
             )
         return gpus
     except Exception as e:
-        logger.debug("GPU detection failed: %s", e)
+        logger.warning("GPU detection failed: %s", e)
         return []
 
 
@@ -500,7 +500,19 @@ def detect_hardware(use_cache: bool = True) -> HardwareProfile:
 
 
 def _from_dict(data: dict[str, Any]) -> HardwareProfile:
-    gpus = [GPUInfo(**g) for g in data.get("gpus", [])]
+    gpu_fields = {
+        "name",
+        "vram_gb",
+        "compute_capability",
+        "driver_version",
+        "cuda_version",
+        "index",
+        "utilization_pct",
+        "temperature_c",
+    }
+    gpus = [
+        GPUInfo(**{k: v for k, v in g.items() if k in gpu_fields}) for g in data.get("gpus", [])
+    ]
     return HardwareProfile(
         gpus=gpus,
         total_vram_gb=data.get("total_vram_gb", 0.0),

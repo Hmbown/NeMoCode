@@ -90,7 +90,9 @@ def guardrails_check(
         enabled=True,
         endpoint=endpoint_name,
         timeout=timeout if timeout is not None else cfg.guardrails.timeout,
-        reject_categories=list(reject_category) if reject_category else cfg.guardrails.reject_categories,
+        reject_categories=list(reject_category)
+        if reject_category
+        else cfg.guardrails.reject_categories,
     )
     provider = NIMGuardrailsProvider(endpoint=ep, config=gr_config, api_key=get_api_key(ep))
 
@@ -115,9 +117,7 @@ def guardrails_check(
         f"[bold]Safe:[/bold] {'yes' if result.safe else 'no'}",
     ]
     if result.blocked_categories:
-        summary.append(
-            f"[bold]Blocked:[/bold] {', '.join(result.blocked_categories)}"
-        )
+        summary.append(f"[bold]Blocked:[/bold] {', '.join(result.blocked_categories)}")
     if result.error:
         summary.append(f"[bold]Error:[/bold] {result.error}")
 
@@ -133,6 +133,8 @@ def guardrails_check(
         table = Table(title="Category Scores")
         table.add_column("Category", style="cyan")
         table.add_column("Score", justify="right")
-        for name, score in sorted(result.categories.items(), key=lambda item: item[1], reverse=True):
+        for name, score in sorted(
+            result.categories.items(), key=lambda item: item[1], reverse=True
+        ):
             table.add_row(name, f"{score:.4f}")
         console.print(table)

@@ -13,6 +13,7 @@ from rich.table import Table
 
 from nemocode.config import get_api_key, load_config
 from nemocode.core.registry import Registry
+from nemocode.core.validators import validate_model_id
 
 console = Console()
 endpoint_app = typer.Typer(help="Manage NIM endpoints.")
@@ -106,6 +107,12 @@ def endpoint_add(
     import yaml
 
     from nemocode.config import _USER_CONFIG_PATH, ensure_config_dir
+
+    try:
+        validate_model_id(model_id)
+    except ValueError as exc:
+        console.print(f"[red]Invalid model ID: {exc}[/red]")
+        raise typer.Exit(1) from exc
 
     ensure_config_dir()
     existing = {}

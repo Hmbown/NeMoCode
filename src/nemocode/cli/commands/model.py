@@ -15,6 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from nemocode.config import load_config
+from nemocode.core.validators import validate_model_id
 
 console = Console()
 model_app = typer.Typer(help="Inspect Nemotron model manifests and manage NIM containers.")
@@ -91,6 +92,12 @@ def model_pull(
     tag: str = typer.Option("latest", "--tag", "-t", help="Container image tag"),
 ) -> None:
     """Pull a NIM container image from NGC registry."""
+    try:
+        validate_model_id(model_name)
+    except ValueError as exc:
+        console.print(f"[red]Invalid model name: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
     # 1. Check Docker is available
     if not shutil.which("docker"):
         console.print("[red]Error:[/red] Docker is not installed or not in PATH.")
@@ -213,6 +220,12 @@ def model_show(
     model_id: str = typer.Argument(..., help="Model ID to inspect"),
 ) -> None:
     """Show detailed manifest for a model."""
+    try:
+        validate_model_id(model_id)
+    except ValueError as exc:
+        console.print(f"[red]Invalid model ID: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
     cfg = load_config()
     m = cfg.manifests.get(model_id)
     if not m:

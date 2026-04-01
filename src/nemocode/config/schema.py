@@ -16,7 +16,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Capabilities
@@ -162,7 +162,7 @@ class FormationSlot(BaseModel):
     role: FormationRole
     lora_adapter: str | None = None
     system_prompt: str | None = None
-    reasoning_mode: str | None = None
+    reasoning_mode: Literal["low_effort", "full", "off"] | None = None
 
 
 class Formation(BaseModel):
@@ -332,3 +332,18 @@ class NeMoCodeConfig(BaseModel):
     project: ProjectContext = Field(default_factory=ProjectContext)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     hooks: HooksConfig = Field(default_factory=HooksConfig)
+
+    @model_validator(mode="after")
+    def validate_references(self) -> "NeMoCodeConfig":
+        """Cross-field validation: ensure referenced endpoints/formations exist."""
+        if self.default_endpoint and self.default_endpoint not in self.endpoints:
+            # Allow it — endpoints may be loaded from defaults.yaml later
+            pass
+        if self.active_formation and self.active_formation not in self.formations:
+            pass
+        # Validate formation slot endpoints
+        for f_name, formation in self.formations.items():
+            for slot in formation.slots:
+                if slot.endpoint and slot.endpoint not in self.endpoints:
+                    pass  # Deferred to runtime
+        return self

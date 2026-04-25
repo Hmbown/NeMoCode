@@ -8,11 +8,43 @@ Commands: nemo chat | code | customize | data | embed | rerank | speech | serve 
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import typer
+
+
+def _load_dotenv() -> None:
+    """Load .env from the nearest project root (cwd up to git root)."""
+    start = Path.cwd()
+    for parent in [start, *start.parents]:
+        candidate = parent / ".env"
+        if candidate.is_file():
+            try:
+                for raw in candidate.read_text().splitlines():
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    if key.startswith("export "):
+                        key = key[len("export "):].strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            except OSError:
+                pass
+            return
+        if (parent / ".git").is_dir() or parent == Path.home():
+            return
+
+
+_load_dotenv()
+
 
 app = typer.Typer(
     name="nemo",
-    help="NeMoCode — Terminal-first agentic coding CLI for NVIDIA Nemotron 3.",
+    help="NeMoCode — Terminal-first agentic coding CLI for NVIDIA NIM (DeepSeek + Nemotron + frontier models).",
     no_args_is_help=False,
     add_completion=True,
 )

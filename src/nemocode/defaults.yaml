@@ -1,8 +1,9 @@
 # NeMoCode defaults — NVIDIA NIM full catalog
-# All model specs verified against March 2026 NVIDIA releases.
+# All model specs verified against April 2026 NVIDIA releases.
 # DGX Spark optimized: 128GB unified memory runs Super + Nano concurrently.
+# Default model is DeepSeek V4 Pro on NIM (frontier code + reasoning).
 
-default_endpoint: nim-super
+default_endpoint: nim-deepseek-pro
 active_formation: null
 
 # ---------------------------------------------------------------------------
@@ -53,6 +54,187 @@ endpoints:
     model_id: "nvidia/llama-3.1-nemotron-nano-4b-v1.1"
     capabilities: [chat, code]
     max_tokens: 8192
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DEEPSEEK FAMILY (API Catalog — primary default)
+  # build.nvidia.com hosts the full DeepSeek v3/v4 line behind the same
+  # OpenAI-compatible base URL. v4-pro is the new daily driver.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── DeepSeek V4 Pro (primary default — frontier code + reasoning) ─
+  nim-deepseek-pro:
+    name: "DeepSeek V4 Pro (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "deepseek-ai/deepseek-v4-pro"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── DeepSeek V4 Flash (fast / cheap subtasks) ─────────────────────
+  nim-deepseek-flash:
+    name: "DeepSeek V4 Flash (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "deepseek-ai/deepseek-v4-flash"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── DeepSeek V3.2 (stable v3 line, broad tool support) ────────────
+  nim-deepseek-v32:
+    name: "DeepSeek V3.2 (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "deepseek-ai/deepseek-v3.2"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── DeepSeek V3.1 Terminus (long-context v3 finalization) ────────
+  nim-deepseek-terminus:
+    name: "DeepSeek V3.1 Terminus (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "deepseek-ai/deepseek-v3.1-terminus"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── DeepSeek Coder 6.7B Instruct (lightweight code completion) ────
+  nim-deepseek-coder:
+    name: "DeepSeek Coder 6.7B Instruct (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "deepseek-ai/deepseek-coder-6.7b-instruct"
+    capabilities: [chat, code]
+    max_tokens: 8192
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # OTHER FRONTIER MODELS ON NIM (curated)
+  # All hit the same OpenAI-compatible base URL with NVIDIA_API_KEY.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Qwen3 Coder 480B A35B (massive coder MoE) ─────────────────────
+  nim-qwen3-coder:
+    name: "Qwen3 Coder 480B A35B (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "qwen/qwen3-coder-480b-a35b-instruct"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── Qwen3 Next 80B A3B Thinking (reasoning) ───────────────────────
+  nim-qwen3-thinking:
+    name: "Qwen3 Next 80B Thinking (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "qwen/qwen3-next-80b-a3b-thinking"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── OpenAI gpt-oss 120B (open-weights from OpenAI) ────────────────
+  nim-gpt-oss-120b:
+    name: "OpenAI gpt-oss 120B (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "openai/gpt-oss-120b"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Kimi K2 Thinking (Moonshot agentic reasoning) ─────────────────
+  nim-kimi-thinking:
+    name: "Kimi K2 Thinking (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "moonshotai/kimi-k2-thinking"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── Kimi K2.5 (latest Moonshot release) ───────────────────────────
+  nim-kimi-25:
+    name: "Kimi K2.5 (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "moonshotai/kimi-k2.5"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Mistral Large 3 675B (frontier general) ───────────────────────
+  nim-mistral-large3:
+    name: "Mistral Large 3 675B (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "mistralai/mistral-large-3-675b-instruct-2512"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── Devstral 2 123B (Mistral's coding-tuned model) ────────────────
+  nim-devstral:
+    name: "Devstral 2 123B (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "mistralai/devstral-2-123b-instruct-2512"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── GLM-5 (Zhipu's flagship) ──────────────────────────────────────
+  nim-glm5:
+    name: "GLM-5 (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "z-ai/glm5"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── MiniMax M2.7 (long-context Chinese frontier) ──────────────────
+  nim-minimax:
+    name: "MiniMax M2.7 (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "minimaxai/minimax-m2.7"
+    capabilities: [chat, code]
+    max_tokens: 32768
+
+  # ── Llama 4 Maverick 17B 128E ─────────────────────────────────────
+  nim-llama4:
+    name: "Llama 4 Maverick 17B 128E (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "meta/llama-4-maverick-17b-128e-instruct"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Llama 3.3 Nemotron Super 49B v1.5 (NVIDIA-tuned) ──────────────
+  nim-nemotron-super49b:
+    name: "Llama 3.3 Nemotron Super 49B v1.5 (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    capabilities: [chat, code]
+    max_tokens: 16384
+
+  # ── Llama 3.1 Nemotron Ultra 253B (cloud heavyweight reasoning) ──
+  nim-nemotron-ultra:
+    name: "Llama 3.1 Nemotron Ultra 253B (NIM)"
+    tier: dev-hosted
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    model_id: "nvidia/llama-3.1-nemotron-ultra-253b-v1"
+    capabilities: [chat, code]
+    max_tokens: 32768
 
   # ═══════════════════════════════════════════════════════════════════════════
   # VISION / MULTIMODAL (API Catalog)
@@ -441,6 +623,254 @@ endpoints:
 # Manifests — model architecture specifics
 # ---------------------------------------------------------------------------
 manifests:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DEEPSEEK FAMILY
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  deepseek-ai/deepseek-v4-pro:
+    display_name: "DeepSeek V4 Pro"
+    arch: other
+    tier_in_family: pro
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 32768
+    moe:
+      total_params_b: 685
+      active_params_b: 37
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+      thinking_param: "reasoning"
+    structured:
+      json_schema: true
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  deepseek-ai/deepseek-v4-flash:
+    display_name: "DeepSeek V4 Flash"
+    arch: other
+    tier_in_family: flash
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 200
+      active_params_b: 14
+      precision: "fp8"
+    structured:
+      json_schema: true
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  deepseek-ai/deepseek-v3.2:
+    display_name: "DeepSeek V3.2"
+    arch: other
+    tier_in_family: v3
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 671
+      active_params_b: 37
+      precision: "fp8"
+    structured:
+      json_schema: true
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  deepseek-ai/deepseek-v3.1-terminus:
+    display_name: "DeepSeek V3.1 Terminus"
+    arch: other
+    tier_in_family: v3
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 671
+      active_params_b: 37
+      precision: "fp8"
+    structured:
+      json_schema: true
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  deepseek-ai/deepseek-coder-6.7b-instruct:
+    display_name: "DeepSeek Coder 6.7B Instruct"
+    arch: other
+    tier_in_family: coder
+    capabilities: [chat, code]
+    context_window: 16384
+    max_output_tokens: 8192
+    moe:
+      total_params_b: 6.7
+      active_params_b: 6.7
+      precision: "fp8"
+    structured:
+      json_schema: true
+    supports_tools: true
+    recommended_gpu: "Any (8GB+ VRAM)"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # OTHER FRONTIER NIM MODELS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  qwen/qwen3-coder-480b-a35b-instruct:
+    display_name: "Qwen3 Coder 480B A35B"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 32768
+    moe:
+      total_params_b: 480
+      active_params_b: 35
+      precision: "fp8"
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  qwen/qwen3-next-80b-a3b-thinking:
+    display_name: "Qwen3 Next 80B A3B Thinking"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 80
+      active_params_b: 3
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  openai/gpt-oss-120b:
+    display_name: "OpenAI gpt-oss 120B"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 120
+      active_params_b: 5
+      precision: "fp8"
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  moonshotai/kimi-k2-thinking:
+    display_name: "Kimi K2 Thinking"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 32768
+    moe:
+      total_params_b: 1000
+      active_params_b: 32
+      precision: "fp8"
+    reasoning:
+      supports_thinking: true
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  moonshotai/kimi-k2.5:
+    display_name: "Kimi K2.5"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 262144
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 1000
+      active_params_b: 32
+      precision: "fp8"
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  mistralai/mistral-large-3-675b-instruct-2512:
+    display_name: "Mistral Large 3 675B"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 32768
+    moe:
+      total_params_b: 675
+      active_params_b: 39
+      precision: "fp8"
+    supports_tools: true
+    supports_parallel_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  mistralai/devstral-2-123b-instruct-2512:
+    display_name: "Devstral 2 123B"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 123
+      active_params_b: 123
+      precision: "fp8"
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  z-ai/glm5:
+    display_name: "GLM-5"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  minimaxai/minimax-m2.7:
+    display_name: "MiniMax M2.7"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 1048576
+    max_output_tokens: 32768
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  meta/llama-4-maverick-17b-128e-instruct:
+    display_name: "Llama 4 Maverick 17B 128E"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 1048576
+    max_output_tokens: 16384
+    moe:
+      total_params_b: 400
+      active_params_b: 17
+      precision: "fp8"
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  nvidia/llama-3.3-nemotron-super-49b-v1.5:
+    display_name: "Llama 3.3 Nemotron Super 49B v1.5"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 16384
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
+
+  nvidia/llama-3.1-nemotron-ultra-253b-v1:
+    display_name: "Llama 3.1 Nemotron Ultra 253B"
+    arch: other
+    capabilities: [chat, code]
+    context_window: 131072
+    max_output_tokens: 32768
+    reasoning:
+      supports_thinking: true
+      thinking_param: "enable_thinking"
+    supports_tools: true
+    recommended_gpu: "Hosted (NIM)"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # NEMOTRON 3 FAMILY
@@ -866,15 +1296,57 @@ formations:
   # STANDARD FORMATIONS (hosted / any hardware)
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # Default: Super does everything. The daily driver.
+  # Default: DeepSeek V4 Pro does everything. The daily driver.
   solo:
     name: "Solo"
-    description: "Nemotron 3 Super for day-to-day coding. Single model, full tool use."
+    description: "DeepSeek V4 Pro for day-to-day coding. Single model, full tool use."
     slots:
       - role: executor
-        endpoint: nim-super
+        endpoint: nim-deepseek-pro
     tools: [fs, git, bash, rg]
     verification_rounds: 0
+
+  # DeepSeek V4 Pro alone (explicit alias of solo for clarity).
+  deepseek:
+    name: "DeepSeek"
+    description: "DeepSeek V4 Pro alone. Frontier code + reasoning, single model."
+    slots:
+      - role: executor
+        endpoint: nim-deepseek-pro
+    tools: [fs, git, bash, rg]
+    verification_rounds: 0
+
+  # DeepSeek pair: Pro plans / reviews, Flash executes fast subtasks.
+  deepseek-pair:
+    name: "DeepSeek Pair"
+    description: "DeepSeek V4 Pro plans + reviews. V4 Flash executes fast subtasks."
+    slots:
+      - role: planner
+        endpoint: nim-deepseek-pro
+      - role: fast
+        endpoint: nim-deepseek-flash
+      - role: executor
+        endpoint: nim-deepseek-pro
+      - role: reviewer
+        endpoint: nim-deepseek-pro
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
+
+  # DeepSeek + Nemotron Super: pair frontier coder with NVIDIA's reasoner.
+  deepseek-nemotron:
+    name: "DeepSeek + Nemotron"
+    description: "DeepSeek V4 Pro for code + Nemotron 3 Super for review/planning."
+    slots:
+      - role: planner
+        endpoint: nim-super
+      - role: executor
+        endpoint: nim-deepseek-pro
+      - role: reviewer
+        endpoint: nim-super
+        reasoning_mode: "low_effort"
+    tools: [fs, git, bash, rg]
+    verification_rounds: 1
 
   # NVIDIA's recommended Super + Nano pattern.
   # Super handles complex reasoning/planning; Nano handles fast subtasks.

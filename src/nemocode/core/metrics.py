@@ -11,11 +11,31 @@ from typing import Any
 
 # Pricing per million tokens (approximate, NIM API Catalog)
 PRICING: dict[str, dict[str, float]] = {
+    # Nemotron family
     "nvidia/nemotron-3-super-120b-a12b": {"input": 0.35, "output": 0.40},
     "nvidia/nemotron-3-nano-30b-a3b": {"input": 0.10, "output": 0.10},
     "nvidia/nemotron-3-ultra": {"input": 1.00, "output": 1.20},
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1": {"input": 0.90, "output": 1.10},
+    "nvidia/llama-3.3-nemotron-super-49b-v1.5": {"input": 0.20, "output": 0.30},
     "nvidia/llama-nemotron-embed-1b-v2": {"input": 0.02, "output": 0.0},
     "nvidia/llama-nemotron-rerank-1b-v2": {"input": 0.02, "output": 0.0},
+    # DeepSeek family (NIM hosted)
+    "deepseek-ai/deepseek-v4-pro": {"input": 0.55, "output": 1.10},
+    "deepseek-ai/deepseek-v4-flash": {"input": 0.14, "output": 0.28},
+    "deepseek-ai/deepseek-v3.2": {"input": 0.27, "output": 1.10},
+    "deepseek-ai/deepseek-v3.1-terminus": {"input": 0.27, "output": 1.10},
+    "deepseek-ai/deepseek-coder-6.7b-instruct": {"input": 0.05, "output": 0.10},
+    # Other frontier NIM
+    "qwen/qwen3-coder-480b-a35b-instruct": {"input": 0.40, "output": 0.80},
+    "qwen/qwen3-next-80b-a3b-thinking": {"input": 0.20, "output": 0.40},
+    "openai/gpt-oss-120b": {"input": 0.30, "output": 0.60},
+    "moonshotai/kimi-k2-thinking": {"input": 0.60, "output": 1.20},
+    "moonshotai/kimi-k2.5": {"input": 0.50, "output": 1.00},
+    "mistralai/mistral-large-3-675b-instruct-2512": {"input": 0.80, "output": 2.40},
+    "mistralai/devstral-2-123b-instruct-2512": {"input": 0.30, "output": 0.60},
+    "z-ai/glm5": {"input": 0.30, "output": 0.60},
+    "minimaxai/minimax-m2.7": {"input": 0.30, "output": 1.20},
+    "meta/llama-4-maverick-17b-128e-instruct": {"input": 0.20, "output": 0.40},
 }
 
 

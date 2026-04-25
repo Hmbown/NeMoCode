@@ -1,7 +1,7 @@
 [project]
 name = "nemocode"
-version = "0.1.26"
-description = "Terminal-first control plane for NVIDIA Nemotron 3 — agentic coding, RAG, doc-ops, and multi-model formations."
+version = "0.1.27"
+description = "Terminal-first control plane for NVIDIA NIM — DeepSeek V4 Pro default, Nemotron 3, and 20+ frontier models."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

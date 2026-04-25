@@ -230,7 +230,7 @@ def _parse_config(raw: dict[str, Any]) -> NeMoCodeConfig:
     guardrails = GuardrailsConfig(**guardrails_data) if guardrails_data else GuardrailsConfig()
 
     return NeMoCodeConfig(
-        default_endpoint=raw.get("default_endpoint", "nim-super"),
+        default_endpoint=raw.get("default_endpoint", "nim-deepseek-pro"),
         active_formation=raw.get("active_formation"),
         max_tool_rounds=raw.get("max_tool_rounds", 100),
         theme=raw.get("theme", "nvidia-dark"),

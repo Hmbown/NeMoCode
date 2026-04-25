@@ -35,30 +35,150 @@ _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
-# DeepSeek V3/V4 on NIM leaks tool-call special tokens into the streamed
-# `content` field before emitting the structured `tool_calls` (e.g. the chunks
-# `<`, `｜DSML｜`, `tool`, `_calls` precede the real tool_calls delta). Detect
-# the start of any DeepSeek tool-call sentinel and buffer/drop it instead of
-# rendering raw markup to the user.
+# Two distinct streaming-content nuisances we filter out of DeepSeek runs:
+#
+# 1. DSML leak (NIM/vLLM bug, not the model). DeepSeek V4's native tool-call
+#    format wraps calls in `<｜DSML｜tool_calls>…<｜DSML｜invoke>…<｜DSML｜parameter…>`
+#    using FULLWIDTH VERTICAL LINE (U+FF5C). vLLM ships a parser
+#    (--tool-call-parser deepseek_v4) that converts those into OpenAI
+#    `tool_calls`, but when reasoning + tools are both enabled the raw
+#    DSML tokens leak into the `content` field while structured tool_calls
+#    *also* arrive (sgl-project/sglang #14695, vllm-project/vllm #36654).
+#    We detect the leaked DSML, hold it, and drop it if structured
+#    tool_calls actually arrive on the same stream.
+#
+# 2. Hallucinated XML markup. Sometimes DeepSeek loses the plot and invents
+#    tool-call XML that doesn't match its native format and isn't in any
+#    spec we can find (`<bash_exec>`, `<rail_commands>`, plain `<invoke>` /
+#    `<function_call>`). These never dispatch and just clutter the UI, so
+#    we suppress them outright.
+#
+# NOTE: `<tool_result>` IS real V4 syntax (the user-turn wrapper for tool
+# output) — we deliberately do NOT filter it.
 _DEEPSEEK_SENTINEL_MARKER = "｜"  # FULLWIDTH VERTICAL LINE — never appears in normal code/text
 _DEEPSEEK_TOOL_PREFIXES = ("<｜DSML｜", "<｜tool")
+_HALLUCINATED_TOOL_TAGS = (
+    "<bash_exec",
+    "<rail_commands",
+    "<function_call>",
+    "<invoke>",
+)
+# Map of opening-tag prefix → closing tag we wait for before exiting suppression.
+_HALLUCINATED_CLOSE_TAGS = {
+    "<bash_exec": "</bash_exec>",
+    "<rail_commands": "</rail_commands>",
+    "<function_call>": "</function_call>",
+    "<invoke>": "</invoke>",
+}
 
 
 def _is_potential_deepseek_sentinel(buf: str) -> bool:
-    """True if `buf` could be (or already is) a DeepSeek tool-call sentinel.
+    """True if `buf` could be (or already is) a DSML / native tool-call leak.
 
-    NIM's hosted DeepSeek V3/V4 leaks raw special tokens into streamed
-    content before the structured tool_calls field is populated. We hold
-    content that looks like the start of one of these markers.
+    Used to hold buffered content while we wait to see whether structured
+    `tool_calls` arrive on the same stream. If they do, the buffered DSML
+    is leaked garbage and we drop it; if they don't, we flush as plain text.
     """
     if _DEEPSEEK_SENTINEL_MARKER in buf:
         return True
     stripped = buf.lstrip()
     if not stripped:
-        # Pure whitespace — could be the harmless `\n\n` that NIM emits right
-        # before a sentinel. Hold briefly; flush at finish if no sentinel arrives.
+        # Pure whitespace can precede a sentinel; hold briefly.
         return len(buf) < 8
     return any(stripped.startswith(p[: len(stripped)]) for p in _DEEPSEEK_TOOL_PREFIXES)
+
+
+def _starts_hallucinated_tool_tag(buf: str) -> str | None:
+    """If `buf` starts with one of the known hallucinated XML tool tags,
+    return the matching closing tag (e.g. `</bash_exec>`); else None."""
+    stripped = buf.lstrip()
+    for prefix in _HALLUCINATED_TOOL_TAGS:
+        if stripped.startswith(prefix):
+            return _HALLUCINATED_CLOSE_TAGS[prefix]
+    return None
+
+
+def _maybe_starts_hallucinated_tool_tag(buf: str) -> bool:
+    """True if `buf` could become a hallucinated tag (held while we accumulate)."""
+    stripped = buf.lstrip()
+    if not stripped or not stripped.startswith("<"):
+        return False
+    return any(t.startswith(stripped) or stripped.startswith(t) for t in _HALLUCINATED_TOOL_TAGS)
+
+
+def _strictify_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI tool definitions to DeepSeek strict-mode form.
+
+    DeepSeek strict mode requires (per https://api-docs.deepseek.com):
+      * `function.strict = true`
+      * Every object schema sets `additionalProperties: false`
+      * Every object schema lists every property in `required`. To preserve
+        "optional" semantics, properties that were not in the original
+        `required` list get their type widened to allow null and gain a
+        `default: null`.
+      * Strip unsupported keywords (`minLength`, `maxLength`, `minItems`,
+        `maxItems`).
+
+    Deep-copies its input rather than mutating caller-owned dicts.
+    """
+    import copy
+
+    _UNSUPPORTED = ("minLength", "maxLength", "minItems", "maxItems")
+
+    def _widen_optional(prop: dict[str, Any]) -> dict[str, Any]:
+        """Allow `null` for an optional property without losing its shape."""
+        if "anyOf" in prop:
+            already = any(
+                isinstance(s, dict) and s.get("type") == "null" for s in prop["anyOf"]
+            )
+            if not already:
+                prop["anyOf"] = list(prop["anyOf"]) + [{"type": "null"}]
+        elif "type" in prop:
+            t = prop["type"]
+            if t != "null":
+                prop["anyOf"] = [{"type": t}, {"type": "null"}]
+                prop.pop("type", None)
+        prop.setdefault("default", None)
+        return prop
+
+    def _strictify_schema(schema: Any) -> Any:
+        if not isinstance(schema, dict):
+            return schema
+        for key in _UNSUPPORTED:
+            schema.pop(key, None)
+        # Recurse into composite forms first.
+        for key in ("anyOf", "oneOf", "allOf"):
+            if isinstance(schema.get(key), list):
+                schema[key] = [_strictify_schema(s) for s in schema[key]]
+        if isinstance(schema.get("items"), dict):
+            schema["items"] = _strictify_schema(schema["items"])
+        defs = schema.get("$def") or schema.get("$defs") or schema.get("definitions")
+        if isinstance(defs, dict):
+            for k, v in defs.items():
+                defs[k] = _strictify_schema(v)
+        if schema.get("type") == "object":
+            props = schema.get("properties") or {}
+            existing_required = set(schema.get("required") or [])
+            for name, sub in props.items():
+                props[name] = _strictify_schema(sub)
+                if name not in existing_required and isinstance(props[name], dict):
+                    props[name] = _widen_optional(props[name])
+            schema["additionalProperties"] = False
+            if props:
+                schema["required"] = list(props.keys())
+        return schema
+
+    out: list[dict[str, Any]] = []
+    for t in tools:
+        td = copy.deepcopy(t)
+        fn = td.get("function") or {}
+        fn["strict"] = True
+        params = fn.get("parameters")
+        if isinstance(params, dict):
+            fn["parameters"] = _strictify_schema(params)
+        td["function"] = fn
+        out.append(td)
+    return out
 _LOCAL_BACKEND_LABELS = {
     EndpointTier.LOCAL_LLAMACPP: "llama.cpp",
     EndpointTier.LOCAL_NIM: "Local NIM",
@@ -237,7 +357,10 @@ class NIMChatProvider(NIMProviderBase):
             body["response_format"] = response_format
 
         if tools:
-            body["tools"] = tools
+            dialect = self.manifest.tool_dialect if self.manifest else "openai"
+            body["tools"] = (
+                _strictify_tools(tools) if dialect == "openai-strict" else tools
+            )
             # Some models need this to generate tool calls alongside content
             if self.manifest and self.manifest.force_nonempty_content:
                 body["force_nonempty_content"] = True
@@ -357,10 +480,15 @@ class NIMChatProvider(NIMProviderBase):
     async def _process_stream(self, resp: httpx.Response) -> AsyncIterator[StreamChunk]:
         """Process SSE lines from a successful streaming response."""
         tool_call_buffers: dict[int, dict[str, Any]] = {}
-        # DeepSeek-on-NIM leak buffer: hold content that looks like a tool-call
-        # sentinel until we know whether structured tool_calls follow.
+        # Held DSML leak buffer: content that may be a leaked native tool-call
+        # marker. Dropped if structured tool_calls arrive; flushed otherwise.
         sentinel_buffer = ""
         suppress_content = False
+        # Held hallucination state: when we've entered an invented XML block
+        # like `<bash_exec>...`, we accumulate content and drop it until we
+        # see that block's specific closing tag (`</bash_exec>`).
+        hallucination_buffer = ""
+        hallucination_close_tag: str | None = None
 
         async for line in resp.aiter_lines():
             # SSE spec: "data:" with or without trailing space
@@ -412,18 +540,43 @@ class NIMChatProvider(NIMProviderBase):
                 if fn.get("arguments"):
                     buf["arguments"] += fn["arguments"]
 
-            # Filter DeepSeek sentinel-leak from streamed content
+            # Filter DSML leak + hallucinated XML from streamed content
             emit_text = ""
             if text:
                 if suppress_content:
                     text = ""
+                elif hallucination_close_tag is not None:
+                    # Already inside an invented `<bash_exec>...` block; eat
+                    # content until that block's specific closing tag arrives.
+                    hallucination_buffer += text
+                    if hallucination_close_tag in hallucination_buffer:
+                        hallucination_close_tag = None
+                        hallucination_buffer = ""
+                    text = ""
                 else:
                     sentinel_buffer += text
+                    close_tag = _starts_hallucinated_tool_tag(sentinel_buffer)
                     if _is_potential_deepseek_sentinel(sentinel_buffer):
-                        # Looks like (or could become) a sentinel — keep buffering.
+                        # DSML leak candidate — hold; will be dropped if real
+                        # tool_calls arrive, flushed at finish otherwise.
+                        text = ""
+                    elif close_tag is not None:
+                        # Confirmed invented XML tag. Suppress this and the
+                        # rest of the block until that block's closing tag.
+                        hallucination_close_tag = close_tag
+                        # If this very chunk already contains the close tag
+                        # (e.g. a single-shot `<invoke>...</invoke>`), exit now.
+                        if close_tag in sentinel_buffer:
+                            hallucination_close_tag = None
+                        else:
+                            hallucination_buffer = sentinel_buffer
+                        sentinel_buffer = ""
+                        text = ""
+                    elif _maybe_starts_hallucinated_tool_tag(sentinel_buffer):
+                        # Could still become an invented tag — hold one more chunk.
                         text = ""
                     else:
-                        # Definitely not a sentinel; flush buffer as text.
+                        # Definitely safe text; flush buffer.
                         emit_text = sentinel_buffer
                         sentinel_buffer = ""
                         text = ""
@@ -446,10 +599,14 @@ class NIMChatProvider(NIMProviderBase):
                         )
                     )
                 # Final flush of any held content. If tool_calls fired we drop
-                # the buffer (it's all sentinel garbage); otherwise emit it so
-                # weird-but-not-sentinel content isn't silently lost.
+                # the DSML buffer (it's all leaked garbage). Hallucination
+                # buffers are always dropped. Sentinel buffer is flushed when
+                # there were no tool_calls so legitimate non-sentinel text
+                # isn't silently lost.
                 trailing = "" if completed_calls else sentinel_buffer
                 sentinel_buffer = ""
+                hallucination_buffer = ""
+                hallucination_close_tag = None
                 usage = chunk_data.get("usage")
                 yield StreamChunk(
                     text=trailing,

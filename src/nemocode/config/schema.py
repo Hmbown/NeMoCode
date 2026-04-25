@@ -129,6 +129,14 @@ class Manifest(BaseModel):
     structured: StructuredOutputConfig = Field(default_factory=StructuredOutputConfig)
     supports_tools: bool = True
     supports_parallel_tools: bool = False
+    # tool_dialect controls how the request body wraps tool definitions:
+    #   "openai"        — plain OpenAI function-calling schema (default)
+    #   "openai-strict" — DeepSeek's strict mode: every function gets
+    #                     strict: true, every object schema gets
+    #                     additionalProperties: false, and `required`
+    #                     is auto-filled with all property names if
+    #                     missing. See https://api-docs.deepseek.com.
+    tool_dialect: str = "openai"
     force_nonempty_content: bool = False
     supports_lora: bool = False
     lora_adapters: list[str] = Field(default_factory=list)

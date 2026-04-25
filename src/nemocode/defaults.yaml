@@ -647,6 +647,7 @@ manifests:
       json_schema: true
     supports_tools: true
     supports_parallel_tools: true
+    tool_dialect: openai-strict
     recommended_gpu: "Hosted (NIM)"
 
   deepseek-ai/deepseek-v4-flash:
@@ -664,6 +665,7 @@ manifests:
       json_schema: true
     supports_tools: true
     supports_parallel_tools: true
+    tool_dialect: openai-strict
     recommended_gpu: "Hosted (NIM)"
 
   deepseek-ai/deepseek-v3.2:
@@ -681,6 +683,7 @@ manifests:
       json_schema: true
     supports_tools: true
     supports_parallel_tools: true
+    tool_dialect: openai-strict
     recommended_gpu: "Hosted (NIM)"
 
   deepseek-ai/deepseek-v3.1-terminus:
@@ -697,6 +700,7 @@ manifests:
     structured:
       json_schema: true
     supports_tools: true
+    tool_dialect: openai-strict
     recommended_gpu: "Hosted (NIM)"
 
   deepseek-ai/deepseek-coder-6.7b-instruct:
@@ -713,6 +717,7 @@ manifests:
     structured:
       json_schema: true
     supports_tools: true
+    tool_dialect: openai-strict
     recommended_gpu: "Any (8GB+ VRAM)"
 
   # ═══════════════════════════════════════════════════════════════════════════

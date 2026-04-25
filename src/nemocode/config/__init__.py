@@ -143,6 +143,7 @@ def _parse_manifest(model_id: str, data: dict[str, Any]) -> Manifest:
         else StructuredOutputConfig(),
         supports_tools=data.get("supports_tools", True),
         supports_parallel_tools=data.get("supports_parallel_tools", False),
+        tool_dialect=data.get("tool_dialect", "openai"),
         force_nonempty_content=data.get("force_nonempty_content", False),
         supports_lora=data.get("supports_lora", False),
         lora_adapters=data.get("lora_adapters", []),

@@ -13,7 +13,7 @@ from nemocode.config.schema import (
     Manifest,
 )
 from nemocode.core.streaming import Message, Role
-from nemocode.providers.nim_chat import NIMChatProvider
+from nemocode.providers.nim_chat import NIMChatProvider, _strictify_tools
 
 
 @pytest.fixture
@@ -282,3 +282,165 @@ class TestDeepSeekSentinelLeak:
 
         text_emitted = "".join(c.text for c in chunks if c.text)
         assert text_emitted == "<html>"
+
+    @pytest.mark.asyncio
+    async def test_hallucinated_bash_exec_xml_is_dropped(
+        self, provider: NIMChatProvider
+    ):
+        """Invented `<bash_exec>...</bash_exec>` blocks must be suppressed."""
+        sse_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "Sure, "}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "<bash_exec>"}}]}),
+            "data: "
+            + json.dumps({"choices": [{"delta": {"content": "<command>ls /tmp</command>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "</bash_exec>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            "data: [DONE]",
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+
+        chunks = []
+        async for chunk in provider._process_stream(mock_response):
+            chunks.append(chunk)
+
+        text_emitted = "".join(c.text for c in chunks if c.text)
+        # The intro text streams; the invented XML block is suppressed.
+        assert "bash_exec" not in text_emitted
+        assert "Sure, " in text_emitted
+
+    @pytest.mark.asyncio
+    async def test_real_tool_result_wrapper_is_not_dropped(
+        self, provider: NIMChatProvider
+    ):
+        """`<tool_result>` is real V4 syntax — it must NOT be filtered."""
+        sse_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "<tool_result>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}),
+            "data: "
+            + json.dumps({"choices": [{"delta": {"content": "</tool_result>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            "data: [DONE]",
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+
+        chunks = []
+        async for chunk in provider._process_stream(mock_response):
+            chunks.append(chunk)
+
+        text_emitted = "".join(c.text for c in chunks if c.text)
+        assert "<tool_result>" in text_emitted
+        assert "ok" in text_emitted
+
+
+class TestStrictifyTools:
+    def test_adds_strict_flag_and_additional_properties(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_dir",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+        out = _strictify_tools(tools)
+        assert out[0]["function"]["strict"] is True
+        assert out[0]["function"]["parameters"]["additionalProperties"] is False
+
+    def test_widens_optional_fields_to_allow_null(self):
+        """Properties not in original `required` get anyOf-with-null treatment
+        and end up in the new `required` list (per strict-mode rules)."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+        out = _strictify_tools(tools)
+        params = out[0]["function"]["parameters"]
+        assert sorted(params["required"]) == ["limit", "query"]
+        assert params["properties"]["query"] == {"type": "string"}
+        # `limit` was optional → widened
+        limit = params["properties"]["limit"]
+        assert "anyOf" in limit
+        types = sorted(s["type"] for s in limit["anyOf"])
+        assert types == ["integer", "null"]
+        assert limit.get("default") is None
+
+    def test_strips_unsupported_keywords(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 99,
+                            },
+                            "tags": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 5,
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["name", "tags"],
+                    },
+                },
+            }
+        ]
+        out = _strictify_tools(tools)
+        params = out[0]["function"]["parameters"]
+        for prop in params["properties"].values():
+            for k in ("minLength", "maxLength", "minItems", "maxItems"):
+                assert k not in prop
+
+    def test_does_not_mutate_input(self):
+        original = {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
+            },
+        }
+        original_copy = json.loads(json.dumps(original))
+        _ = _strictify_tools([original])
+        assert original == original_copy

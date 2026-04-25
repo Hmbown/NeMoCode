@@ -1,6 +1,6 @@
 [project]
 name = "nemocode"
-version = "0.1.30"
+version = "0.1.31"
 description = "Terminal-first control plane for NVIDIA NIM — DeepSeek V4 Pro default, Nemotron 3, and 20+ frontier models."
 readme = "README.md"
 requires-python = ">=3.11"

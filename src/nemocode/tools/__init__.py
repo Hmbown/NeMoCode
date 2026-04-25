@@ -40,6 +40,99 @@ _TYPE_MAP: dict[type, str] = {
 }
 
 
+def _unwrap_optional(hint: Any) -> Any:
+    """Return the inner type of Optional[X] / Union[X, None]; else hint itself."""
+    origin = getattr(hint, "__origin__", None)
+    if origin is Union or origin is types.UnionType:
+        non_none = [a for a in typing.get_args(hint) if a is not type(None)]
+        if non_none:
+            return non_none[0]
+    return hint
+
+
+def _coerce_arg(value: Any, hint: Any) -> Any:
+    """Coerce a tool argument value to match its declared Python type hint.
+
+    Models occasionally serialize tool arguments with string-typed numbers
+    (e.g. `max_results="50"`) or vice versa. We coerce defensively at the
+    dispatch boundary so a single mistyped arg doesn't crash the tool.
+    Returns the value unchanged on any conversion failure.
+    """
+    if value is None:
+        return None
+
+    target = _unwrap_optional(hint)
+    origin = getattr(target, "__origin__", None)
+
+    try:
+        if target is bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                low = value.strip().lower()
+                if low in ("true", "yes", "1", "on"):
+                    return True
+                if low in ("false", "no", "0", "off", ""):
+                    return False
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return value
+        if target is int:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str):
+                return int(value.strip())
+            return value
+        if target is float:
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+            if isinstance(value, str):
+                return float(value.strip())
+            return value
+        if target is str:
+            if isinstance(value, str):
+                return value
+            return str(value)
+        if origin is list or target is list:
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    return json.loads(stripped)
+                return [value]
+            return value
+        if origin is dict or target is dict:
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.startswith("{") and stripped.endswith("}"):
+                    return json.loads(stripped)
+            return value
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return value
+    return value
+
+
+def _coerce_args(fn: Callable, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Coerce each kwarg in `arguments` to match `fn`'s type hints."""
+    hints = get_type_hints(fn)
+    sig = inspect.signature(fn)
+    out: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key in sig.parameters:
+            hint = hints.get(key)
+            out[key] = _coerce_arg(value, hint) if hint is not None else value
+        else:
+            out[key] = value
+    return out
+
+
 def _resolve_json_type(hint: Any) -> str:
     """Map a Python type hint to a JSON Schema type string.
 
@@ -167,7 +260,8 @@ class ToolRegistry:
         if td is None:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
-            result = await td.fn(**arguments)
+            coerced = _coerce_args(td.fn, arguments)
+            result = await td.fn(**coerced)
             return result if isinstance(result, str) else json.dumps(result)
         except Exception as e:
             logger.exception("Tool %s failed", name)

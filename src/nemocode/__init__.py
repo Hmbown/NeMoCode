@@ -3,4 +3,4 @@
 
 """NeMoCode — Terminal-first agentic coding CLI for NVIDIA NIM."""
 
-__version__ = "0.1.31"
+__version__ = "0.1.32"

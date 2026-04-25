@@ -73,6 +73,63 @@ class TestToolRegistry:
         data = json.loads(result)
         assert "error" in data
 
+    @pytest.mark.asyncio
+    async def test_execute_coerces_string_int(self):
+        """Models sometimes serialize ints as strings. Coerce at the boundary."""
+        registry = ToolRegistry()
+
+        @tool(name="add_one", description="Add one")
+        async def add_one(n: int) -> str:
+            return str(n + 1)
+
+        registry.register_function(add_one)
+        # Model passed n as a string — must not crash.
+        result = await registry.execute("add_one", {"n": "41"})
+        assert result == "42"
+
+    @pytest.mark.asyncio
+    async def test_execute_coerces_string_bool(self):
+        registry = ToolRegistry()
+
+        @tool(name="flagged", description="Bool check")
+        async def flagged(verbose: bool = False) -> str:
+            return "yes" if verbose else "no"
+
+        registry.register_function(flagged)
+        for s, expected in [("true", "yes"), ("false", "no"), ("1", "yes"), ("0", "no")]:
+            result = await registry.execute("flagged", {"verbose": s})
+            assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_execute_coerces_optional_int(self):
+        """Optional[int] — model may pass string or omit. Both must work."""
+        registry = ToolRegistry()
+
+        @tool(name="opt_int", description="Optional int")
+        async def opt_int(x: int | None = None) -> str:
+            return str(x)
+
+        registry.register_function(opt_int)
+        assert await registry.execute("opt_int", {"x": "7"}) == "7"
+        assert await registry.execute("opt_int", {}) == "None"
+        assert await registry.execute("opt_int", {"x": None}) == "None"
+
+    @pytest.mark.asyncio
+    async def test_execute_unrelated_kwargs_passthrough(self):
+        """Args not in the function signature pass through (TypeError surfaces)."""
+        registry = ToolRegistry()
+
+        @tool(name="strict_one", description="Strict")
+        async def strict_one(a: int) -> str:
+            return str(a)
+
+        registry.register_function(strict_one)
+        result = await registry.execute("strict_one", {"a": "5", "junk": "ignored"})
+        # `junk` flows through and TypeErrors at the call site — error captured.
+        data = json.loads(result)
+        assert "error" in data
+        assert "junk" in data["error"]
+
     def test_load_tools_by_category(self):
         registry = load_tools(["fs", "git"])
         tools = registry.list_tools()

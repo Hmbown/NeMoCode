@@ -156,3 +156,129 @@ class TestNIMChatStreamToolAssembly:
         finish_chunks = [c for c in chunks if c.finish_reason]
         assert len(finish_chunks) == 1
         assert finish_chunks[0].finish_reason == "tool_calls"
+
+
+class TestDeepSeekSentinelLeak:
+    """NIM's hosted DeepSeek V3/V4 leaks raw tool-call special tokens
+    (`\\n\\n`, `<`, `｜DSML｜`, `tool`, `_calls`) into the streamed content
+    field before populating structured tool_calls. The provider must
+    suppress those leaked sentinels."""
+
+    @pytest.mark.asyncio
+    async def test_deepseek_sentinel_suppressed_when_tool_calls_follow(
+        self, provider: NIMChatProvider
+    ):
+        # Sequence observed against deepseek-ai/deepseek-v4-flash on NIM
+        leaked_chunks = ["\n\n", "<", "｜DSML｜", "tool", "_c", "alls"]
+        sse_lines = []
+        for piece in leaked_chunks:
+            sse_lines.append(
+                "data: " + json.dumps({"choices": [{"delta": {"content": piece}}]})
+            )
+        sse_lines.append(
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_x",
+                                        "function": {
+                                            "name": "list_dir",
+                                            "arguments": '{"path": "/tmp"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        sse_lines.append(
+            "data: "
+            + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+        )
+        sse_lines.append("data: [DONE]")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+
+        chunks = []
+        async for chunk in provider._process_stream(mock_response):
+            chunks.append(chunk)
+
+        text_emitted = "".join(c.text for c in chunks if c.text)
+        # The whole sentinel leak should be suppressed.
+        assert "DSML" not in text_emitted
+        assert "｜" not in text_emitted
+        assert "tool_calls" not in text_emitted
+        # Tool call should still be parsed from the structured field.
+        tool_chunks = [c for c in chunks if c.tool_calls]
+        assert len(tool_chunks) == 1
+        assert tool_chunks[0].tool_calls[0].name == "list_dir"
+        assert tool_chunks[0].tool_calls[0].arguments == {"path": "/tmp"}
+
+    @pytest.mark.asyncio
+    async def test_normal_content_still_streams(self, provider: NIMChatProvider):
+        """Non-sentinel content must still stream through unchanged."""
+        sse_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "Hello "}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "world"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            "data: [DONE]",
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+
+        chunks = []
+        async for chunk in provider._process_stream(mock_response):
+            chunks.append(chunk)
+
+        text_emitted = "".join(c.text for c in chunks if c.text)
+        assert text_emitted == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_lone_lt_followed_by_normal_text_flushes(
+        self, provider: NIMChatProvider
+    ):
+        """A bare `<` followed by code (not a sentinel) must still be emitted."""
+        sse_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "<"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "html>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            "data: [DONE]",
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = aiter_lines
+
+        chunks = []
+        async for chunk in provider._process_stream(mock_response):
+            chunks.append(chunk)
+
+        text_emitted = "".join(c.text for c in chunks if c.text)
+        assert text_emitted == "<html>"

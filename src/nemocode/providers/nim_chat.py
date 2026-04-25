@@ -34,6 +34,31 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# DeepSeek V3/V4 on NIM leaks tool-call special tokens into the streamed
+# `content` field before emitting the structured `tool_calls` (e.g. the chunks
+# `<`, `｜DSML｜`, `tool`, `_calls` precede the real tool_calls delta). Detect
+# the start of any DeepSeek tool-call sentinel and buffer/drop it instead of
+# rendering raw markup to the user.
+_DEEPSEEK_SENTINEL_MARKER = "｜"  # FULLWIDTH VERTICAL LINE — never appears in normal code/text
+_DEEPSEEK_TOOL_PREFIXES = ("<｜DSML｜", "<｜tool")
+
+
+def _is_potential_deepseek_sentinel(buf: str) -> bool:
+    """True if `buf` could be (or already is) a DeepSeek tool-call sentinel.
+
+    NIM's hosted DeepSeek V3/V4 leaks raw special tokens into streamed
+    content before the structured tool_calls field is populated. We hold
+    content that looks like the start of one of these markers.
+    """
+    if _DEEPSEEK_SENTINEL_MARKER in buf:
+        return True
+    stripped = buf.lstrip()
+    if not stripped:
+        # Pure whitespace — could be the harmless `\n\n` that NIM emits right
+        # before a sentinel. Hold briefly; flush at finish if no sentinel arrives.
+        return len(buf) < 8
+    return any(stripped.startswith(p[: len(stripped)]) for p in _DEEPSEEK_TOOL_PREFIXES)
 _LOCAL_BACKEND_LABELS = {
     EndpointTier.LOCAL_LLAMACPP: "llama.cpp",
     EndpointTier.LOCAL_NIM: "Local NIM",
@@ -332,6 +357,10 @@ class NIMChatProvider(NIMProviderBase):
     async def _process_stream(self, resp: httpx.Response) -> AsyncIterator[StreamChunk]:
         """Process SSE lines from a successful streaming response."""
         tool_call_buffers: dict[int, dict[str, Any]] = {}
+        # DeepSeek-on-NIM leak buffer: hold content that looks like a tool-call
+        # sentinel until we know whether structured tool_calls follow.
+        sentinel_buffer = ""
+        suppress_content = False
 
         async for line in resp.aiter_lines():
             # SSE spec: "data:" with or without trailing space
@@ -358,11 +387,16 @@ class NIMChatProvider(NIMProviderBase):
             delta = choices[0].get("delta") or {}
             finish = choices[0].get("finish_reason")
 
-            text = delta.get("content", "")
+            text = delta.get("content", "") or ""
             thinking = delta.get("reasoning_content", "") or delta.get("thinking", "")
 
             # Handle streamed tool calls
             tc_deltas = delta.get("tool_calls") or []
+            if tc_deltas:
+                # Structured tool calls are arriving — any leaked sentinel
+                # markup that preceded them is garbage; drop it.
+                sentinel_buffer = ""
+                suppress_content = True
             for tcd in tc_deltas:
                 idx = tcd.get("index", 0)
                 if idx not in tool_call_buffers:
@@ -378,8 +412,24 @@ class NIMChatProvider(NIMProviderBase):
                 if fn.get("arguments"):
                     buf["arguments"] += fn["arguments"]
 
-            if text or thinking:
-                yield StreamChunk(text=text, thinking=thinking)
+            # Filter DeepSeek sentinel-leak from streamed content
+            emit_text = ""
+            if text:
+                if suppress_content:
+                    text = ""
+                else:
+                    sentinel_buffer += text
+                    if _is_potential_deepseek_sentinel(sentinel_buffer):
+                        # Looks like (or could become) a sentinel — keep buffering.
+                        text = ""
+                    else:
+                        # Definitely not a sentinel; flush buffer as text.
+                        emit_text = sentinel_buffer
+                        sentinel_buffer = ""
+                        text = ""
+
+            if emit_text or thinking:
+                yield StreamChunk(text=emit_text, thinking=thinking)
 
             if finish:
                 completed_calls = []
@@ -395,8 +445,14 @@ class NIMChatProvider(NIMProviderBase):
                             arguments=args,
                         )
                     )
+                # Final flush of any held content. If tool_calls fired we drop
+                # the buffer (it's all sentinel garbage); otherwise emit it so
+                # weird-but-not-sentinel content isn't silently lost.
+                trailing = "" if completed_calls else sentinel_buffer
+                sentinel_buffer = ""
                 usage = chunk_data.get("usage")
                 yield StreamChunk(
+                    text=trailing,
                     tool_calls=completed_calls if completed_calls else [],
                     usage=usage,
                     finish_reason=finish,

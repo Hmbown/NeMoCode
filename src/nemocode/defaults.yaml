@@ -62,6 +62,7 @@ endpoints:
   # ═══════════════════════════════════════════════════════════════════════════
 
   # ── DeepSeek V4 Pro (primary default — frontier code + reasoning) ─
+  # 1M context window, up to 384K output tokens (per DeepSeek api-docs).
   nim-deepseek-pro:
     name: "DeepSeek V4 Pro (NIM)"
     tier: dev-hosted
@@ -69,9 +70,9 @@ endpoints:
     api_key_env: NVIDIA_API_KEY
     model_id: "deepseek-ai/deepseek-v4-pro"
     capabilities: [chat, code]
-    max_tokens: 32768
+    max_tokens: 393216
 
-  # ── DeepSeek V4 Flash (fast / cheap subtasks) ─────────────────────
+  # ── DeepSeek V4 Flash (fast / cheap subtasks, also 1M ctx) ────────
   nim-deepseek-flash:
     name: "DeepSeek V4 Flash (NIM)"
     tier: dev-hosted
@@ -79,7 +80,7 @@ endpoints:
     api_key_env: NVIDIA_API_KEY
     model_id: "deepseek-ai/deepseek-v4-flash"
     capabilities: [chat, code]
-    max_tokens: 16384
+    max_tokens: 393216
 
   # ── DeepSeek V3.2 (stable v3 line, broad tool support) ────────────
   nim-deepseek-v32:
@@ -633,8 +634,8 @@ manifests:
     arch: other
     tier_in_family: pro
     capabilities: [chat, code]
-    context_window: 200000
-    max_output_tokens: 32768
+    context_window: 1048576
+    max_output_tokens: 393216
     moe:
       total_params_b: 685
       active_params_b: 37
@@ -653,8 +654,8 @@ manifests:
     arch: other
     tier_in_family: flash
     capabilities: [chat, code]
-    context_window: 131072
-    max_output_tokens: 16384
+    context_window: 1048576
+    max_output_tokens: 393216
     moe:
       total_params_b: 200
       active_params_b: 14

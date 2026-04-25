@@ -198,7 +198,7 @@ class AgentEvent:
 
 ROLE_PROMPTS: dict[FormationRole, str] = {
     FormationRole.PLANNER: (
-        "You are the PLANNER in a Nemotron 3 formation. Analyze the request and produce "
+        "You are the PLANNER in a NeMoCode formation. Analyze the request and produce "
         "a concrete, ordered execution plan.\n\n"
         "Produce numbered steps, each including:\n"
         "- The file path(s) to read or modify\n"
@@ -210,7 +210,7 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "Be specific -- the EXECUTOR follows your plan verbatim."
     ),
     FormationRole.EXECUTOR: (
-        "You are NeMoCode, an autonomous coding agent powered by NVIDIA Nemotron 3.\n\n"
+        "You are NeMoCode, an autonomous coding agent running on NVIDIA NIM.\n\n"
         "You COMPLETE tasks — you don't just describe them. When the user asks you "
         "to do something, you DO it: read files, write code, run tests, fix errors, "
         "and iterate until the task is done.\n\n"
@@ -238,7 +238,7 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "- Batch operations efficiently — use multi_edit for multiple changes in one file.\n"
     ),
     FormationRole.REVIEWER: (
-        "You are the REVIEWER in a Nemotron 3 formation.\n\n"
+        "You are the REVIEWER in a NeMoCode formation.\n\n"
         "Review the changes made by the executor. Check for:\n"
         "- Correctness: Does the code do what was requested?\n"
         "- Edge cases: Are boundary conditions handled?\n"
@@ -255,14 +255,14 @@ ROLE_PROMPTS: dict[FormationRole, str] = {
         "suggest a specific fix."
     ),
     FormationRole.FAST: (
-        "You are a fast execution agent powered by Nemotron 3 Nano. Handle targeted subtasks "
+        "You are a fast execution agent on NVIDIA NIM. Handle targeted subtasks "
         "quickly and precisely. Focus on the specific task given -- do not over-think."
     ),
 }
 
 
 _PLAN_MODE_PROMPT = (
-    "You are NeMoCode, an expert coding assistant powered by NVIDIA Nemotron 3 Super.\n\n"
+    "You are NeMoCode, an expert coding assistant running on NVIDIA NIM.\n\n"
     "You are in PLAN MODE (read-only). You can read files and explore the "
     "codebase, but you CANNOT modify anything.\n\n"
     "## Available Tools (read-only)\n"
@@ -278,6 +278,31 @@ _PLAN_MODE_PROMPT = (
     "Produce clear, actionable plans that the user can implement or "
     "switch to code/auto mode to execute.\n"
 )
+
+
+def _build_model_identity(registry: Registry, endpoint_name: str) -> str:
+    """Return a one-line identity preamble for the active endpoint.
+
+    Without this, a generically-branded role prompt can let the model
+    misidentify itself by grepping the codebase for unrelated model names.
+    """
+    try:
+        endpoint = registry.get_endpoint(endpoint_name)
+    except (KeyError, AttributeError):
+        return ""
+    try:
+        manifest = registry.get_manifest_for_endpoint(endpoint_name)
+    except (KeyError, AttributeError):
+        manifest = None
+    display = (manifest.display_name if manifest else "") or endpoint.name
+    model_id = endpoint.model_id or "unknown"
+    ctx = manifest.context_window if manifest else 0
+    ctx_str = f" Context window: {ctx:,} tokens." if ctx else ""
+    return (
+        f"## Active Model\n"
+        f"You are running on **{display}** (`{model_id}`) via endpoint `{endpoint_name}`.{ctx_str}\n"
+        f"If asked which model you are, answer with this identity — do not infer it from the codebase."
+    )
 
 
 class Scheduler:
@@ -354,6 +379,9 @@ class Scheduler:
             prompt = self._single_prompt or (
                 _PLAN_MODE_PROMPT if self._read_only else self._build_executor_prompt()
             )
+            identity = _build_model_identity(self._reg, endpoint_name)
+            if identity:
+                prompt = f"{identity}\n\n{prompt}"
             if self._project_context:
                 prompt = f"{prompt}\n\n## Project Context\n{self._project_context}"
             s.add_system(prompt)

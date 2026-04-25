@@ -35,7 +35,7 @@ def chat_cmd(
         None, "--guardrails/--no-guardrails", help="Enable/disable content safety"
     ),
 ) -> None:
-    """Simple streaming chat with a Nemotron model. No tools."""
+    """Simple streaming chat with a NIM model. No tools."""
     if prompt is None:
         if not sys.stdin.isatty():
             prompt = sys.stdin.read().strip()
@@ -69,10 +69,17 @@ async def _chat(
 
     use_guardrails = guardrails_flag if guardrails_flag is not None else cfg.guardrails.enabled
 
+    display = (manifest.display_name if manifest else "") or ep.name
+    ctx = manifest.context_window if manifest else 0
+    ctx_str = f" Context window: {ctx:,} tokens." if ctx else ""
+    system_prompt = (
+        f"You are a helpful assistant running on NVIDIA NIM. "
+        f"You are **{display}** (`{ep.model_id}`).{ctx_str} "
+        f"If asked which model you are, answer with this identity."
+    )
+
     messages = [
-        Message(
-            role=Role.SYSTEM, content="You are a helpful assistant powered by NVIDIA Nemotron 3."
-        ),
+        Message(role=Role.SYSTEM, content=system_prompt),
         Message(role=Role.USER, content=prompt),
     ]
 

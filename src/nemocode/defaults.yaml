@@ -633,7 +633,7 @@ manifests:
     arch: other
     tier_in_family: pro
     capabilities: [chat, code]
-    context_window: 262144
+    context_window: 200000
     max_output_tokens: 32768
     moe:
       total_params_b: 685
